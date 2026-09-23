@@ -1,4 +1,4 @@
-#include <pch.h>
+﻿#include <pch.h>
 
 #include "Streamline_Hooks.h"
 
@@ -15,9 +15,898 @@
 #include <imgui/ImGuiNotify.hpp>
 
 #include <json.hpp>
-#include <sl1_reflex.h>
 #include <magic_enum.hpp>
 #include "detours/detours.h"
+#include <sl1_reflex.h>
+#include <NVNGX_Parameter.h>
+
+std::mutex StreamlineHooks::rrSignalTagMutex {};
+RRSignalTagDiagnostics StreamlineHooks::rrSignalTagDiagnostics {};
+std::array<Microsoft::WRL::ComPtr<ID3D12Resource>,
+           static_cast<size_t>(RRTaggedSignal::Count)> StreamlineHooks::rrTaggedD3D12Resources {};
+SLTagInventoryDiagnostics StreamlineHooks::slTagInventoryDiagnostics {};
+RRNGXPointerDiagnostics StreamlineHooks::rrNGXPointerDiagnostics {};
+
+namespace
+{
+thread_local uint32_t g_rrActiveEvaluationFrame = UINT32_MAX;
+thread_local uint32_t g_rrActiveEvaluationViewport = UINT32_MAX;
+
+class ScopedRRActiveEvaluationFrame
+{
+  public:
+    ScopedRRActiveEvaluationFrame(uint32_t frame, uint32_t viewport) noexcept
+        : m_previousFrame(g_rrActiveEvaluationFrame),
+          m_previousViewport(g_rrActiveEvaluationViewport)
+    {
+        g_rrActiveEvaluationFrame = frame;
+        g_rrActiveEvaluationViewport = viewport;
+    }
+
+    ~ScopedRRActiveEvaluationFrame()
+    {
+        g_rrActiveEvaluationFrame = m_previousFrame;
+        g_rrActiveEvaluationViewport = m_previousViewport;
+    }
+
+  private:
+    uint32_t m_previousFrame;
+    uint32_t m_previousViewport;
+};
+}
+
+
+
+
+
+
+
+static bool TryGetRRTaggedSignal(sl::BufferType type, RRTaggedSignal& signal)
+{
+    switch (type)
+    {
+    case sl::kBufferTypeNormalRoughness:
+        signal = RRTaggedSignal::NormalRoughness;
+        return true;
+    case sl::kBufferTypeEmissive:
+        signal = RRTaggedSignal::Emissive;
+        return true;
+    case sl::kBufferTypeSpecularMotionVectors:
+        signal = RRTaggedSignal::SpecularMotionVectors;
+        return true;
+    case sl::kBufferTypeReflectionMotionVectors:
+        signal = RRTaggedSignal::ReflectionMotionVectors;
+        return true;
+    case sl::kBufferTypeSpecularHitDistance:
+        signal = RRTaggedSignal::SpecularHitDistance;
+        return true;
+    case sl::kBufferTypeSpecularRayDirectionHitDistance:
+        signal = RRTaggedSignal::SpecularRayDirectionHitDistance;
+        return true;
+    case sl::kBufferTypeLinearDepth:
+        signal = RRTaggedSignal::LinearDepth;
+        return true;
+    case sl::kBufferTypeDiffuseHitNoisy:
+        signal = RRTaggedSignal::DiffuseNoisy;
+        return true;
+    case sl::kBufferTypeDiffuseHitDenoised:
+        signal = RRTaggedSignal::DiffuseDenoised;
+        return true;
+    case sl::kBufferTypeSpecularHitNoisy:
+        signal = RRTaggedSignal::SpecularNoisy;
+        return true;
+    case sl::kBufferTypeSpecularHitDenoised:
+        signal = RRTaggedSignal::SpecularDenoised;
+        return true;
+    case sl::kBufferTypeShadowNoisy:
+        signal = RRTaggedSignal::ShadowNoisy;
+        return true;
+    case sl::kBufferTypeShadowDenoised:
+        signal = RRTaggedSignal::ShadowDenoised;
+        return true;
+    case sl::kBufferTypeAmbientOcclusionNoisy:
+        signal = RRTaggedSignal::AmbientOcclusionNoisy;
+        return true;
+    case sl::kBufferTypeAmbientOcclusionDenoised:
+        signal = RRTaggedSignal::AmbientOcclusionDenoised;
+        return true;
+    case sl::kBufferTypeShadowHint:
+        signal = RRTaggedSignal::ShadowHint;
+        return true;
+    case sl::kBufferTypeReflectionHint:
+        signal = RRTaggedSignal::ReflectionHint;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool IsRRCheckerboardInput(RRTaggedSignal signal)
+{
+    return signal == RRTaggedSignal::DiffuseNoisy ||
+           signal == RRTaggedSignal::SpecularNoisy ||
+           signal == RRTaggedSignal::ShadowNoisy ||
+           signal == RRTaggedSignal::AmbientOcclusionNoisy;
+}
+
+static const char* GetRRTagSourceName(RRTagSource source)
+{
+    switch (source)
+    {
+    case RRTagSource::SetTag:
+        return "slSetTag";
+    case RRTagSource::SetTagForFrame:
+        return "slSetTagForFrame";
+    case RRTagSource::EvaluateFeature:
+        return "slEvaluateFeature";
+    default:
+        return "unknown";
+    }
+}
+
+const char* StreamlineHooks::getSLBufferTypeName(sl::BufferType type)
+{
+    static constexpr std::array<const char*, 68> names {
+        "Depth",
+        "MotionVectors",
+        "HUDLessColor",
+        "ScalingInputColor",
+        "ScalingOutputColor",
+        "Normals",
+        "Roughness",
+        "Albedo",
+        "SpecularAlbedo",
+        "IndirectAlbedo",
+        "SpecularMotionVectors",
+        "DisocclusionMask",
+        "Emissive",
+        "Exposure",
+        "NormalRoughness",
+        "DiffuseHitNoisy",
+        "DiffuseHitDenoised",
+        "SpecularHitNoisy",
+        "SpecularHitDenoised",
+        "ShadowNoisy",
+        "ShadowDenoised",
+        "AmbientOcclusionNoisy",
+        "AmbientOcclusionDenoised",
+        "UIColorAndAlpha",
+        "ShadowHint",
+        "ReflectionHint",
+        "ParticleHint",
+        "TransparencyHint",
+        "AnimatedTextureHint",
+        "BiasCurrentColorHint",
+        "RaytracingDistance",
+        "ReflectionMotionVectors",
+        "Position",
+        "InvalidDepthMotionHint",
+        "Alpha",
+        "OpaqueColor",
+        "ReactiveMaskHint",
+        "TransparencyAndCompositionMaskHint",
+        "ReflectedAlbedo",
+        "ColorBeforeParticles",
+        "ColorBeforeTransparency",
+        "ColorBeforeFog",
+        "SpecularHitDistance",
+        "SpecularRayDirectionHitDistance",
+        "SpecularRayDirection",
+        "DiffuseHitDistance",
+        "DiffuseRayDirectionHitDistance",
+        "DiffuseRayDirection",
+        "HiResDepth",
+        "LinearDepth",
+        "BidirectionalDistortionField",
+        "TransparencyLayer",
+        "TransparencyLayerOpacity",
+        "Backbuffer",
+        "NoWarpMask",
+        "ColorAfterParticles",
+        "ColorAfterTransparency",
+        "ColorAfterFog",
+        "ScreenSpaceSubsurfaceScatteringGuide",
+        "ColorBeforeScreenSpaceSubsurfaceScattering",
+        "ColorAfterScreenSpaceSubsurfaceScattering",
+        "ScreenSpaceRefractionGuide",
+        "ColorBeforeScreenSpaceRefraction",
+        "ColorAfterScreenSpaceRefraction",
+        "DepthOfFieldGuide",
+        "ColorBeforeDepthOfField",
+        "ColorAfterDepthOfField",
+        "ScalingOutputAlpha"
+    };
+
+    return type < names.size() ? names[type] : "Unknown/custom";
+}
+
+const char* StreamlineHooks::getRRTaggedSignalName(RRTaggedSignal signal)
+{
+    switch (signal)
+    {
+    case RRTaggedSignal::NormalRoughness:
+        return "NormalRoughness";
+    case RRTaggedSignal::Emissive:
+        return "Emissive";
+    case RRTaggedSignal::SpecularMotionVectors:
+        return "SpecularMotionVectors";
+    case RRTaggedSignal::ReflectionMotionVectors:
+        return "ReflectionMotionVectors";
+    case RRTaggedSignal::SpecularHitDistance:
+        return "SpecularHitDistance";
+    case RRTaggedSignal::SpecularRayDirectionHitDistance:
+        return "SpecularRayDirectionHitDistance";
+    case RRTaggedSignal::LinearDepth:
+        return "LinearDepth";
+    case RRTaggedSignal::DiffuseNoisy:
+        return "Diffuse.Noisy";
+    case RRTaggedSignal::DiffuseDenoised:
+        return "Diffuse.Denoised";
+    case RRTaggedSignal::SpecularNoisy:
+        return "Specular.Noisy";
+    case RRTaggedSignal::SpecularDenoised:
+        return "Specular.Denoised";
+    case RRTaggedSignal::ShadowNoisy:
+        return "Shadow.Noisy";
+    case RRTaggedSignal::ShadowDenoised:
+        return "Shadow.Denoised";
+    case RRTaggedSignal::AmbientOcclusionNoisy:
+        return "AmbientOcclusion.Noisy";
+    case RRTaggedSignal::AmbientOcclusionDenoised:
+        return "AmbientOcclusion.Denoised";
+    case RRTaggedSignal::ShadowHint:
+        return "ShadowHint";
+    case RRTaggedSignal::ReflectionHint:
+        return "ReflectionHint";
+    default:
+        return "Unknown";
+    }
+}
+
+const char* StreamlineHooks::getRRPreferredTagFormat(RRTaggedSignal signal)
+{
+    switch (signal)
+    {
+    case RRTaggedSignal::NormalRoughness:
+        return "game-defined";
+    case RRTaggedSignal::Emissive:
+        return "shader-readable color texture";
+    case RRTaggedSignal::SpecularMotionVectors:
+    case RRTaggedSignal::ReflectionMotionVectors:
+        return "DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R32G32_FLOAT, "
+               "DXGI_FORMAT_R16G16B16A16_FLOAT, or DXGI_FORMAT_R32G32B32A32_FLOAT";
+    case RRTaggedSignal::SpecularHitDistance:
+        return "DXGI_FORMAT_R16_FLOAT or DXGI_FORMAT_R32_FLOAT";
+    case RRTaggedSignal::SpecularRayDirectionHitDistance:
+        return "DXGI_FORMAT_R16G16B16A16_FLOAT or DXGI_FORMAT_R32G32B32A32_FLOAT";
+    case RRTaggedSignal::LinearDepth:
+        return "DXGI_FORMAT_R32_FLOAT or DXGI_FORMAT_R16_FLOAT";
+    case RRTaggedSignal::DiffuseNoisy:
+    case RRTaggedSignal::DiffuseDenoised:
+    case RRTaggedSignal::SpecularNoisy:
+    case RRTaggedSignal::SpecularDenoised:
+        return "DXGI_FORMAT_R16G16B16A16_FLOAT";
+    case RRTaggedSignal::ShadowNoisy:
+        return "DXGI_FORMAT_R16_FLOAT";
+    case RRTaggedSignal::ShadowDenoised:
+    case RRTaggedSignal::AmbientOcclusionNoisy:
+    case RRTaggedSignal::AmbientOcclusionDenoised:
+        return "DXGI_FORMAT_R8_UNORM";
+    case RRTaggedSignal::ShadowHint:
+    case RRTaggedSignal::ReflectionHint:
+        return "hint only; not an RR signal";
+    default:
+        return "unknown";
+    }
+}
+
+bool StreamlineHooks::isRRPreferredTagFormat(RRTaggedSignal signal, DXGI_FORMAT format)
+{
+    switch (signal)
+    {
+    case RRTaggedSignal::NormalRoughness:
+        return format != DXGI_FORMAT_UNKNOWN;
+    case RRTaggedSignal::Emissive:
+        switch (format)
+        {
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+        case DXGI_FORMAT_R11G11B10_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:
+            return true;
+        default:
+            return false;
+        }
+    case RRTaggedSignal::SpecularMotionVectors:
+    case RRTaggedSignal::ReflectionMotionVectors:
+        switch (format)
+        {
+        case DXGI_FORMAT_R16G16_FLOAT:
+        case DXGI_FORMAT_R32G32_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:
+            return true;
+        default:
+            return false;
+        }
+    case RRTaggedSignal::SpecularHitDistance:
+        return format == DXGI_FORMAT_R16_FLOAT || format == DXGI_FORMAT_R32_FLOAT;
+    case RRTaggedSignal::SpecularRayDirectionHitDistance:
+        return format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
+               format == DXGI_FORMAT_R32G32B32A32_FLOAT;
+    case RRTaggedSignal::LinearDepth:
+        return format == DXGI_FORMAT_R32_FLOAT || format == DXGI_FORMAT_R16_FLOAT;
+    case RRTaggedSignal::DiffuseNoisy:
+    case RRTaggedSignal::DiffuseDenoised:
+    case RRTaggedSignal::SpecularNoisy:
+    case RRTaggedSignal::SpecularDenoised:
+        return format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    case RRTaggedSignal::ShadowNoisy:
+        return format == DXGI_FORMAT_R16_FLOAT;
+    case RRTaggedSignal::ShadowDenoised:
+    case RRTaggedSignal::AmbientOcclusionNoisy:
+    case RRTaggedSignal::AmbientOcclusionDenoised:
+        return format == DXGI_FORMAT_R8_UNORM;
+    default:
+        return false;
+    }
+}
+
+const char* StreamlineHooks::getRRCheckerboardAssessment(
+    RRTaggedSignal signal, const RRTaggedResourceDiagnostic& diagnostic,
+    uint32_t renderWidth, uint32_t renderHeight)
+{
+    if (!diagnostic.observed)
+        return "not-observed";
+    if (!diagnostic.present)
+        return "cleared";
+    if (!IsRRCheckerboardInput(signal))
+        return "not-applicable";
+    if (renderWidth == 0 || renderHeight == 0)
+        return "render-size-unknown";
+    if (diagnostic.effectiveHeight != renderHeight)
+        return "resolution-mismatch";
+    if (diagnostic.effectiveWidth == renderWidth)
+        return "full-resolution";
+
+    const uint64_t doubledWidth = static_cast<uint64_t>(diagnostic.effectiveWidth) * 2u;
+    const uint64_t renderWidth64 = renderWidth;
+    if (doubledWidth + 1u >= renderWidth64 && doubledWidth <= renderWidth64 + 1u)
+        return "half-width-candidate";
+
+    return "resolution-mismatch";
+}
+
+RRSignalTagDiagnostics StreamlineHooks::getRRSignalTagDiagnostics()
+{
+    std::scoped_lock lock(rrSignalTagMutex);
+    return rrSignalTagDiagnostics;
+}
+
+Microsoft::WRL::ComPtr<ID3D12Resource> StreamlineHooks::getRRTaggedD3D12Resource(RRTaggedSignal signal)
+{
+    std::scoped_lock lock(rrSignalTagMutex);
+    return rrTaggedD3D12Resources[static_cast<size_t>(signal)];
+}
+
+RRD3D12SignalTagSnapshot StreamlineHooks::getRRD3D12SignalTagSnapshot()
+{
+    std::scoped_lock lock(rrSignalTagMutex);
+    RRD3D12SignalTagSnapshot snapshot {};
+    snapshot.generation = rrSignalTagDiagnostics.generation;
+    snapshot.activeEvaluationFrame = g_rrActiveEvaluationFrame;
+    snapshot.activeEvaluationViewport = g_rrActiveEvaluationViewport;
+    for (size_t i = 0; i < snapshot.resources.size(); ++i)
+    {
+        snapshot.resources[i].diagnostic = rrSignalTagDiagnostics.resources[i];
+        snapshot.resources[i].resource = rrTaggedD3D12Resources[i];
+    }
+    return snapshot;
+}
+
+SLConstantsSnapshot StreamlineHooks::getSLConstantsSnapshot()
+{
+    std::scoped_lock lock(setConstantsMutex);
+    const auto& state = State::Instance();
+    return {
+        .constants = state.slLastConstants,
+        .frameIndex = state.slLastConstantsFrame,
+        .viewport = state.slLastConstantsViewport
+    };
+}
+
+void StreamlineHooks::resetRRSignalTagDiagnostics()
+{
+    std::scoped_lock lock(rrSignalTagMutex);
+    rrSignalTagDiagnostics = {};
+    rrTaggedD3D12Resources = {};
+}
+
+static bool HasResourceMetadataChanged(const RRTaggedResourceDiagnostic& previous,
+                                       const RRTaggedResourceDiagnostic& next)
+{
+    return
+        !previous.observed ||
+        previous.present != next.present ||
+        previous.debugName != next.debugName ||
+        previous.nativeWidth != next.nativeWidth ||
+        previous.nativeHeight != next.nativeHeight ||
+        previous.effectiveWidth != next.effectiveWidth ||
+        previous.effectiveHeight != next.effectiveHeight ||
+        previous.extentLeft != next.extentLeft ||
+        previous.extentTop != next.extentTop ||
+        previous.format != next.format ||
+        previous.dimension != next.dimension ||
+        previous.resourceFlags != next.resourceFlags ||
+        previous.mipLevels != next.mipLevels ||
+        previous.arraySize != next.arraySize ||
+        previous.sampleCount != next.sampleCount ||
+        previous.state != next.state ||
+        previous.lifecycle != next.lifecycle ||
+        previous.viewport != next.viewport;
+}
+
+static std::string GetD3D12DebugObjectName(ID3D12Object* object)
+{
+    if (object == nullptr)
+        return {};
+
+    UINT nameSize = 0;
+    object->GetPrivateData(WKPDID_D3DDebugObjectName, &nameSize, nullptr);
+    if (nameSize > 1)
+    {
+        std::string name(nameSize, '\0');
+        if (SUCCEEDED(object->GetPrivateData(WKPDID_D3DDebugObjectName, &nameSize, name.data())))
+        {
+            name.resize(strnlen(name.c_str(), name.size()));
+            return name;
+        }
+    }
+
+    nameSize = 0;
+    object->GetPrivateData(WKPDID_D3DDebugObjectNameW, &nameSize, nullptr);
+    if (nameSize > sizeof(wchar_t))
+    {
+        std::vector<wchar_t> name(nameSize / sizeof(wchar_t), L'\0');
+        if (SUCCEEDED(object->GetPrivateData(WKPDID_D3DDebugObjectNameW, &nameSize, name.data())))
+            return wstring_to_string(name.data());
+    }
+
+    return {};
+}
+
+static RRTaggedResourceDiagnostic CaptureSLResourceTag(
+    const sl::ResourceTag& tag, uint32_t frameIndex, uint32_t viewport,
+    RRTagSource source)
+{
+    RRTaggedResourceDiagnostic result {};
+    result.observed = true;
+    result.present = tag.resource != nullptr && tag.resource->native != nullptr;
+    result.frameIndex = frameIndex;
+    result.viewport = viewport;
+    result.source = source;
+    result.lifecycle = tag.lifecycle;
+
+    if (!result.present)
+        return result;
+
+    result.resourceAddress = tag.resource->native;
+    result.state = tag.resource->state;
+
+    auto* resource = reinterpret_cast<ID3D12Resource*>(tag.resource->native);
+    const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+    result.debugName = GetD3D12DebugObjectName(resource);
+    result.nativeWidth = desc.Width;
+    result.nativeHeight = desc.Height;
+    result.format = desc.Format;
+    result.dimension = desc.Dimension;
+    result.resourceFlags = desc.Flags;
+    result.mipLevels = desc.MipLevels;
+    result.arraySize = desc.DepthOrArraySize;
+    result.sampleCount = desc.SampleDesc.Count;
+
+    result.usesExtent = static_cast<bool>(tag.extent);
+    result.extentLeft = tag.extent.left;
+    result.extentTop = tag.extent.top;
+    result.effectiveWidth = result.usesExtent
+        ? tag.extent.width
+        : static_cast<uint32_t>(std::min<uint64_t>(desc.Width, UINT32_MAX));
+    result.effectiveHeight = result.usesExtent ? tag.extent.height : desc.Height;
+    return result;
+}
+
+SLTagInventoryDiagnostics StreamlineHooks::getSLTagInventoryDiagnostics()
+{
+    std::scoped_lock lock(rrSignalTagMutex);
+    return slTagInventoryDiagnostics;
+}
+
+void StreamlineHooks::probeSLResourceTag(
+    const sl::ResourceTag& tag, uint32_t frameIndex, uint32_t viewport,
+    RRTagSource source)
+{
+    RRTaggedResourceDiagnostic next =
+        CaptureSLResourceTag(tag, frameIndex, viewport, source);
+    bool shouldLog = false;
+
+    {
+        std::scoped_lock lock(rrSignalTagMutex);
+        auto entry = std::find_if(
+            slTagInventoryDiagnostics.resources.begin(), slTagInventoryDiagnostics.resources.end(),
+            [&tag](const SLTaggedResourceInventoryEntry& candidate) { return candidate.type == tag.type; });
+
+        if (entry == slTagInventoryDiagnostics.resources.end())
+        {
+            slTagInventoryDiagnostics.resources.push_back({ tag.type, next });
+            entry = std::prev(slTagInventoryDiagnostics.resources.end());
+            shouldLog = true;
+        }
+        else
+        {
+            next.updateCount = entry->resource.updateCount + 1;
+            shouldLog = HasResourceMetadataChanged(entry->resource, next);
+            entry->resource = next;
+        }
+
+        if (entry->resource.updateCount == 0)
+            entry->resource.updateCount = 1;
+
+        std::sort(
+            slTagInventoryDiagnostics.resources.begin(), slTagInventoryDiagnostics.resources.end(),
+            [](const SLTaggedResourceInventoryEntry& left, const SLTaggedResourceInventoryEntry& right) {
+                return left.type < right.type;
+            });
+        ++slTagInventoryDiagnostics.generation;
+    }
+
+    if (!shouldLog)
+        return;
+
+    if (!next.present)
+    {
+        LOG_INFO("[SL_TAG_INVENTORY] {} type={} ({}) frame={} cleared",
+                 GetRRTagSourceName(source), tag.type, getSLBufferTypeName(tag.type), frameIndex);
+        return;
+    }
+
+    const auto formatName = magic_enum::enum_name(next.format);
+    LOG_INFO(
+        "[SL_TAG_INVENTORY] {} type={} ({}) frame={} ptr={}, debugName='{}', native={}x{}, effective={}x{}, "
+        "extent=[{},{}], format={}({}), dimension={}, mips={}, arrays={}, samples={}, "
+        "resourceFlags={:#x}, state={:#x}",
+        GetRRTagSourceName(source), tag.type, getSLBufferTypeName(tag.type), frameIndex,
+        next.resourceAddress, next.debugName, next.nativeWidth, next.nativeHeight,
+        next.effectiveWidth, next.effectiveHeight, next.extentLeft, next.extentTop,
+        formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(next.format),
+        static_cast<uint32_t>(next.dimension), next.mipLevels, next.arraySize, next.sampleCount,
+        static_cast<uint32_t>(next.resourceFlags), next.state);
+}
+
+void StreamlineHooks::logSLTagInventoryDiagnostics(uint32_t renderWidth, uint32_t renderHeight)
+{
+    const auto diagnostics = getSLTagInventoryDiagnostics();
+    LOG_INFO("[SL_TAG_INVENTORY] snapshot: generation={}, observedTypes={}, render={}x{}",
+             diagnostics.generation, diagnostics.resources.size(), renderWidth, renderHeight);
+
+    for (const auto& entry : diagnostics.resources)
+    {
+        const auto& diagnostic = entry.resource;
+        if (!diagnostic.present)
+        {
+            LOG_INFO("[SL_TAG_INVENTORY] snapshot type={} ({}): cleared, updates={}",
+                     entry.type, getSLBufferTypeName(entry.type), diagnostic.updateCount);
+            continue;
+        }
+
+        const auto formatName = magic_enum::enum_name(diagnostic.format);
+        const bool fullResolution =
+            renderWidth != 0 && renderHeight != 0 &&
+            diagnostic.effectiveWidth == renderWidth && diagnostic.effectiveHeight == renderHeight;
+        const bool halfWidthCandidate =
+            renderWidth != 0 && renderHeight != 0 &&
+            diagnostic.effectiveHeight == renderHeight &&
+            static_cast<uint64_t>(diagnostic.effectiveWidth) * 2u + 1u >= renderWidth &&
+            static_cast<uint64_t>(diagnostic.effectiveWidth) * 2u <= static_cast<uint64_t>(renderWidth) + 1u;
+
+        LOG_INFO(
+            "[SL_TAG_INVENTORY] snapshot type={} ({}): ptr={}, debugName='{}', effective={}x{}, native={}x{}, "
+            "format={}({}), state={:#x}, updates={}, resolutionClass={}",
+            entry.type, getSLBufferTypeName(entry.type), diagnostic.resourceAddress,
+            diagnostic.debugName,
+            diagnostic.effectiveWidth, diagnostic.effectiveHeight,
+            diagnostic.nativeWidth, diagnostic.nativeHeight,
+            formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(diagnostic.format),
+            diagnostic.state, diagnostic.updateCount,
+            fullResolution ? "full-resolution" : halfWidthCandidate ? "half-width-candidate" : "other");
+    }
+}
+
+RRNGXPointerDiagnostics StreamlineHooks::getRRNGXPointerDiagnostics()
+{
+    std::scoped_lock lock(rrSignalTagMutex);
+    return rrNGXPointerDiagnostics;
+}
+
+static const char* GetNGXPointerKindName(RRNGXPointerKind kind)
+{
+    switch (kind)
+    {
+    case RRNGXPointerKind::OpaquePointer:
+        return "opaque-pointer";
+    case RRNGXPointerKind::D3D11Resource:
+        return "D3D11-resource";
+    case RRNGXPointerKind::D3D12Resource:
+        return "D3D12-resource";
+    default:
+        return "unknown";
+    }
+}
+
+void StreamlineHooks::probeRRNGXPointerParameters(const NVSDK_NGX_Parameter& parameters)
+{
+    static std::atomic_uint64_t probeCalls = 0;
+    const uint64_t probeCall = probeCalls.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::scoped_lock lock(rrSignalTagMutex);
+        if (rrNGXPointerDiagnostics.generation != 0 && probeCall % 120u != 0)
+            return;
+    }
+
+    uint32_t allocationType = NGX_AllocTypes::Unknown;
+    if (parameters.Get(NGX_AllocTypes::AllocKey.data(), &allocationType) != NVSDK_NGX_Result_Success ||
+        (allocationType != NGX_AllocTypes::InternDynamic &&
+         allocationType != NGX_AllocTypes::InternPersistent))
+    {
+        std::scoped_lock lock(rrSignalTagMutex);
+        rrNGXPointerDiagnostics.tableInspectable = false;
+        return;
+    }
+
+    const auto& internalParameters = static_cast<const NVNGX_Parameters&>(parameters);
+    const auto pointers = internalParameters.enumeratePointerParameters();
+
+    std::vector<RRNGXPointerDiagnostic> nextEntries;
+    nextEntries.reserve(pointers.size());
+    for (const auto& pointer : pointers)
+    {
+        RRNGXPointerDiagnostic next {};
+        next.name = pointer.name;
+        next.present = pointer.address != nullptr;
+        next.address = pointer.address;
+
+        switch (pointer.kind)
+        {
+        case NGXPointerParameterKind::D3D11Resource:
+            next.kind = RRNGXPointerKind::D3D11Resource;
+            break;
+        case NGXPointerParameterKind::D3D12Resource:
+            next.kind = RRNGXPointerKind::D3D12Resource;
+            break;
+        default:
+            next.kind = RRNGXPointerKind::OpaquePointer;
+            break;
+        }
+
+        // Only exact D3D12 resource values are dereferenced. NGX void pointers
+        // can also contain matrices, callbacks, or backend-specific objects.
+        if (next.present && next.kind == RRNGXPointerKind::D3D12Resource)
+        {
+            const auto desc = static_cast<ID3D12Resource*>(pointer.address)->GetDesc();
+            next.nativeWidth = desc.Width;
+            next.nativeHeight = desc.Height;
+            next.format = desc.Format;
+            next.dimension = desc.Dimension;
+            next.resourceFlags = desc.Flags;
+            next.mipLevels = desc.MipLevels;
+            next.arraySize = desc.DepthOrArraySize;
+            next.sampleCount = desc.SampleDesc.Count;
+        }
+
+        nextEntries.push_back(std::move(next));
+    }
+
+    std::sort(nextEntries.begin(), nextEntries.end(),
+              [](const RRNGXPointerDiagnostic& left, const RRNGXPointerDiagnostic& right) {
+                  return left.name < right.name;
+              });
+
+    std::vector<RRNGXPointerDiagnostic> changedEntries;
+    {
+        std::scoped_lock lock(rrSignalTagMutex);
+        for (auto& next : nextEntries)
+        {
+            const auto previous = std::find_if(
+                rrNGXPointerDiagnostics.parameters.begin(), rrNGXPointerDiagnostics.parameters.end(),
+                [&next](const RRNGXPointerDiagnostic& candidate) { return candidate.name == next.name; });
+
+            if (previous != rrNGXPointerDiagnostics.parameters.end())
+            {
+                next.updateCount = previous->updateCount + 1;
+                const bool changed =
+                    previous->kind != next.kind ||
+                    previous->present != next.present ||
+                    previous->nativeWidth != next.nativeWidth ||
+                    previous->nativeHeight != next.nativeHeight ||
+                    previous->format != next.format ||
+                    previous->dimension != next.dimension ||
+                    previous->resourceFlags != next.resourceFlags ||
+                    previous->mipLevels != next.mipLevels ||
+                    previous->arraySize != next.arraySize ||
+                    previous->sampleCount != next.sampleCount;
+                if (changed)
+                    changedEntries.push_back(next);
+            }
+            else
+            {
+                next.updateCount = 1;
+                changedEntries.push_back(next);
+            }
+        }
+
+        rrNGXPointerDiagnostics.tableInspectable = true;
+        rrNGXPointerDiagnostics.parameters = nextEntries;
+        ++rrNGXPointerDiagnostics.generation;
+    }
+
+    for (const auto& entry : changedEntries)
+    {
+        if (entry.kind != RRNGXPointerKind::D3D12Resource || !entry.present)
+        {
+            LOG_INFO("[RR_NGX_INVENTORY] key='{}', kind={}, ptr={}, present={}",
+                     entry.name, GetNGXPointerKindName(entry.kind), entry.address, entry.present);
+            continue;
+        }
+
+        const auto formatName = magic_enum::enum_name(entry.format);
+        LOG_INFO(
+            "[RR_NGX_INVENTORY] key='{}', kind={}, ptr={}, size={}x{}, format={}({}), "
+            "dimension={}, mips={}, arrays={}, samples={}, resourceFlags={:#x}",
+            entry.name, GetNGXPointerKindName(entry.kind), entry.address,
+            entry.nativeWidth, entry.nativeHeight,
+            formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(entry.format),
+            static_cast<uint32_t>(entry.dimension), entry.mipLevels, entry.arraySize,
+            entry.sampleCount, static_cast<uint32_t>(entry.resourceFlags));
+    }
+}
+
+void StreamlineHooks::logRRNGXPointerDiagnostics()
+{
+    const auto diagnostics = getRRNGXPointerDiagnostics();
+    LOG_INFO("[RR_NGX_INVENTORY] snapshot: inspectable={}, generation={}, pointerParameters={}",
+             diagnostics.tableInspectable, diagnostics.generation, diagnostics.parameters.size());
+
+    for (const auto& entry : diagnostics.parameters)
+    {
+        if (entry.kind != RRNGXPointerKind::D3D12Resource || !entry.present)
+        {
+            LOG_INFO("[RR_NGX_INVENTORY] snapshot key='{}': kind={}, ptr={}, present={}, updates={}",
+                     entry.name, GetNGXPointerKindName(entry.kind), entry.address,
+                     entry.present, entry.updateCount);
+            continue;
+        }
+
+        const auto formatName = magic_enum::enum_name(entry.format);
+        LOG_INFO(
+            "[RR_NGX_INVENTORY] snapshot key='{}': kind={}, ptr={}, size={}x{}, "
+            "format={}({}), dimension={}, updates={}",
+            entry.name, GetNGXPointerKindName(entry.kind), entry.address,
+            entry.nativeWidth, entry.nativeHeight,
+            formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(entry.format),
+            static_cast<uint32_t>(entry.dimension), entry.updateCount);
+    }
+}
+
+void StreamlineHooks::resetRRInputInventoryDiagnostics()
+{
+    std::scoped_lock lock(rrSignalTagMutex);
+    slTagInventoryDiagnostics = {};
+    rrNGXPointerDiagnostics = {};
+}
+
+void StreamlineHooks::probeRRResourceTag(
+    const sl::ResourceTag& tag, uint32_t frameIndex, uint32_t viewport,
+    RRTagSource source)
+{
+    RRTaggedSignal signal;
+    if (!TryGetRRTaggedSignal(tag.type, signal))
+        return;
+
+    RRTaggedResourceDiagnostic next =
+        CaptureSLResourceTag(tag, frameIndex, viewport, source);
+
+    RRTaggedResourceDiagnostic previous {};
+    bool shouldLog = false;
+    {
+        std::scoped_lock lock(rrSignalTagMutex);
+        auto& stored = rrSignalTagDiagnostics.resources[static_cast<size_t>(signal)];
+        previous = stored;
+        next.updateCount = previous.updateCount + 1;
+
+        shouldLog = HasResourceMetadataChanged(previous, next);
+
+        stored = next;
+        auto& retainedResource = rrTaggedD3D12Resources[static_cast<size_t>(signal)];
+        // eOnlyValidNow submitted through SetTag cannot be cached after that call
+        // returns. A local ResourceTag passed directly to EvaluateFeature remains
+        // inside its declaring call, however, and is retained only until the local
+        // overlay is restored when that evaluation returns.
+        retainedResource = next.present &&
+                (next.lifecycle != sl::ResourceLifecycle::eOnlyValidNow ||
+                 source == RRTagSource::EvaluateFeature)
+            ? reinterpret_cast<ID3D12Resource*>(next.resourceAddress)
+            : nullptr;
+        ++rrSignalTagDiagnostics.generation;
+    }
+
+    if (!shouldLog)
+        return;
+
+    if (!next.present)
+    {
+        LOG_INFO("[RR_TAG_DIAG] {} {} frame={} cleared",
+                 GetRRTagSourceName(source), getRRTaggedSignalName(signal), frameIndex);
+        return;
+    }
+
+    const auto formatName = magic_enum::enum_name(next.format);
+    const auto lifecycleName = magic_enum::enum_name(next.lifecycle);
+    LOG_INFO(
+        "[RR_TAG_DIAG] {} {} frame={} ptr={}, debugName='{}', native={}x{}, effective={}x{}, "
+        "extent=[{},{}], format={}({}), dimension={}, mips={}, arrays={}, samples={}, "
+        "resourceFlags={:#x}, state={:#x}, lifecycle={}, preferredFormat={} ({})",
+        GetRRTagSourceName(source), getRRTaggedSignalName(signal), frameIndex,
+        next.resourceAddress, next.debugName, next.nativeWidth, next.nativeHeight,
+        next.effectiveWidth, next.effectiveHeight, next.extentLeft, next.extentTop,
+        formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(next.format),
+        static_cast<uint32_t>(next.dimension), next.mipLevels, next.arraySize, next.sampleCount,
+        static_cast<uint32_t>(next.resourceFlags), next.state,
+        lifecycleName.empty() ? "UNKNOWN" : lifecycleName,
+        isRRPreferredTagFormat(signal, next.format), getRRPreferredTagFormat(signal));
+}
+
+void StreamlineHooks::logRRSignalTagDiagnostics(uint32_t renderWidth, uint32_t renderHeight)
+{
+    const RRSignalTagDiagnostics diagnostics = getRRSignalTagDiagnostics();
+    LOG_INFO("[RR_TAG_DIAG] snapshot: generation={}, render={}x{}",
+             diagnostics.generation, renderWidth, renderHeight);
+
+    for (size_t i = 0; i < diagnostics.resources.size(); ++i)
+    {
+        const auto signal = static_cast<RRTaggedSignal>(i);
+        const auto& diagnostic = diagnostics.resources[i];
+        if (!diagnostic.observed)
+        {
+            LOG_INFO("[RR_TAG_DIAG] snapshot {}: not observed",
+                     getRRTaggedSignalName(signal));
+            continue;
+        }
+
+        if (!diagnostic.present)
+        {
+            LOG_INFO("[RR_TAG_DIAG] snapshot {}: cleared, updates={}",
+                     getRRTaggedSignalName(signal), diagnostic.updateCount);
+            continue;
+        }
+
+        const auto formatName = magic_enum::enum_name(diagnostic.format);
+        LOG_INFO(
+            "[RR_TAG_DIAG] snapshot {}: ptr={}, debugName='{}', effective={}x{}, native={}x{}, "
+            "format={}({}), state={:#x}, updates={}, checkerboard={}, preferredFormat={} ({})",
+            getRRTaggedSignalName(signal), diagnostic.resourceAddress,
+            diagnostic.debugName,
+            diagnostic.effectiveWidth, diagnostic.effectiveHeight,
+            diagnostic.nativeWidth, diagnostic.nativeHeight,
+            formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(diagnostic.format),
+            diagnostic.state, diagnostic.updateCount,
+            getRRCheckerboardAssessment(signal, diagnostic, renderWidth, renderHeight),
+            isRRPreferredTagFormat(signal, diagnostic.format), getRRPreferredTagFormat(signal));
+    }
+}
+
 
 static bool IsSL1AndDLSSGActive()
 {
@@ -268,15 +1157,20 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
 
 sl::Result StreamlineHooks::hkslIsFeatureSupported(sl::Feature feature, const sl::AdapterInfo& adapterInfo)
 {
-    if (feature == sl::kFeatureDLSS_G)
+    void* retAddr = _ReturnAddress();
+    LOG_INFO("slIsFeatureSupported: feature {} caller {}", (int) feature, retAddr);
+
+    if (feature == sl::kFeatureDLSS_G || feature == sl::kFeatureDLSS_RR)
         return sl::Result::eOk;
 
-    return o_slIsFeatureSupported(feature, adapterInfo);
+    auto result = o_slIsFeatureSupported(feature, adapterInfo);
+    LOG_INFO("slIsFeatureSupported: feature {} result: {} caller {}", (int) feature, (int) result, retAddr);
+    return result;
 }
 
 sl::Result StreamlineHooks::hkslIsFeatureLoaded(sl::Feature feature, bool& loaded)
 {
-    if (feature == sl::kFeatureDLSS_G)
+    if (feature == sl::kFeatureDLSS_G || feature == sl::kFeatureDLSS_RR)
     {
         loaded = true;
         return sl::Result::eOk;
@@ -287,10 +1181,15 @@ sl::Result StreamlineHooks::hkslIsFeatureLoaded(sl::Feature feature, bool& loade
 
 sl::Result StreamlineHooks::hkslGetFeatureRequirements(sl::Feature feature, sl::FeatureRequirements& requirements)
 {
+    LOG_INFO("slGetFeatureRequirements: feature {}", (int) feature);
+
     if (feature == sl::kFeatureDLSS_G)
         return sl::Result::eOk;
 
-    return o_slGetFeatureRequirements(feature, requirements);
+    auto result = o_slGetFeatureRequirements(feature, requirements);
+    LOG_INFO("slGetFeatureRequirements: feature {} result: {} flags: {} driverReq: {}", (int) feature,
+             (int) result, (int) requirements.flags, requirements.driverVersionRequired.toStr());
+    return result;
 }
 
 sl::Result StreamlineHooks::hkslGetFeatureVersion(sl::Feature feature, sl::FeatureVersion& version)
@@ -311,8 +1210,10 @@ static sl::Result dummy_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::
                                         const sl::DLSSGOptions* options)
 {
     state.numFramesActuallyPresented = 1; // TODO: can do better
-    state.numFramesToGenerateMax = 1;
-    state.bIsVsyncSupportAvailable = sl::Boolean::eTrue;
+    if(state.structVersion >= 2) {
+        state.numFramesToGenerateMax = 1;
+        state.bIsVsyncSupportAvailable = sl::Boolean::eTrue;
+    }
     state.estimatedVRAMUsageInBytes = 300 * 1024 * 1024;
 
     return sl::Result::eOk;
@@ -349,10 +1250,7 @@ sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const
                                        uint32_t numTags, sl::CommandBuffer* cmdBuffer)
 {
     if (renderApi == sl::RenderAPI::eD3D11 || renderApi == sl::RenderAPI::eVulkan)
-    {
-        LOG_ERROR("hkslSetTag only supports DX12");
         return o_slSetTag(viewport, tags, numTags, cmdBuffer);
-    }
 
     if (renderApi == sl::RenderAPI::eCount)
         LOG_WARN("Incomplete Streamline hooks");
@@ -363,6 +1261,14 @@ sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const
         return o_slSetTag(viewport, tags, numTags, cmdBuffer);
     }
 
+    // This rule is about what OptiScaler reports as FG input, and it must not gate the
+    // inventory probes in the loop below. The batch it matches is a DLSS call rather than an
+    // FG frame, but it is still a tagging call, and it is often the only one that carries the
+    // title's RR tags - emissive, hit distance, the title's own linear depth. Returning here
+    // loses the discovery of inputs the RR path later looks for, which is a silent
+    // degradation: the input is simply never bound, exactly as if the title never published
+    // it. Probe every batch; suppress only the tagging.
+    bool skipFgTagging = false;
     if (State::Instance().activeFgInput == FGInput::DLSSG &&
         State::Instance().gameQuirks[GameQuirk::IgnoreTagsWithoutHudlessForFG])
     {
@@ -385,16 +1291,27 @@ sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const
                 hasHudless = true;
         }
 
-        // Try to skip a DLSS call
+        // Try to skip a DLSS call. The tags still reach Streamline untouched, so only the
+        // bookkeeping below is skipped.
         if (hasDepth && hasMVs && !hasHudless)
         {
             LOG_DEBUG("Skipping the FG tagging of potential DLSS resources");
-            return o_slSetTag(viewport, tags, numTags, cmdBuffer);
+            skipFgTagging = true;
         }
     }
 
     for (uint32_t i = 0; i < numTags; i++)
     {
+        if (renderApi == sl::RenderAPI::eD3D12)
+        {
+            probeSLResourceTag(
+                tags[i], UINT32_MAX, static_cast<uint32_t>(viewport),
+                RRTagSource::SetTag);
+            probeRRResourceTag(
+                tags[i], UINT32_MAX, static_cast<uint32_t>(viewport),
+                RRTagSource::SetTag);
+        }
+
         const auto typeEnum = (BufferType) tags[i].type;
 
         if (tags[i].resource == nullptr || tags[i].resource->native == nullptr)
@@ -402,6 +1319,12 @@ sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const
             LOG_TRACE("Resource of type: {} is null, continuing", magic_enum::enum_name(typeEnum));
             continue;
         }
+
+        // A skipped batch carries no hudless colour by definition, so the state repair below -
+        // which exists for that resource - has nothing to act on, and what remains is the FG
+        // reporting this rule is about.
+        if (skipFgTagging)
+            continue;
 
         // Cyberpunk hudless state fix for RDNA 2
         if (State::Instance().gameQuirks & GameQuirk::CyberpunkHudlessState &&
@@ -436,10 +1359,7 @@ sl::Result StreamlineHooks::hkslSetTagForFrame(const sl::FrameToken& frame, cons
                                                sl::CommandBuffer* cmdBuffer)
 {
     if (renderApi == sl::RenderAPI::eD3D11 || renderApi == sl::RenderAPI::eVulkan)
-    {
-        LOG_ERROR("hkslSetTagForFrame only supports DX12");
         return o_slSetTagForFrame(frame, viewport, resources, numResources, cmdBuffer);
-    }
 
     if (renderApi == sl::RenderAPI::eCount)
         LOG_WARN("Incomplete Streamline hooks");
@@ -452,6 +1372,9 @@ sl::Result StreamlineHooks::hkslSetTagForFrame(const sl::FrameToken& frame, cons
 
     LOG_DEBUG("frameIndex: {}", static_cast<uint32_t>(frame));
 
+    // See hkslSetTag: the FG rule suppresses OptiScaler's FG bookkeeping, not the RR tag
+    // inventory, which this batch may be the only carrier of.
+    bool skipFgTagging = false;
     if (State::Instance().activeFgInput == FGInput::DLSSG &&
         State::Instance().gameQuirks[GameQuirk::IgnoreTagsWithoutHudlessForFG])
     {
@@ -478,12 +1401,22 @@ sl::Result StreamlineHooks::hkslSetTagForFrame(const sl::FrameToken& frame, cons
         if (hasDepth && hasMVs && !hasHudless)
         {
             LOG_DEBUG("Skipping the FG tagging of potential DLSS resources");
-            return o_slSetTagForFrame(frame, viewport, resources, numResources, cmdBuffer);
+            skipFgTagging = true;
         }
     }
 
     for (uint32_t i = 0; i < numResources; i++)
     {
+        if (renderApi == sl::RenderAPI::eD3D12)
+        {
+            probeSLResourceTag(
+                resources[i], static_cast<uint32_t>(frame),
+                static_cast<uint32_t>(viewport), RRTagSource::SetTagForFrame);
+            probeRRResourceTag(
+                resources[i], static_cast<uint32_t>(frame),
+                static_cast<uint32_t>(viewport), RRTagSource::SetTagForFrame);
+        }
+
         const auto typeEnum = (BufferType) resources[i].type;
 
         if (resources[i].resource == nullptr || resources[i].resource->native == nullptr)
@@ -491,6 +1424,9 @@ sl::Result StreamlineHooks::hkslSetTagForFrame(const sl::FrameToken& frame, cons
             LOG_TRACE("Resource of type: {} is null, continuing", magic_enum::enum_name(typeEnum));
             continue;
         }
+
+        if (skipFgTagging)
+            continue;
 
         if (State::Instance().activeFgInput == FGInput::DLSSG &&
             (resources[i].type == sl::kBufferTypeHUDLessColor || resources[i].type == sl::kBufferTypeDepth ||
@@ -515,9 +1451,57 @@ sl::Result StreamlineHooks::hkslEvaluateFeature(sl::Feature feature, const sl::F
                                                 const sl::BaseStructure** inputs, uint32_t numInputs,
                                                 sl::CommandBuffer* cmdBuffer)
 {
+    LOG_INFO("slEvaluateFeature: feature {}", (int) feature);
+    uint32_t activeViewport = UINT32_MAX;
+    if (numInputs > 0 && inputs != nullptr)
+    {
+        for (uint32_t i = 0; i < numInputs; ++i)
+        {
+            if (inputs[i] != nullptr &&
+                inputs[i]->structType == sl::ViewportHandle::s_structType)
+            {
+                activeViewport = static_cast<uint32_t>(
+                    *reinterpret_cast<const sl::ViewportHandle*>(inputs[i]));
+                break;
+            }
+        }
+    }
+
+    const ScopedRRActiveEvaluationFrame activeEvaluationFrame(
+        static_cast<uint32_t>(frame), activeViewport);
     LOG_DEBUG("frameIndex: {}", static_cast<uint32_t>(frame));
 
-    if (State::Instance().activeFgInput == FGInput::DLSSG && numInputs > 0 && inputs != nullptr)
+    // ResourceTag inputs to slEvaluateFeature are local to this evaluation and
+    // must not replace tags submitted through slSetTag/slSetTagForFrame. Overlay
+    // them while the intercepted feature runs, then restore the global entries.
+    constexpr size_t rrSignalCount = static_cast<size_t>(RRTaggedSignal::Count);
+    std::array<bool, rrSignalCount> localTagOverrides {};
+    std::array<RRTaggedResourceDiagnostic, rrSignalCount> savedGlobalDiagnostics {};
+    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, rrSignalCount> savedGlobalResources {};
+    if (renderApi == sl::RenderAPI::eD3D12 && numInputs > 0 && inputs != nullptr)
+    {
+        std::scoped_lock lock(rrSignalTagMutex);
+        for (uint32_t i = 0; i < numInputs; ++i)
+        {
+            if (inputs[i] == nullptr || inputs[i]->structType != sl::ResourceTag::s_structType)
+                continue;
+
+            const auto* tag = reinterpret_cast<const sl::ResourceTag*>(inputs[i]);
+            RRTaggedSignal signal;
+            if (!TryGetRRTaggedSignal(tag->type, signal))
+                continue;
+
+            const size_t signalIndex = static_cast<size_t>(signal);
+            if (localTagOverrides[signalIndex])
+                continue;
+
+            localTagOverrides[signalIndex] = true;
+            savedGlobalDiagnostics[signalIndex] = rrSignalTagDiagnostics.resources[signalIndex];
+            savedGlobalResources[signalIndex] = rrTaggedD3D12Resources[signalIndex];
+        }
+    }
+
+    if (numInputs > 0 && inputs != nullptr)
     {
         for (uint32_t i = 0; i < numInputs; i++)
         {
@@ -528,10 +1512,21 @@ sl::Result StreamlineHooks::hkslEvaluateFeature(sl::Feature feature, const sl::F
             {
                 auto tag = (const sl::ResourceTag*) inputs[i];
 
-                if (tag->type == sl::kBufferTypeHUDLessColor || tag->type == sl::kBufferTypeDepth ||
-                    tag->type == sl::kBufferTypeHiResDepth || tag->type == sl::kBufferTypeLinearDepth ||
-                    tag->type == sl::kBufferTypeMotionVectors || tag->type == sl::kBufferTypeUIColorAndAlpha ||
-                    tag->type == sl::kBufferTypeBidirectionalDistortionField)
+                if (renderApi == sl::RenderAPI::eD3D12)
+                {
+                    probeSLResourceTag(
+                        *tag, static_cast<uint32_t>(frame), activeViewport,
+                        RRTagSource::EvaluateFeature);
+                    probeRRResourceTag(
+                        *tag, static_cast<uint32_t>(frame), activeViewport,
+                        RRTagSource::EvaluateFeature);
+                }
+
+                if (State::Instance().activeFgInput == FGInput::DLSSG &&
+                    (tag->type == sl::kBufferTypeHUDLessColor || tag->type == sl::kBufferTypeDepth ||
+                     tag->type == sl::kBufferTypeHiResDepth || tag->type == sl::kBufferTypeLinearDepth ||
+                     tag->type == sl::kBufferTypeMotionVectors || tag->type == sl::kBufferTypeUIColorAndAlpha ||
+                     tag->type == sl::kBufferTypeBidirectionalDistortionField))
                 {
                     State::Instance().slFGInputs.reportResource(*tag, (ID3D12GraphicsCommandList*) cmdBuffer,
                                                                 (uint32_t) frame);
@@ -541,6 +1536,41 @@ sl::Result StreamlineHooks::hkslEvaluateFeature(sl::Feature feature, const sl::F
     }
 
     auto result = o_slEvaluateFeature(feature, frame, inputs, numInputs, cmdBuffer);
+
+    if (renderApi == sl::RenderAPI::eD3D12)
+    {
+        std::scoped_lock lock(rrSignalTagMutex);
+        bool resourcesChanged = false;
+        for (size_t i = 0; i < rrSignalCount; ++i)
+        {
+            if (localTagOverrides[i])
+            {
+                rrSignalTagDiagnostics.resources[i] = std::move(savedGlobalDiagnostics[i]);
+                rrTaggedD3D12Resources[i] = std::move(savedGlobalResources[i]);
+                resourcesChanged = true;
+            }
+
+            const auto& diagnostic = rrSignalTagDiagnostics.resources[i];
+            const bool belongsToEvaluation =
+                diagnostic.viewport == activeViewport &&
+                (diagnostic.frameIndex == UINT32_MAX ||
+                 diagnostic.frameIndex == static_cast<uint32_t>(frame));
+            if (belongsToEvaluation &&
+                diagnostic.lifecycle == sl::ResourceLifecycle::eValidUntilEvaluate &&
+                rrTaggedD3D12Resources[i])
+            {
+                // The declared lifetime ends as this evaluation returns. Keep
+                // the last metadata for diagnostics, but release the retained
+                // native resource so it cannot be rebound by a later frame.
+                rrTaggedD3D12Resources[i].Reset();
+                resourcesChanged = true;
+            }
+        }
+
+        if (resourcesChanged)
+            ++rrSignalTagDiagnostics.generation;
+    }
+
     return result;
 }
 
@@ -1045,10 +2075,15 @@ bool StreamlineHooks::hklocal_dlssg_slOnPluginLoad(sl::param::IParameters* param
 sl::Result StreamlineHooks::hkslSetConstants(const sl::Constants& values, const sl::FrameToken& frame,
                                              const sl::ViewportHandle& viewport)
 {
-    std::scoped_lock lock(setConstantsMutex);
     LOG_TRACE("called with frameIndex: {}, viewport: {}", (unsigned int) frame, (unsigned int) viewport);
 
-    State::Instance().slFGInputs.setConstants(values, (uint32_t) frame);
+    {
+        std::scoped_lock lock(setConstantsMutex);
+        State::Instance().slLastConstants = values;
+        State::Instance().slLastConstantsFrame = static_cast<uint32_t>(frame);
+        State::Instance().slLastConstantsViewport = static_cast<uint32_t>(viewport);
+        State::Instance().slFGInputs.setConstants(values, (uint32_t) frame);
+    }
 
     return o_slSetConstants(values, frame, viewport);
 }
@@ -1208,7 +2243,19 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 
     state.dlssgLastSetMode = newOptions.mode;
 
-    return o_slDLSSGSetOptions(viewport, newOptions);
+    const auto result = o_slDLSSGSetOptions(viewport, newOptions);
+    static thread_local int loggedMode = -1;
+    static thread_local uint32_t loggedCount = ~0u;
+    if (loggedMode != static_cast<int>(newOptions.mode) || loggedCount != newOptions.numFramesToGenerate ||
+        result != sl::Result::eOk)
+    {
+        LOG_INFO("DLSSG options: requested={} forwarded={} generatedFrames={} result={}",
+                 static_cast<int>(options.mode), static_cast<int>(newOptions.mode),
+                 newOptions.numFramesToGenerate, static_cast<int>(result));
+        loggedMode = static_cast<int>(newOptions.mode);
+        loggedCount = newOptions.numFramesToGenerate;
+    }
+    return result;
 }
 
 sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
@@ -1226,6 +2273,7 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
 
         // We might be feeding a newer struct to an older SL but that seems to work just fine for this Get function
         result = o_slDLSSGGetState(viewport, dynamic_cast<sl::DLSSGState&>(newState), options);
+        if(result != sl::Result::eOk) return result;
 
         // Copy back data to game's struct
         memcpy(&state, &newState, 56); // struct ver 1 size
@@ -1256,6 +2304,7 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
     else
     {
         result = o_slDLSSGGetState(viewport, state, options);
+        if(result != sl::Result::eOk) return result;
         State::Instance().dlssgGameDMFGSupported = state.bIsDynamicMFGSupported == sl::eTrue;
 
         // The wrapper's ceiling, replaced by the unlocked count.
@@ -1821,6 +2870,12 @@ void StreamlineHooks::unhookInterposer()
     if (o_slEvaluateFeature)
         DetourDetach(&(PVOID&) o_slEvaluateFeature, hkslEvaluateFeature);
 
+    if (o_slSetTagForFrame)
+    {
+        DetourDetach(&(PVOID&) o_slSetTagForFrame, hkslSetTagForFrame);
+        o_slSetTagForFrame = nullptr;
+    }
+
     if (o_slInit)
         DetourDetach(&(PVOID&) o_slInit, hkslInit);
 
@@ -1865,6 +2920,8 @@ void StreamlineHooks::unhookInterposer()
 // Call it just after sl.interposer's load or if sl.interposer is already loaded
 void StreamlineHooks::hookInterposer(HMODULE slInterposer)
 {
+    if (State::Instance().externalFrameGeneration)
+        return;
     LOG_FUNC();
 
     if (!slInterposer)
@@ -1946,21 +3003,21 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
 
                 DetourAttach(&(PVOID&) o_slInit, hkslInit);
 
+                // RR signal discovery must remain available even when frame generation is
+                // disabled. The probe hooks only inspect DX12 tag metadata and forward the
+                // original calls unchanged.
+                if (o_slSetTag != nullptr)
+                    DetourAttach(&(PVOID&) o_slSetTag, hkslSetTag);
+
+                if (o_slSetTagForFrame != nullptr)
+                    DetourAttach(&(PVOID&) o_slSetTagForFrame, hkslSetTagForFrame);
+
+                // Allow constants to be hooked without DLSSG
+                if (o_slSetConstants != nullptr)
+                    DetourAttach(&(PVOID&) o_slSetConstants, hkslSetConstants);
+
                 if (o_slEvaluateFeature != nullptr)
                     DetourAttach(&(PVOID&) o_slEvaluateFeature, hkslEvaluateFeature);
-
-                if (State::Instance().activeFgInput == FGInput::NvngxFG ||
-                    State::Instance().activeFgInput == FGInput::DLSSG)
-                {
-                    if (o_slSetTag != nullptr)
-                        DetourAttach(&(PVOID&) o_slSetTag, hkslSetTag);
-
-                    if (o_slSetTagForFrame != nullptr)
-                        DetourAttach(&(PVOID&) o_slSetTagForFrame, hkslSetTagForFrame);
-
-                    if (o_slSetConstants != nullptr)
-                        DetourAttach(&(PVOID&) o_slSetConstants, hkslSetConstants);
-                }
 
                 if (State::Instance().activeFgInput == FGInput::DLSSG)
                 {
@@ -2086,6 +3143,8 @@ void StreamlineHooks::unhookDlss()
 
 void StreamlineHooks::hookDlss(HMODULE slDlss)
 {
+    if (State::Instance().externalFrameGeneration)
+        return;
     LOG_FUNC();
 
     if (!slDlss)
@@ -2139,6 +3198,8 @@ void StreamlineHooks::unhookDlssg()
 
 void StreamlineHooks::hookDlssg(HMODULE slDlssg)
 {
+    if (State::Instance().externalFrameGeneration)
+        return;
     LOG_FUNC();
 
     if (!slDlssg)
@@ -2190,6 +3251,8 @@ void StreamlineHooks::unhookLocalDlssg()
 
 void StreamlineHooks::hookLocalDlssg(HMODULE slDlssg)
 {
+    if (State::Instance().externalFrameGeneration)
+        return;
     LOG_FUNC();
 
     if (!slDlssg)
@@ -2241,6 +3304,8 @@ void StreamlineHooks::unhookReflex()
 
 void StreamlineHooks::hookReflex(HMODULE slReflex)
 {
+    if (State::Instance().externalFrameGeneration)
+        return;
     LOG_FUNC();
 
     if (!slReflex)
@@ -2297,6 +3362,8 @@ void StreamlineHooks::unhookPcl()
 
 void StreamlineHooks::hookPcl(HMODULE slPcl)
 {
+    if (State::Instance().externalFrameGeneration)
+        return;
     LOG_FUNC();
 
     if (!slPcl)
@@ -2355,6 +3422,8 @@ void StreamlineHooks::unhookCommon()
 
 void StreamlineHooks::hookCommon(HMODULE slCommon)
 {
+    if (State::Instance().externalFrameGeneration)
+        return;
     LOG_FUNC();
 
     if (!slCommon)
@@ -2395,6 +3464,8 @@ bool StreamlineHooks::isDlssgHooked() { return o_dlssg_slGetPluginFunction != nu
 bool StreamlineHooks::isLocalDlssgHooked() { return o_local_dlssg_slGetPluginFunction != nullptr; }
 
 bool StreamlineHooks::isCommonHooked() { return o_common_slGetPluginFunction != nullptr; }
+
+bool StreamlineHooks::isSetConstantsHooked() { return o_slSetConstants != nullptr; }
 
 bool StreamlineHooks::isPclHooked() { return o_pcl_slGetPluginFunction != nullptr; }
 

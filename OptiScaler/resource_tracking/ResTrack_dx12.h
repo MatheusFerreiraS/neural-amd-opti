@@ -455,6 +455,46 @@ struct ResourceHeapInfo
     SIZE_T gpuStart = NULL;
 };
 
+struct RRResourceCandidate
+{
+    void* resourceAddress = nullptr;
+    std::string debugName;
+    std::string lastWritePass;
+    uint64_t width = 0;
+    uint32_t height = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE;
+    uint32_t srvViews = 0;
+    uint32_t uavViews = 0;
+    uint32_t rtvViews = 0;
+    uint32_t channelCount = 0;
+    bool previewSupported = false;
+    bool stateKnown = false;
+    // The preview pass is compute, so this is the non-pixel read bit, not either shader-read
+    // bit: "shader readable" is ambiguous between the two stages and the ambiguity is what let
+    // a pixel-only resource be handed to it.
+    bool computeReadable = false;
+    D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
+    bool writeObserved = false;
+    bool active = false;
+    bool alternating = false;
+    uint64_t currentFrame = 0;
+    uint64_t lastWriteFrame = 0;
+    uint64_t previousWriteFrame = 0;
+    uint64_t writeAgeFrames = std::numeric_limits<uint64_t>::max();
+    uint64_t lastWriteInterval = 0;
+    uint64_t writtenFrameCount = 0;
+    uint64_t writeTransitionCount = 0;
+    uint64_t passWriteCount = 0;
+    bool emissivePassMatch = false;
+    uint64_t producerPsoId = 0;
+    uint64_t producerPsoHash = 0;
+    uint64_t producerHitCount = 0;
+    uint32_t producerCount = 0;
+    uint8_t producerKind = 0;
+    bool producerAmbiguous = false;
+};
+
 #ifdef USE_SPINLOCK_MUTEX
 // Force each struct to start on a new cache line
 struct alignas(CACHE_LINE_SIZE) CommandListShard
@@ -514,6 +554,16 @@ class ResTrack_Dx12
                                      D3D12_CPU_DESCRIPTOR_HANDLE* pDepthStencilDescriptor);
     static void hkSetComputeRootDescriptorTable(ID3D12GraphicsCommandList* This, UINT RootParameterIndex,
                                                 D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor);
+    static void hkResourceBarrier(ID3D12GraphicsCommandList* This, UINT NumBarriers,
+                                  const D3D12_RESOURCE_BARRIER* pBarriers);
+    static void hkSetPipelineState(ID3D12GraphicsCommandList* This,
+                                   ID3D12PipelineState* pPipelineState);
+    static HRESULT hkReset(ID3D12GraphicsCommandList* This,
+                           ID3D12CommandAllocator* pAllocator,
+                           ID3D12PipelineState* pInitialState);
+    static void hkSetMarker(ID3D12GraphicsCommandList* This, UINT Metadata, const void* pData, UINT Size);
+    static void hkBeginEvent(ID3D12GraphicsCommandList* This, UINT Metadata, const void* pData, UINT Size);
+    static void hkEndEvent(ID3D12GraphicsCommandList* This);
 
     static void hkDrawInstanced(ID3D12GraphicsCommandList* This, UINT VertexCountPerInstance, UINT InstanceCount,
                                 UINT StartVertexLocation, UINT StartInstanceLocation);
@@ -535,6 +585,15 @@ class ResTrack_Dx12
     static void hkCreateUnorderedAccessView(ID3D12Device* This, ID3D12Resource* pResource,
                                             ID3D12Resource* pCounterResource, D3D12_UNORDERED_ACCESS_VIEW_DESC* pDesc,
                                             D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
+    static HRESULT hkCreateGraphicsPipelineState(
+        ID3D12Device* This, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc,
+        REFIID riid, void** ppPipelineState);
+    static HRESULT hkCreateComputePipelineState(
+        ID3D12Device* This, const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc,
+        REFIID riid, void** ppPipelineState);
+    static HRESULT hkCreatePipelineState(
+        ID3D12Device2* This, const D3D12_PIPELINE_STATE_STREAM_DESC* pDesc,
+        REFIID riid, void** ppPipelineState);
 
     static void hkExecuteCommandLists(ID3D12CommandQueue* This, UINT NumCommandLists,
                                       ID3D12CommandList* const* ppCommandLists);
@@ -587,4 +646,21 @@ class ResTrack_Dx12
     static void ReleaseDeviceHooks();
     static void ClearPossibleHudless();
     static void SetResourceCmdList(FG_ResourceType type, ID3D12GraphicsCommandList* cmdList);
+    static void SetRRResourceInspectorEnabled(bool enabled);
+    static bool IsRRResourceInspectorEnabled();
+    static void NotifyRRResourceInspectorFrame(uint64_t frameIndex);
+    static void RefreshRRResourceCandidates(uint32_t renderWidth, uint32_t renderHeight);
+    static std::vector<RRResourceCandidate> GetRRResourceCandidates();
+    static void SetRRResourceCandidateIndex(int index);
+    static int GetRRResourceCandidateIndex();
+    static void SetRRResourceChannel(uint32_t channel);
+    static uint32_t GetRRResourceChannel();
+    static void SetRRResourceViewScale(float scale);
+    static float GetRRResourceViewScale();
+    // Returns an AddRef'd resource only when the selected texture can be safely
+    // sampled without modifying the game's resource state.
+    static ID3D12Resource* AcquireRRResourceCandidate();
+    static void LogRRScalarResourceCandidates(uint32_t renderWidth, uint32_t renderHeight);
+    static void LogRREmissivePassSnapshot(uint32_t renderWidth, uint32_t renderHeight);
+    static void LogRRPsoProducerSnapshot(uint32_t renderWidth, uint32_t renderHeight);
 };

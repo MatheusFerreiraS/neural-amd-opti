@@ -281,7 +281,7 @@ float IFeature::GetSharpness(const NVSDK_NGX_Parameter* InParameters)
     return sharpness;
 }
 
-void IFeature::TickFrozenCheck()
+void IFeature::TickFrozenCheck(uint32_t presentPerEval)
 {
     static long updatesWithoutFramecountChange = 0;
 
@@ -298,10 +298,13 @@ void IFeature::TickFrozenCheck()
 
         // Ticked once per present, but _frameCount only advances on an evaluate. Frame generation
         // presents its generated frames between evaluates, so the count reaches the multiplier every
-        // real frame with nothing wrong. Scale the threshold by it.
-        const auto presentsPerEvaluate = std::max(1, State::Instance().dlssgDetectedInterpolationCount + 1);
+        // real frame with nothing wrong. Scale the threshold by it: the caller's own count when it
+        // has one, and the count detected from DLSS-G when the caller left the default.
+        const auto detectedPerEvaluate =
+            static_cast<uint32_t>(std::max(1, State::Instance().dlssgDetectedInterpolationCount + 1));
+        const auto presentsPerEvaluate = std::max(presentPerEval, detectedPerEvaluate);
 
-        _featureFrozen = updatesWithoutFramecountChange > 10L * presentsPerEvaluate;
+        _featureFrozen = updatesWithoutFramecountChange > static_cast<long>(10 * presentsPerEvaluate);
     }
 }
 

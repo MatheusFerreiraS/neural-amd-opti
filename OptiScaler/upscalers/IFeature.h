@@ -128,9 +128,15 @@ class IFeature
     virtual std::optional<double> ReadUpscalerTime(void* commandQueue) { return std::nullopt; }
     virtual void ReadDetailedGpuTimes(void* commandQueue, std::vector<DetailedGpuTime>& detailedGpuTimes) {};
 
+    // Features that record GPU work into their own command lists and submit
+    // them at present time (after the title's own submissions, before the
+    // swapchain present) override this. Called once per present; no-op by
+    // default.
+    virtual void SubmitDeferredCommandLists() {};
+
     virtual size_t JitterCount() { return _jitterInfo.size(); }
 
-    virtual void TickFrozenCheck();
+    virtual void TickFrozenCheck(uint32_t presentPerEval = 1);
     virtual bool IsFrozen() { return _featureFrozen; };
     virtual bool UpdateOutputResolution(const NVSDK_NGX_Parameter* InParameters);
     virtual unsigned int DisplayWidth() { return _displayWidth; };

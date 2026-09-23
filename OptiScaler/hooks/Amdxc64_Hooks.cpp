@@ -1,12 +1,15 @@
 #include "pch.h"
 #include "Amdxc64_Hooks.h"
 
+#include <filesystem>
+
 #include <fsr4/FSR4Upgrade.h>
 #include <ffx_antilag2_dx12.h>
 #include <proxies/KernelBase_Proxy.h>
 #include <proxies/Ntdll_Proxy.h>
 #include <low_latency/input/input_antilag2.h>
 #include <misc/IdentifyGpu.h>
+#include <Util.h>
 #include "Streamline_Hooks.h"
 
 #pragma endregion
@@ -103,6 +106,43 @@ void Amdxc64Hooks::Init()
         !Config::Instance()->LoadCustomAmdxc64OnRdna2.value_or_default())
     {
         moduleAmdxc64 = NtdllProxy::LoadLibraryExW_Ldr(L"amdxc64.dll", NULL, 0);
+    }
+
+    // amdxc64.dll lives in the DriverStore and is not on the loader search
+    // path, so a bare LoadLibrary fails before the driver has loaded it, and
+    // the driver's FFX providers cannot be reached without it.
+    //
+    // The FSR-RR denoiser is driver-implemented: without amdxc64 the FFX
+    // denoiser dll cannot reach the driver's provider and silently falls
+    // back to an internal provider whose dispatch returns OK while writing
+    // nothing to the signal outputs (verified by GPU readback probe). When
+    // the denoiser dll is deployed next to OptiScaler the user intends to
+    // run RR, so make sure the real driver provider is loadable even on
+    // titles whose quirk vetoes the bare-name load.
+    const bool denoiserDllDeployed =
+        Config::Instance()->MainDllPath.has_value() &&
+        std::filesystem::exists(std::filesystem::path(Config::Instance()->MainDllPath.value()) /
+                                L"amd_fidelityfx_denoiser_dx12.dll");
+
+    if (moduleAmdxc64 == nullptr &&
+        (!Config::Instance()->Fsr4DoNotLoadAmdxc64.value_or_default() ||
+         denoiserDllDeployed) &&
+        !Config::Instance()->LoadCustomAmdxc64OnRdna2.value_or_default())
+    {
+        for (const auto& [luid, path] : Util::GetDriverStore())
+        {
+            auto dllPath = path / L"amdxc64.dll";
+            LOG_DEBUG("Trying to load: {}", wstring_to_string(dllPath.wstring()));
+
+            if (moduleAmdxc64 == nullptr)
+                moduleAmdxc64 = NtdllProxy::LoadLibraryExW_Ldr(dllPath.c_str(), NULL, 0);
+
+            if (moduleAmdxc64 != nullptr)
+            {
+                LOG_INFO(L"amdxc64 loaded from {}", dllPath.wstring());
+                break;
+            }
+        }
     }
 
     if (moduleAmdxc64 != nullptr)

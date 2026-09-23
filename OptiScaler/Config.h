@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "SysUtils.h"
 #include "State.h"
@@ -143,6 +143,20 @@ template <class T, HasDefaultValue defaultState = WithDefault> class CustomOptio
         else
             return other;
     }
+
+    // Like value_for_config(), but keeps an explicit value that happens to equal
+    // the class default - "unset" stays a distinct state.
+    constexpr std::optional<T> value_for_config_ignore_default()
+        requires(defaultState == WithDefault)
+    {
+        if (_volatile)
+            return _configIni;
+
+        if (this->has_value())
+            return this->value();
+
+        return std::nullopt;
+    }
 };
 
 constexpr inline int UnboundKey = -1;
@@ -257,6 +271,12 @@ class Config
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
+    // Run the NR pass on the upscaler's colour input, at render resolution, immediately before SR.
+    // Off preserves the v0.2.0 post-upscale placement.
+    CustomOptional<bool> DlssNrRunBeforeSr { false };
+    CustomOptional<bool> DlssNrApplyAfterRR { false };
+    CustomOptional<unsigned int> DlssNrRRPasses { 1 };
+    CustomOptional<float> DlssNrRRWorkingScale { 0.5f };
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { UnboundKey };
@@ -264,8 +284,82 @@ class Config
     CustomOptional<float> DlssNrIntensity { 1.0f };
     // 0 default (standard), 1 natural, 2 cinematic -- the model's own processing profiles.
     CustomOptional<uint32_t> DlssNrStyle { 0 };
+    // Optional per-pass model profiles. Pass 1 uses Preset/Style above; an absent override inherits
+    // pass 1. Keeping inheritance explicit preserves every existing configuration and lets changing
+    // the base profile update the whole stack unless a later pass was deliberately specialised.
+    CustomOptional<uint32_t, NoDefault> DlssNrPass2Preset;
+    CustomOptional<uint32_t, NoDefault> DlssNrPass2Style;
+    CustomOptional<uint32_t, NoDefault> DlssNrPass3Preset;
+    CustomOptional<uint32_t, NoDefault> DlssNrPass3Style;
     CustomOptional<float> DlssNrLocalStructure { 1.0f };
     CustomOptional<float> DlssNrLocalTone { 1.0f };
+    CustomOptional<bool> AmdNeuralLighting { true };
+    CustomOptional<float> AmdNeuralLightingStrength { .5f };
+    CustomOptional<int> AmdEncoding { 0 };
+    // 1-5 in the ini; the menu offers 2-5. Too few and a frame that finds every
+    // buffer busy carries no NR at all, so this decides whether the mode works
+    // rather than how fast it runs. See AmdPreSr.cpp for the measurements.
+    //
+    // The default has to follow AMD_SINGLESLOT as well, or the control build
+    // contradicts its own banner: AmdBridge overwrites the backend's default
+    // from here on the first frame, so a control build with this left at 3
+    // would announce "default=1" and then run three.
+#ifdef AMD_SINGLESLOT
+    CustomOptional<int> AmdSlots { 1 };
+#else
+    CustomOptional<int> AmdSlots { 3 };
+#endif
+    CustomOptional<float> AmdNrScale { 1 };
+    // Product default remains every-frame. Exposed as "Every-frame" on the
+    // Ins menu (same row as "Enable NR"); [DlssNr] AmdEveryFrame still works
+    // from the INI. With more than one slot the post-Execute wait is skipped
+    // except during native rebuild.
+    CustomOptional<bool> AmdEveryFrame { true };
+    // Legacy INI key. SpinDraw is driven only by AmdGraphicsWait.
+    CustomOptional<int> AmdSpinDraw { 0 };
+    // New wait (1) vs original wait (0). Default 1 since 1.8.4; still being tested.
+    // Live switching needs installed hooks and a ready 1-pixel-draw PSO; otherwise restart.
+    CustomOptional<int> AmdGraphicsWait { 1 };
+    // Experimental dirty insert: request SpinDraw=1 even when freeze/admission fails.
+    // No complete D3D12 graphics-state restore — risk matches the original author runtime. Default 0.
+    CustomOptional<int> AmdGraphicsUnsafe { 0 };
+    CustomOptional<bool> AmdRtgiEnabled { false };
+    CustomOptional<uint32_t> AmdRtgiQuality { 2 };
+    CustomOptional<uint32_t> AmdRtgiDenoiser { 1 };
+    CustomOptional<uint32_t> AmdRtgiInspect { 0 };
+    CustomOptional<float> AmdRtgiContact { 0 };
+    CustomOptional<float> AmdRtgiSaturation { 1 };
+    CustomOptional<float> AmdRtgiRadius { 1 };
+    CustomOptional<float> AmdRtgiMix { 1 };
+    CustomOptional<float> AmdRtgiLighting { 5 };
+    CustomOptional<float> AmdRtgiOcclusion { 1 };
+    CustomOptional<float> AmdRtgiAmbient { 1 };
+    CustomOptional<float> AmdRtgiThickness { .1f };
+    CustomOptional<float> AmdRtgiSmoothness { .5f };
+    CustomOptional<float> AmdRtgiFade { .3f };
+    CustomOptional<float> AmdRtgiFov { 60 };
+    CustomOptional<float> AmdRtgiFarPlane { 600 };
+    CustomOptional<bool> AmdLookEnabled { false };
+    CustomOptional<uint32_t> AmdLookAppearance { 2 };
+    CustomOptional<float> AmdLookMix { 1.0f };
+    CustomOptional<float> AmdLookMaterialDetail { 1.15f };
+    CustomOptional<float> AmdLookShapeDefinition { 1.20f };
+    CustomOptional<float> AmdLookLocalLighting { 1.15f };
+    CustomOptional<float> AmdLookSkinDetail { 1.10f };
+    CustomOptional<float> AmdLookSkinSoftness { 0.486f };
+    CustomOptional<bool> AmdLookDetectSkin { true };
+    CustomOptional<float> AmdLookSpecularControl { 0.58f };
+    CustomOptional<float> AmdLookHighlightRollOff { 0.9f };
+    CustomOptional<float> AmdLookColourSeparation { 0.0f };
+    CustomOptional<float> AmdLookShadowDepth { 0.2f };
+    CustomOptional<float> AmdLookAntiHalo { 0.901f };
+    CustomOptional<float> AmdLookFlatAreaProtection { 0.0f };
+    CustomOptional<uint32_t> AmdLookInspect { 0 };
+    CustomOptional<float> AmdLookTone { 0.0f };
+    CustomOptional<float> AmdLookExposureEV { 1.0f };
+    CustomOptional<float> AmdLookContrast { 1.0f };
+    CustomOptional<float> AmdLookSaturation { 1.0f };
+    CustomOptional<float> AmdLookHighlightCompression { 0.0f };
     // -1 means follow local structure, which is the model's own default. It is not a strength of zero.
     CustomOptional<float> DlssNrSkinStructure { -1.0f };
     CustomOptional<bool> DlssNrAutoMask { true };
@@ -275,12 +369,44 @@ class Config
     // Lifts the pass slider past kDefaultMaxPasses. Each pass is another model run and another NGX
     // feature holding its own history.
     CustomOptional<bool> DlssNrUnlockPasses { false };
+    // Optional final-composition filter, not NVIDIA's semantic auto mask.
+    CustomOptional<bool> DlssNrSkinProtection { false };
+    CustomOptional<bool> DlssNrSkinToneEnabled { true };
+    CustomOptional<float> DlssNrSkinDetail { 1.0f };
+    CustomOptional<float> DlssNrSkinColour { 1.0f };
+    CustomOptional<float> DlssNrEnvironmentDetail { 1.0f };
+    CustomOptional<float> DlssNrEnvironmentColour { 1.0f };
+    CustomOptional<bool> DlssNrShowSkinMask { false };
+    CustomOptional<float, NoDefault> DlssNrPass2Intensity;
+    CustomOptional<float, NoDefault> DlssNrPass2LocalStructure;
+    CustomOptional<float, NoDefault> DlssNrPass2LocalTone;
+    CustomOptional<float, NoDefault> DlssNrPass2SkinStructure;
+    CustomOptional<bool, NoDefault> DlssNrPass2AutoMask;
+    CustomOptional<float, NoDefault> DlssNrPass3Intensity;
+    CustomOptional<float, NoDefault> DlssNrPass3LocalStructure;
+    CustomOptional<float, NoDefault> DlssNrPass3LocalTone;
+    CustomOptional<float, NoDefault> DlssNrPass3SkinStructure;
+    CustomOptional<bool, NoDefault> DlssNrPass3AutoMask;
 
     // How much of the model's edit reaches the frame. Separated because detail synthesis is a luminance
     // edit and any colour shift is usually the part you do not want, and allowed past 1.0 because
     // exaggerating an edit is the only honest way to see whether there is one.
     CustomOptional<float> DlssNrTransferStrength { 1.0f };
     CustomOptional<float> DlssNrColourStrength { 1.0f };
+
+    // The RenoDX reversible proxy mode. 0 = today's soft-knee encode + our composition (default,
+    // byte-identical); 1 = unclipped Neutwo proxy + our composition; 2 = Neutwo proxy + pure-inverse
+    // replace. An in-game A/B and a way back. Default 0 = byte-identical to before.
+    CustomOptional<uint32_t> DlssNrReversibleMode { 0 };
+
+    // Whether the model's edit is applied. Off keeps the pass running (so Hold frame works) but shows
+    // the clean upscaler frame -- for A/B'ing NR on/off on a frozen frame. Default true.
+    CustomOptional<bool> DlssNrApplyModel { true };
+
+    // Frame hold: freeze the NR pass's input so a live setting change re-renders the SAME frame -- the
+    // only clean way to A/B our settings. A live testing toggle, not really a saved preference; off by
+    // default. See dlssnr/design/frame-hold.md.
+    CustomOptional<bool> DlssNrHoldFrame { false };
 
 
     // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
@@ -374,6 +500,10 @@ class Config
     // one option that cannot be wrong about them. The upscalers are sharper and answer to the jitter
     // question, which the first half has already consumed.
     CustomOptional<Upscaler, NoDefault> DlssNrDualEnlarger;
+    // Filter used for NR supersampling (working scale > 1): the model runs above native, and this is
+    // the downscaler that averages its answer back to native. Independent of OutputScalingDownscaler
+    // so NR and Output Scaling can run different filters at once. Lanczos3 is the sharp default.
+    CustomOptional<Scaler> DlssNrScalingDownscaler { Scaler::Lanczos3 };
 
     // Ask the driver's own nvngx.dll whether it will dispatch Neural Rendering, once per session.
     //
@@ -576,6 +706,9 @@ class Config
     CustomOptional<float, NoDefault> DADepthScale;
     CustomOptional<float, NoDefault> DADepthBias;
     CustomOptional<bool, NoDefault> DAClampOutput;
+    CustomOptional<bool> UseDepthAwareSharpen { false };
+    CustomOptional<bool> UseDASDepthAwareSharpen { false };
+    CustomOptional<bool> DADepthIsLinear { false };
 
     // MAS
     CustomOptional<bool> MotionSharpnessEnabled { false };
@@ -710,6 +843,7 @@ class Config
 
     // FSR
     CustomOptional<bool> FsrDebugView { false };
+    CustomOptional<bool> Fsr4EnableDebugView { false };
     CustomOptional<int> FfxUpscalerIndex { 0 };
     CustomOptional<int> FfxFGIndex { 0 };
     CustomOptional<bool> FsrUseMaskForTransparency { true };
@@ -724,6 +858,159 @@ class Config
     CustomOptional<float> FsrShadingScale { 1.0f };
     CustomOptional<float> FsrAccAddPerFrame { 0.333f };
     CustomOptional<float> FsrMinDisOccAcc { -0.333f };
+
+    // FSR-RR
+    CustomOptional<int> FfxDenoiserIndex { 0 };
+    CustomOptional<uint64_t> FfxDenoiserDebugMode { 0 };
+    // -1: overview, 0..FFX_API_DENOISER_DEBUG_VIEW_MAX_VIEWPORTS-1: fullscreen viewport
+    CustomOptional<int> FfxDenoiserDebugViewport { -1 };
+    // Enables AMD's internal RR debug descriptors. Requires context recreation.
+    CustomOptional<bool> FfxDenoiserInternalDebugViews { false };
+    CustomOptional<int> FfxDenoiserDiffuseSignalType { 0 };  // 0: Direct, 1: Indirect
+    CustomOptional<int> FfxDenoiserSpecularSignalType { 1 }; // 0: Direct, 1: Indirect
+    // Single-signal denoising: dispatch only the enabled signals. A title whose raw
+    // signal content only makes sense for one of the two can denoise the surviving
+    // signal alone; the disabled signal's output stays zero and composition falls
+    // back to the floor/raw-correlation path for it. Requires context recreation.
+    CustomOptional<bool> FfxDenoiserDenoiseDiffuse { true };
+    CustomOptional<bool> FfxDenoiserDenoiseSpecular { true };
+    // Uses only semantic Streamline AO noisy/denoised tags. Resource-inspector
+    // candidates are deliberately never promoted to signal inputs.
+    // A Streamline title tags NormalRoughness where its normals and roughness actually live. That
+    // is more authoritative than the NGX normals binding, which some titles leave as a normals-only
+    // texture whose alpha carries nothing -- a 2-bit alpha reads as roughness 0 everywhere and the
+    // denoiser then has no material guidance at all. Preferred only when the NGX path published no
+    // separate roughness, so a title that supplies one properly is untouched.
+    // Off by default: written for a title whose NGX normals looked like they carried no roughness,
+    // which turned out to be an external mod zeroing the buffers rather than the binding. It has
+    // never been seen to fire, so it stays available rather than assumed.
+    CustomOptional<bool> FfxDenoiserTaggedNormalRoughness { false };
+    CustomOptional<bool> FfxDenoiserTaggedAmbientOcclusion { false };
+    // Disabled preserves the existing contract that RR input normals are world-space.
+    CustomOptional<bool> FfxDenoiserNormalsInViewSpace { false };
+    // Prefer the title's own linearised view depth when it publishes one, instead of
+    // deriving it from the title's depth buffer and the projection. Off by default: the
+    // derived path is the one every title so far has been validated against.
+    CustomOptional<bool> FfxDenoiserUseTitleLinearDepth { false };
+    // Responsivity values on the unstable side of this threshold route the specular
+    // radiance through the spatial path as well. Zero disables the test.
+    CustomOptional<float> FfxDenoiserResponsivityThreshold { 0.0f };
+    // Selects which side of that threshold counts as unstable, since the polarity of the
+    // title's mask is a title property.
+    CustomOptional<bool> FfxDenoiserResponsivityInvert { false };
+
+    // Routes pixels flagged by the DLSS bias-current-color mask (particles, alpha layers,
+    // animated and video textures) around the denoiser via the floor and skip signal.
+    // 0 restores the behaviour where the mask was bound but unused.
+    CustomOptional<float> FfxDenoiserBiasMaskStrength { 1.0f };
+
+    // Fraction of the floor filter's high-frequency luminance residual pushed back into the
+    // floor on the final pass, so texture microcontrast bypasses the denoiser.
+    CustomOptional<float> FfxDenoiserFloorDetailBoost { 0.0f };
+
+    // Exponent on the floor filter's normal edge-stopping weight. Higher stops harder at
+    // creases and silhouettes; 0 disables the term.
+    CustomOptional<float> FfxDenoiserFloorNormalSharpness { 16.0f };
+
+    // Fraction of the floor's luminance edge stop released where diffuse albedo says two taps
+    // share a material, so shadows and reflections reach the denoiser instead of the floor.
+    CustomOptional<float> FfxDenoiserFloorAlbedoGuide { 1.0f };
+
+    // Blends the floor's luminance normaliser from centre-only (0) to max(centre, tap) (1).
+    CustomOptional<float> FfxDenoiserFloorLumSymmetry { 1.0f };
+
+    // Additional normal edge-stop exponent in proportion to screen-space surface slope.
+    CustomOptional<float> FfxDenoiserFloorGrazingSharpness { 0.0f };
+    // How far each a-trous pass returns a downward-biased estimate instead of the bilateral
+    // mean, bounding the floor below the raw colour. Off by default; the crossing it removes
+    // measures ~0.1% of a typical frame, so it is a bound rather than a fix. The knob that
+    // fixed this title's floor softness is FloorDetailBoost.
+    CustomOptional<float> FfxDenoiserFloorEnvelopeBias { 0.0f };
+
+    // Soft knee on the opt-in floor/raw ceiling clamp. 0 is the exact min().
+    CustomOptional<float> FfxDenoiserFloorSoftMin { 0.0f };
+
+    // Overrides the DLSS.Use.HW.Depth interpretation. Unset follows NGX, which
+    // defaults to linear when the title publishes nothing - and reading a hardware
+    // depth buffer as linear collapses the whole scene to sub-unit distances.
+    CustomOptional<bool, NoDefault> FfxDenoiserHardwareDepth;
+
+    // Pushes AMD's own queried baseline for the six tunable RR keys instead of the
+    // values below. A/B reference only - the fork's defaults remain the shipping
+    // configuration, and the sliders keep their values while this is enabled.
+    CustomOptional<bool> FfxDenoiserUseAmdDefaults { false };
+
+    CustomOptional<float> FfxDenoiserDisocThreshold { 0.1f };
+    CustomOptional<float> FfxDenoiserCrossBlNormStr { 0.5f };
+    CustomOptional<float> FfxDenoiserStabilityBias { 0.5f };
+    CustomOptional<float> FfxDenoiserMaxRadiance { 4e4f };
+    CustomOptional<float> FfxDenoiserRadianceClip { 40.0f };
+    CustomOptional<float> FfxDenoiserGaussKernRelax { 0.5f };
+    CustomOptional<float> FfxDenoiserDebugDepthMax { 1024.0f };
+
+    // Records the probe readbacks: seven render targets per input probe interval plus two per
+    // denoiser output probe, and the log lines that report them. Off by default - the numbers
+    // are for diagnosis, and an always-on probe wrote a gigabyte of log in a session.
+    CustomOptional<bool> FfxDenoiserDiagnostics { false };
+
+    CustomOptional<float> FfxDenoiserCorrelationBias { 1.0f };
+    // Binds the title's diffuse ray length into the diffuse signal's alpha. Without
+    // it that alpha is a constant FP16-max "ray miss", which is what RR's non-PSR
+    // reflection handling reads. No effect when the title provides no such resource.
+    CustomOptional<bool> FfxDenoiserDiffuseHitDistance { true };
+    CustomOptional<float> FfxDenoiserFloorIsolation { 1.0f };
+    CustomOptional<float> FfxDenoiserRoughnessFloor { 0.1f };
+    // Hands exact-zero-roughness (type-1) pixels to the spatial floor instead of RR.
+    // Which pixels take the floor handover - the graft that recombines RR's low frequencies
+    // with the floor's high frequencies in composition. Because that combination happens
+    // after denoising it never removes anything from the denoiser's input, which is what
+    // makes it safe to widen beyond the zero-roughness pixels it was written for.
+    // 0 = off, 1 = exact-zero-roughness (type-1) pixels only, 2 = every pixel.
+    CustomOptional<int> FfxDenoiserFloorHandover { 1 };
+    // Scales the graft weight so the handover can be applied partially. 1.0 is the full
+    // handover and 0.0 is inert.
+    CustomOptional<float> FfxDenoiserFloorHandoverStrength { 1.0f };
+
+    // Scales the raw-preserving blend inside the floor. 1.0 keeps the floor's microcontrast
+    // where the guide allows it; 0.0 leaves a pure spatial floor, which is also how the
+    // blend's contribution to the image can be removed outright for comparison.
+    CustomOptional<float> FfxDenoiserFloorRawBlend { 1.0f };
+
+    // Floor on the albedo used as the demodulation divisor. The floor caps the gain on
+    // dark surfaces, but everything it cannot represent is handed to the skip signal, which
+    // reaches the screen without passing the denoiser - so a high floor trades amplified
+    // noise inside the denoiser for unfiltered noise beside it. Lowering it keeps the
+    // demodulate/remodulate round trip faithful.
+    CustomOptional<float> FfxDenoiserDemodDivisorFloor { 8e-3f };
+
+    // Opt-in energy guard on the floor/raw clamp: the floor may not exceed the raw, so the
+    // share that does is replaced with a low pass of the raw. The replacement is the raw's own
+    // noise and the skip signal publishes it unfiltered, so enabling this republishes the raw's
+    // grain on exactly the pixels it clamps; averaging the ceiling attenuates that but cannot
+    // remove it. 0 - the default - leaves the floor unclamped and closes the residual instead.
+    CustomOptional<float> FfxDenoiserFloorClampSmoothing { 0.0f };
+
+    // How far the diffuse albedo's local structure suppresses that blend. The blend's test is
+    // whether the raw sample resembles the floor, which on a noisy input the noise itself
+    // answers, so flat surfaces pass raw grain through while the floor stays smooth. Where
+    // albedo shows structure the raw sample carries real detail and is kept; where it does not,
+    // the variation is not material and is refused. 0.0 reproduces the ungated behaviour.
+    CustomOptional<float> FfxDenoiserFloorStructureGate { 1.0f };
+    // Blends that handover between FloorSeed's isotropic floor (0), which erases thin
+    // structure, and a directional hybrid median that preserves panel text (1).
+    CustomOptional<float> FfxDenoiserFloorHandoverDetail { 1.0f };
+    // Band-split only. Replaces the single mid band with the floor chain's own five
+    // a-trous detail levels, each shrunk against its own threshold. The chain is
+    // already this decomposition, so the mid band is a one-boundary approximation of
+    // a five-boundary split that exists either way.
+    // Handover refinements, each inert at zero and composing with the blend mode
+    // rather than replacing it.
+    CustomOptional<float> FfxDenoiserFloorHandoverAnchorClamp { 2.0f };
+    CustomOptional<float> FfxDenoiserFloorHandoverCorrelationMix { 1.0f };
+    // Per-level thresholds, finest (a-trous stride 1) first, in the same multiples of
+    // the floor's local spread as the thresholds above. Noise is broadband and panel
+    // structure is not, so the noise-to-signal ratio is worst at the finest level -
+    // hence the descending defaults.
 
     // FSR4
     CustomOptional<FSR4Support> Fsr4ForceModel { FSR4Support::None };
@@ -762,10 +1049,10 @@ class Config
     CustomOptional<bool> SpoofHAGS { false };
     CustomOptional<bool> SpoofFeatureLevel { false };
     CustomOptional<uint32_t> SpoofedVendorId { VendorId::Nvidia };
-    CustomOptional<uint32_t> SpoofedDeviceId { 0x2684 };
+    CustomOptional<uint32_t> SpoofedDeviceId { 0x2B85 };
     CustomOptional<uint32_t, NoDefault> TargetVendorId;
     CustomOptional<uint32_t, NoDefault> TargetDeviceId;
-    CustomOptional<std::wstring> SpoofedGPUName { L"NVIDIA GeForce RTX 4090" };
+    CustomOptional<std::wstring> SpoofedGPUName { L"NVIDIA GeForce RTX 5090" };
     CustomOptional<bool> UESpoofIntelAtomics64 { false };
     CustomOptional<bool> SpoofRegistry { false };
     CustomOptional<bool> SpoofUser32 { false };
@@ -781,6 +1068,7 @@ class Config
 
     // Frame Generation
     CustomOptional<FGInput> FGInput { FGInput::NoFG };
+    CustomOptional<bool> ExternalFrameGeneration { false };
     CustomOptional<FGOutput> FGOutput { FGOutput::NoFG };
     CustomOptional<FGNvngxReplacement> FGNvngxReplacement { FGNvngxReplacement::None };
     CustomOptional<bool> FGDrawUIOverFG { false };
@@ -931,6 +1219,14 @@ class Config
     bool SaveXeFG();
 
     void CheckUpscalerFiles();
+
+    // Applies the FSR-RR denoiser's default profile: every FfxDenoiser* setting
+    // goes back to the default declared on its member. The single place that
+    // knows the complete setting set and which keys take effect at context
+    // creation - the menu's Reset button goes through this instead of keeping
+    // its own assignment list. Returns true when a context-creation setting
+    // changed and the caller must rebuild the RR context.
+    bool ResetFfxDenoiserSettings();
 
     std::vector<std::string> GetConfigLog();
 

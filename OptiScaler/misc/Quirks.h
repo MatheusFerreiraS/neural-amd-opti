@@ -64,6 +64,7 @@ enum class GameQuirk : uint64_t
     IgnoreTagsWithoutHudlessForFG,
     ForceFGRenderSizeMVs,
     CreateSLOnThe2ndDevice,
+    UnlockPathTracingMenu,
     // Don't forget to add the new entry to printQuirks
     _
 };
@@ -115,6 +116,10 @@ static const QuirkEntry quirkTable[] = {
 
     // Tainted Grail - Fall of Avalon
     QUIRK_ENTRY("fall of avalon.exe", GameQuirk::ForceAutoExposure),
+
+    // Granblue Fantasy Relink
+    // Disabled fakenvapi to fix broken rendering
+    QUIRK_ENTRY("granblue_fantasy_relink.exe", GameQuirk::DisableFakenvapi),
 
     // Path of Exile 2
     QUIRK_ENTRY("pathofexile.exe", GameQuirk::LoadD3D12Manually, GameQuirk::DisableDxgiSpoofing),
@@ -172,7 +177,7 @@ static const QuirkEntry quirkTable[] = {
     //
     // Kunitsu-Gami: Path of the Goddess, Monster Hunter Wilds, MONSTER HUNTER RISE, Dead Rising Deluxe Remaster
     // (including the demo), Dragon's Dogma 2, PRAGMATA Demo, Resident Evil Requiem (+ demo)
-    // Monster Hunter Stories 3: Twisted, Reflection, PRAGMATA, Onimusha: Way of the Sword Demo
+    // Monster Hunter Stories 3: Twisted, Reflection, PRAGMATA, Onimusha: Way of the Sword (+ Demo)
     QUIRK_ENTRY("kunitsugami.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("kunitsugamidemo.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing),
     QUIRK_ENTRY("monsterhunterwilds.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
@@ -183,7 +188,7 @@ static const QuirkEntry quirkTable[] = {
     QUIRK_ENTRY("dd2ccs.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
                 GameQuirk::DisableHudfix),
     QUIRK_ENTRY("dd2.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
-                GameQuirk::DisableHudfix),
+                GameQuirk::DisableHudfix, GameQuirk::RestoreComputeSigOnNvidia, GameQuirk::PregmataFixDLSSModes),
     QUIRK_ENTRY("pragmata_sketchbook.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
                 GameQuirk::RestoreComputeSigOnNvidia, GameQuirk::AllowedFrameAhead2, GameQuirk::PregmataFixDLSSModes),
     QUIRK_ENTRY("re9.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
@@ -195,6 +200,8 @@ static const QuirkEntry quirkTable[] = {
     QUIRK_ENTRY("pragmata.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
                 GameQuirk::RestoreComputeSigOnNvidia, GameQuirk::PregmataFixDLSSModes),
     QUIRK_ENTRY("onimushawots_demo.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
+                GameQuirk::RestoreComputeSigOnNvidia),
+    QUIRK_ENTRY("onimushawots.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
                 GameQuirk::RestoreComputeSigOnNvidia),
 
     // REF PDUpscaler branch
@@ -251,9 +258,12 @@ static const QuirkEntry quirkTable[] = {
 
     // 007 First Light
     // SL spoof enough to unlock everything DLSS, uses bindless so restoring compute is complicated
+    // UnlockPathTracingMenu patches the device capability flags that hide Path Tracing / DLSS RR menu options
+    // on non-Nvidia GPUs (offsets are version specific, see FirstLightPTUnlock.cpp)
     QUIRK_ENTRY("007firstlight.exe", GameQuirk::DisableDxgiSpoofing, GameQuirk::RestoreComputeSigOnNonNvidia,
                 GameQuirk::RestoreComputeSigOnNvidia, GameQuirk::ExtendedSigRestore,
-                GameQuirk::IgnoreValidUntilEvaluateForFG, GameQuirk::DoNotLoadAmdxc64),
+                GameQuirk::IgnoreValidUntilEvaluateForFG, GameQuirk::DoNotLoadAmdxc64,
+                GameQuirk::UnlockPathTracingMenu),
 
     // ELDEN RING (for ERSS mod) and ER NIGHTREIGN (for NRSS mod)
     // no spoof needed for DLSS inputs
@@ -423,6 +433,10 @@ static const QuirkEntry quirkTable[] = {
     QUIRK_ENTRY_UE(dungeonhaven, GameQuirk::DisableDxgiSpoofing, GameQuirk::ForceAutoExposure,
                    GameQuirk::DontUseUnrealColorBarriers, GameQuirk::DontUseUnrealMVBarriers),
 
+    // Sword and Fairy 7
+    // No UE barriers to fix crash on upscaler init
+    QUIRK_ENTRY_UE(pal7, GameQuirk::DontUseUnrealColorBarriers, GameQuirk::DontUseUnrealMVBarriers),
+
     // Watch Dogs: Legion
     // AE required to fix FSR4 ghosting
     QUIRK_ENTRY("watchdogslegion.exe", GameQuirk::ForceAutoExposure),
@@ -490,7 +504,7 @@ static const QuirkEntry quirkTable[] = {
 
     // Disable FSR2/3 inputs due to crashing/custom implementations
     //
-    // Forgive Me Father 2, Revenge of the Savage Planet, F1 22, Metal Eden, Until Dawn, Bloomand Rage, 171, Microsoft
+    // Forgive Me Father 2, Revenge of the Savage Planet, F1 22, Metal Eden, Until Dawn, Bloom and Rage, 171, Microsoft
     // Flight Simulator (2020) - MSFS2020, Banishers: Ghosts of New Eden,Rune Factory Guardians of Azuma, Supraworld, F1
     // Manager 2024, Keeper (+ WinGDK PaganIdol version), Assetto Corsa Rally
     QUIRK_ENTRY_UE(fmf2, GameQuirk::DisableFSR2Inputs, GameQuirk::DisableFSR3Inputs),
@@ -532,7 +546,7 @@ static const QuirkEntry quirkTable[] = {
 
     // Rise of the Tomb Raider
     // Hudfix incompatible
-    QUIRK_ENTRY("rottr.exe", GameQuirk::DisableHudfix),
+    QUIRK_ENTRY("rottr.exe", GameQuirk::DisableHudfix, GameQuirk::SkipD3D11FeatureLevelElevation),
 
     // Shadow of the Tomb Raider
     // Hudfix incompatible
@@ -540,7 +554,8 @@ static const QuirkEntry quirkTable[] = {
 
     // Stellar Blade
     // Hudfix incompatible
-    QUIRK_ENTRY_UE(sb, GameQuirk::DisableHudfix),
+    QUIRK_ENTRY_UE(sb, GameQuirk::DisableHudfix, GameQuirk::RestoreComputeSigOnNonNvidia,
+                   GameQuirk::ExtendedSigRestore),
 
     // Self-explanatory
     //
@@ -563,7 +578,7 @@ static const QuirkEntry quirkTable[] = {
 
     // No Man's Sky
     QUIRK_ENTRY("nms.exe", GameQuirk::KernelBaseHooks, GameQuirk::VulkanDLSSBarrierFixup,
-                GameQuirk::EnableVulkanSpoofing),
+                GameQuirk::EnableVulkanSpoofing, GameQuirk::FSRFGHudlessMismatchFixup),
 
     // RTX Remix
     QUIRK_ENTRY("nvremixbridge.exe", GameQuirk::DisableDxgiSpoofing, GameQuirk::LoadVulkanManually,

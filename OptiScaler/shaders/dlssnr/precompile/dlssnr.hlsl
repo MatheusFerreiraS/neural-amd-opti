@@ -25,6 +25,16 @@ cbuffer Params : register(b0)
     uint  gCompareSwap;  // put the edited frame on the other side
     uint  gTransfer;     // 0 classic, 1 matched residual -- how a below-size model comes back
     float gDebugScale;   // what the debug views are scaled by, held still while the meter moves
+    uint  gReversibleMode; // 0 knee, 1 Neutwo+composed, 2 Neutwo+replace, 3 hybrid+composed, 4 hybrid+replace
+    uint  gApplyModel;     // 0 output the clean frame (pass still runs), 1 apply the model's edit
+    uint  gUseGameExposure;// D3D12 source-1 only: 1 = read the game's live exposure in-shader (t4)
+    float gExposurePreMul; // preExposure * trim, so the live white point is gExposurePreMul / exposure
+    uint  gSkinProtection;
+    uint  gShowSkinMask;
+    float gSkinDetail;
+    float gSkinColour;
+    float gEnvironmentDetail;
+    float gEnvironmentColour;
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -47,6 +57,20 @@ cbuffer Params : register(b0)
 // theirs. See Licenses/RenoDX_ATTRIBUTION.txt.
 
 float SanitizeFinite(float v, float fallback) { return isfinite(v) ? v : fallback; }
+
+// Approximate skin-colour selection, not a face/skin segmentation network. Warm
+// materials may be selected and coloured lighting can hide skin. The preview is
+// deliberately exposed so users can check this before relying on protection.
+float SkinColourWeight(float3 rgb)
+{
+    rgb = saturate(rgb);
+    float y = dot(rgb, float3(0.299, 0.587, 0.114));
+    float cb = (rgb.b - y) * 0.564 + 0.5;
+    float cr = (rgb.r - y) * 0.713 + 0.5;
+    float2 distance = (float2(cb, cr) - float2(0.405, 0.600)) / float2(0.090, 0.110);
+    float chroma = max(rgb.r, max(rgb.g, rgb.b)) - min(rgb.r, min(rgb.g, rgb.b));
+    return (1.0 - smoothstep(0.55, 1.35, length(distance))) * smoothstep(0.02, 0.10, chroma);
+}
 
 float3 SanitizeFinite3(float3 v, float3 fallback)
 {
@@ -131,7 +155,7 @@ float3 ClampAp1(float3 color)
 // The composition below (UpgradeToneMap's two-branch ratio, the OkLab hue correction, and the blend
 // between a luminance-only result and the model's own colour) is taken from RenoDX's DLSS 5 addon by
 // clshortfuse -- https://github.com/clshortfuse/renodx. It is their design, not ours; see
-// Licenses/RenoDX_LICENSE.txt. The OkLab matrices are Bjorn Ottosson's published constants and the
+// Licenses/RenoDX_ATTRIBUTION.txt. The OkLab matrices are Bjorn Ottosson's published constants and the
 // AP1, sRGB and PQ transforms are standard colour science.
 // ---------------------------------------------------------------------------------------------
 
@@ -218,6 +242,13 @@ Texture2D<float4>   gOriginal : register(t2);  // resolve: the untouched frame.
 [[vk::binding(4, 0)]]
 #endif
 Texture2D<float4>   gMotion   : register(t3);  // resolve, accumulating: the game's motion vectors.
+
+// The game's 1x1 exposure texture, bound at t4 (DispatchPass's "prev edit" SRV slot). D3D12 only:
+// Vulkan has no eighth descriptor for it and keeps computing the white point on the CPU, so the whole
+// live path is compiled out under VK_MODE and gUseGameExposure is never set on that backend.
+#ifndef VK_MODE
+Texture2D<float4>   gExposure : register(t4);
+#endif
 #ifdef VK_MODE
 [[vk::binding(5, 0)]]
 #endif
@@ -230,6 +261,27 @@ RWTexture2D<float4> gKeep     : register(u1);  // encode: the untouched copy. un
 [[vk::binding(7, 0)]]
 #endif
 SamplerState        gLinear   : register(s0);  // so the edit can be read at a different size
+
+// The picture white point. Sources 0 (paper white) and 2 (scan) resolve it on the CPU and pass it in
+// gWhitePoint; source 1 (the game's own exposure) also passes a CPU value in gWhitePoint as a fallback,
+// but when the exposure texture is bound (D3D12) it is recomputed HERE from the live exposure --
+// gExposurePreMul (= preExposure * trim) / exposure -- which removes the 3-4 frame CPU-readback lag the
+// meter path has. The clamp matches the CPU path's [0.01, 4096]. Vulkan compiles the live path out and
+// always returns the CPU value, so its behaviour is unchanged.
+float WhitePoint()
+{
+#ifndef VK_MODE
+    if (gUseGameExposure != 0)
+    {
+        float e = gExposure.Load(int3(0, 0, 0)).r;
+        if (e > 1e-6 && e < 1e6)
+            return clamp(gExposurePreMul / e, 0.01, 4096.0);
+        // A missing or absurd sample falls through to the CPU value the meter path still maintains.
+    }
+#endif
+    return max(gWhitePoint, 1e-4);
+}
+
 
 static const float3 kLuma = float3(0.2126, 0.7152, 0.0722);
 
@@ -301,6 +353,113 @@ float3 SoftKnee(float3 display)
         display /= peak;
 
     return display;
+}
+
+// The reversible proxy, from RenoDX's Sep-2 DLSS 5 addon (clshortfuse) -- an unclipped, hue-preserving
+// encode meant to be reproduced exactly, so the model is shown the highlight gradation the soft knee
+// compresses into a razor-thin band near white. Neutwo maps [0, inf) -> [0, 1) with no clip point,
+// applied as ONE scalar on the peak channel so the three channels keep their ratios and hue cannot
+// bend. The knee reaches its asymptote within a stop of white -- scene 2 and scene 4 arrive ~0.001
+// apart, nothing the model can resolve between; Neutwo puts them ~0.076 apart.
+//
+// This changes only WHAT the proxy is. The resolve already works in a hybrid space -- proxy and model
+// in display [0,1], original in linear -- and its ratio bridges the two, so nothing downstream has to
+// change: the proxy is decoded by the same SrgbToLinear, compared the same way, and the ratio carries
+// the model's answer back to the original's linear luminance exactly as before. Only the matched-
+// residual proxy rebuild, which reproduces the encode, switches curve with it.
+//
+// Gamut nuance (RenoDX also compresses toward the D65 neutral axis first) is deferred: out-of-BT.709
+// negative channels are clamped to zero here, enough for the highlight question this measures. See
+// Licenses/RenoDX_LICENSE.txt.
+float Neutwo(float x) { return x * rsqrt(x * x + 1.0); } // [0, inf) -> [0, 1), no clip point
+
+float3 NeutwoEncode(float3 v)
+{
+    v = max(v, 0.0);
+    float m = max(v.r, max(v.g, v.b));
+
+    if (m <= 1e-6)
+        return v;
+
+    // One scalar taken from the peak channel keeps the hue; the peak lands at Neutwo(m) < 1, so no
+    // channel clips and LinearToSrgb's saturate never fires -- the proxy is fully invertible.
+    return v * (Neutwo(m) / m);
+}
+
+// The exact inverse of NeutwoEncode, for the "replace" decode: y/sqrt(1 - y^2) on the peak channel,
+// same one-scalar-preserves-hue trick. The inverse diverges at 1, so the peak is clamped just below
+// it -- this is the steep-highlight-slope the toggle's help warns about: a highlight at the ceiling
+// decodes to a very large but finite value. Only the replace path uses this; the composed path never
+// decodes (its ratio bridges display->linear instead), so mode 0/1 are untouched by it.
+float3 NeutwoDecode(float3 y)
+{
+    y = max(y, 0.0);
+    float m = max(y.r, max(y.g, y.b));
+    m = min(m, 0.999999);
+
+    if (m <= 1e-6)
+        return y;
+
+    float x = m * rsqrt(max(1.0 - m * m, 1e-8)); // Neutwo^-1 of the peak
+    return y * (x / m);
+}
+
+// The hybrid proxy (mode 3): the fix for the two curves each only winning in some scenes. The soft
+// knee is fine in the midtones but crushes highlights; Neutwo fixes the highlights but compresses the
+// midtones too, so it only helps where the knee was hurting (bright content) and is a downgrade in
+// soft-lit content. The hybrid is IDENTITY below the knee -- so midtones are exactly what the soft
+// knee already gave (as good as Off) -- and an unclipped, gentle Neutwo-of-the-excess ABOVE it, so
+// highlights get the gradation the model needs. C1-continuous at the knee. One proxy that is >= Off
+// everywhere: no midtone loss, plus the highlight win. (Composed only -- mode 3 does not replace.)
+float HybridCurve(float m)
+{
+    const float k = 0.75; // knee point: identity below, gentle unclipped roll above
+
+    if (m <= k)
+        return m;
+
+    const float e = (m - k) / (1.0 - k);         // excess above the knee, [0, inf)
+    return k + (1.0 - k) * (e * rsqrt(e * e + 1.0)); // Neutwo(e) scaled into [k, 1); -> 1, never clips
+}
+
+float3 HybridEncode(float3 v)
+{
+    v = max(v, 0.0);
+    float m = max(v.r, max(v.g, v.b));
+
+    if (m <= 1e-6)
+        return v;
+
+    // One scalar on the peak channel, hue preserved. Below the knee the scalar is 1 (identity); above
+    // it the peak lands at HybridCurve(m) < 1, so no channel clips.
+    return v * (HybridCurve(m) / m);
+}
+
+// The exact inverse of the hybrid curve, for the hybrid REPLACE decode (mode 4). Because it is IDENTITY
+// below the knee, the steep expansion is confined to genuine highlights: midtone model wobble is not
+// amplified, so hybrid-replace flashes far less than Neutwo-replace while keeping the raw model detail.
+float HybridCurveInv(float y)
+{
+    const float k = 0.75;
+
+    if (y <= k)
+        return y;
+
+    float u = (y - k) / (1.0 - k);                  // Neutwo(e), in [0,1)
+    u = min(u, 0.999999);                           // the inverse diverges at 1
+    const float e = u * rsqrt(max(1.0 - u * u, 1e-8)); // Neutwo^-1 of the excess
+    return k + (1.0 - k) * e;
+}
+
+float3 HybridDecode(float3 y)
+{
+    y = max(y, 0.0);
+    float m = max(y.r, max(y.g, y.b));
+
+    if (m <= 1e-6)
+        return y;
+
+    return y * (HybridCurveInv(m) / m);
 }
 
 // Scale a residual so the result cannot leave the unit cube, without changing its direction.
@@ -534,9 +693,25 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // clipped, so the model is never shown a field of flat white whose blown pixels flip between
         // frames -- unstable input is unstable output, and this is where a bright scene would produce
         // it. The resolve reproduces this exactly, so the two agree on what the frame's own proxy is.
-        float3 display = SoftKnee(frame / max(gWhitePoint, 1e-4));
+        // The classic soft knee, or -- when the reversible proxy is on -- the unclipped Neutwo encode
+        // that shows the model highlight gradation the knee throws away. Reached only when the frame
+        // is not passthrough (handled and returned above), so NeutwoEncode never sees a tone-mapped
+        // frame. Both are undone by the resolve: the knee approximately, Neutwo exactly.
+        float3 normalized = frame / WhitePoint();
+        float3 display;
+        if (gReversibleMode == 0)
+            display = SoftKnee(normalized);        // soft knee
+        else if (gReversibleMode >= 3)
+            display = HybridEncode(normalized);    // 3 hybrid composed, 4 hybrid replace -- same curve
+        else
+            display = NeutwoEncode(normalized);    // 1 composed, 2 replace -- both the full Neutwo proxy
 
-        gTarget[id.xy] = float4(LinearToSrgb(display), source.a);
+        // The reversible proxy forces opaque alpha -- feature 18 expects an opaque colour input, and
+        // the frame's own alpha is not part of what the model reads. The knee path keeps the frame's
+        // alpha, so the default stays byte-identical.
+        float alpha = gReversibleMode != 0 ? 1.0 : source.a;
+
+        gTarget[id.xy] = float4(LinearToSrgb(display), alpha);
         return;
     }
 
@@ -584,6 +759,10 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // Nothing was encoded on the way in, so nothing is decoded here either.
     float3 proxy = gPassthrough != 0 ? proxySample.rgb : SrgbToLinear(proxySample.rgb);
     float3 model = gPassthrough != 0 ? modelSample.rgb : SrgbToLinear(modelSample.rgb);
+
+    // The model's own answer, kept before the matched-residual block below can rewrite `model`, so the
+    // replace decode uses what the model returned rather than the residual reconstruction.
+    float3 modelDirect = model;
     float4 originalSample = gCompareMode == 1 ? gOriginal.SampleLevel(gLinear, cmpUv, 0)
                                               : gOriginal.Load(int3(id.xy, 0));
 
@@ -594,11 +773,20 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // the shadow branch never fires, every pixel takes the highlight branch, and the clamp flattens
     // the result to a near-constant scale. Colour still moves, because that comes from the model's
     // own hue, which is what makes the failure so confusing to look at.
-    const float normScale = gPassthrough != 0 ? 1.0 : max(gWhitePoint, 1e-4);
+    const float normScale = gPassthrough != 0 ? 1.0 : WhitePoint();
     float3 original = originalSample.rgb / normScale;
 
     float originalLuma = dot(original, kLuma);
     float proxyLuma = dot(proxy, kLuma);
+
+    // Apply the model. Off outputs the frame as the upscaler produced it (clean) while the pass keeps
+    // running -- so with Hold frame you can freeze a frame and toggle this to A/B the same frozen frame
+    // with and without Neural Rendering. In passthrough the frame is already display-referred.
+    if (gApplyModel == 0)
+    {
+        gTarget[id.xy] = float4(max(originalSample.rgb, 0.0), originalSample.a);
+        return;
+    }
 
     if (gDebugView == 1)
     {
@@ -679,7 +867,17 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // the answer, which is darker than the frame everywhere the knee fired. That is the darker,
         // redder 50% picture: not the working scale, and not the residual idea, just a proxy that was
         // never clamped the way the one it stands in for is.
-        float3 fullProxy = saturate(SoftKnee(original));
+        // Rebuilt with the same curve the encode used, so the two agree on the frame's own proxy.
+        // Passthrough must reproduce the encode's passthrough branch, which writes the frame raw --
+        // SoftKnee returns it unchanged there, so both non-passthrough branches are gated behind the
+        // same passthrough check the encode has. Without this, a reversible + matched-residual +
+        // already-tone-mapped frame would Neutwo-compress a frame the encode left raw. Neutwo already
+        // lands in [0,1), so it needs no saturate.
+        float3 fullProxy = gPassthrough != 0
+                               ? saturate(original)
+                               : (gReversibleMode == 0   ? saturate(SoftKnee(original))
+                                  : gReversibleMode >= 3 ? HybridEncode(original)
+                                                         : NeutwoEncode(original));
         proxy = fullProxy;
         proxyLuma = dot(proxy, kLuma);
 
@@ -789,10 +987,51 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     upgraded *= boundedRatio / max(lumaRatio, 1e-6);
 
     // Both ends of the blend now sit inside the same guard, so neither needs a second clamp.
-    float3 result = lerp(original * boundedRatio, upgraded, gColourStrength);
+    //
+    // Colour strength 0..1 blends toward the model's colour, as before. Above 1 it OVER-SATURATES: the
+    // blend caps at the model's colour (min), then the excess scales CHROMA in OkLab -- L and hue kept,
+    // only a and b grow -- and ClampAp1 below pulls anything past the gamut back by desaturating toward
+    // neutral, NOT by clipping channels. So an over-driven colour rolls off at the gamut boundary
+    // (maximally vivid but still a real colour with detail) instead of flattening into a blown peak.
+    // At strength 1 the boost is the identity, so <=1 is bit-identical to before.
+    float3 result = lerp(original * boundedRatio, upgraded, min(gColourStrength, 1.0));
+
+    if (gColourStrength > 1.0)
+        result = ClampAp1(FromOkLab(float3(1.0, gColourStrength, gColourStrength) * ToOkLab(max(result, 0.0))));
+
+    // Replace mode: the model's answer IS the picture, decoded through Neutwo's exact inverse, with
+    // NONE of the composition above -- no ratio, no highlight guard, no palette blend. This is the
+    // RenoDX reversible-bridge behaviour and the second half of the A/B: composed vs pure model. On a
+    // passthrough frame the model already worked in the frame's own space, so it is taken directly.
+    if (gReversibleMode == 2)
+        result = gPassthrough != 0 ? modelDirect : NeutwoDecode(modelDirect);
+    else if (gReversibleMode == 4)
+        result = gPassthrough != 0 ? modelDirect : HybridDecode(modelDirect);
 
     // Back out of the normalised space the composition worked in.
     result *= normScale;
+
+    if (gSkinProtection != 0)
+    {
+        // Classify the untouched frame, never NR's recoloured output. Controls
+        // attenuate the final edit, including replace mode and all model passes.
+        float3 displayRgb = gPassthrough != 0 ? original : LinearToSrgb(saturate(original));
+        float mask = SkinColourWeight(displayRgb);
+        float detail = lerp(gEnvironmentDetail, gSkinDetail, mask);
+        float colour = lerp(gEnvironmentColour, gSkinColour, mask);
+        float baseY = dot(max(originalSample.rgb, 0.0), kLuma);
+        float editedY = dot(max(result, 0.0), kLuma);
+        float wantedY = lerp(baseY, editedY, detail);
+        float3 baseChroma = originalSample.rgb / max(baseY, 1e-6);
+        float3 editedChroma = result / max(editedY, 1e-6);
+        // Exact endpoints avoid changing the default image or fully protected pixels.
+        if (detail == 0.0 && colour == 0.0)
+            result = originalSample.rgb;
+        else if (detail != 1.0 || colour != 1.0)
+            result = ClampAp1(lerp(baseChroma, editedChroma, colour) * wantedY);
+        if (gShowSkinMask != 0)
+            result = mask.xxx * normScale;
+    }
 
     // The side being shown untouched takes the frame as it arrived, past every step above.
     if (showOriginal)
@@ -805,7 +1044,7 @@ void CSMain(uint3 id : SV_DispatchThreadID)
 
     // A hairline so the two sides are never mistaken for one picture.
     if (onDivider)
-        result = float3(gWhitePoint, gWhitePoint, gWhitePoint);
+        result = float3(WhitePoint(), WhitePoint(), WhitePoint());
 
     gTarget[id.xy] = float4(max(result, float3(0.0, 0.0, 0.0)), originalSample.a);
 }

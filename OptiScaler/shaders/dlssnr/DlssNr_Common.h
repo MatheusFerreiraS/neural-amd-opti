@@ -49,8 +49,8 @@ constexpr uint32_t kDlssNrMeterGrid = 64;
 // choices -- preset, intensity, strengths, paper white -- stay in Config, so a caller placing this
 // pass in a new pipeline does not have to plumb a dozen sliders through it.
 //
-// Sizes are deliberately absent. The output's dimensions come from its own descriptor and the guide
-// sizes from theirs, so there is one less thing for a call site to get wrong.
+// Allocation sizes come from the resource descriptors. Before SR, the reported render subrect
+// also determines the active colour size; padded colour is copied through a compact work texture.
 struct DlssNrFrameInfo
 {
     // Which way round depth runs. The game states this when it creates its own upscaler.
@@ -70,6 +70,18 @@ struct DlssNrFrameInfo
     // washed out and banded.
     bool ColourIsLinearHdr = true;
 
+    // The SR colour input arrives readable, whereas a completed upscaler output normally arrives as
+    // a UAV. The DX12 pass uses this to preserve the caller's state and to fall back through a copy
+    // when a pre-SR colour resource was not created with UAV support.
+    bool BeforeUpscale = false;
+    // A native RR result selects independent NR cost controls and a separate history lifecycle.
+    bool AfterRayReconstruction = false;
+
+    // Submission epoch supplied by the caller. Native DX12 uses the wrapped swapchain Present count;
+    // the DX11/Vulkan bridges use their successfully submitted frame counter. A feature created in an
+    // epoch is never evaluated until this value changes.
+    unsigned long long SubmissionEpoch = 0;
+
     // The game's own exposure: a 1x1 texture holding, in the SDK's words, "the final exposure scale".
     //
     // This is the number that makes a cave and a field comparable, and it is the reason a fixed paper
@@ -85,6 +97,7 @@ struct DlssNrFrameInfo
     float PreExposure = 1.0f;
 
     // How much of the depth and motion vector textures the game actually rendered into.
+    // Before SR this also selects the origin-zero active colour rectangle, not its allocation.
     //
     // Not the same thing as how big those textures are, and the difference is the whole point. A game
     // with dynamic resolution allocates its guides once at the largest size it will ever need and
@@ -164,6 +177,29 @@ struct alignas(256) DlssNrConstants
     // two captures at different exposures then differ by the exposure, whatever the edit did. This
     // is the user's own multiplier, which holds still while the meter works.
     float DebugScale;
+
+    // The reversible-proxy mode. 0 soft knee + our composition (default), 1 unclipped Neutwo proxy +
+    // our composition, 2 Neutwo proxy + pure-inverse replace (model's answer straight back, no
+    // composition). Trailing field, mirroring the shader's cbuffer, so the layout stays a flat run of
+    // 4-byte scalars that C++ and HLSL agree on.
+    uint32_t ReversibleMode;
+
+    // 0 = output the clean upscaler frame (the pass still runs, so Hold frame keeps a frozen frame
+    // to A/B against), 1 = apply the model's edit. Trailing scalar, mirrored in the shader cbuffer.
+    uint32_t ApplyModel;
+
+    // D3D12 source-1 zero-latency exposure. UseGameExposure = 1 makes the shader read the game's live
+    // exposure texture (bound at t4) instead of the CPU-resolved white point; ExposurePreMul is
+    // preExposure * trim, so the live white point is ExposurePreMul / exposure. Mirrored in the cbuffer.
+    uint32_t UseGameExposure;
+    float ExposurePreMul;
+    // Optional colour-based final-composition mask. Not the runtime's semantic mask.
+    uint32_t SkinProtection;
+    uint32_t ShowSkinMask;
+    float SkinDetail;
+    float SkinColour;
+    float EnvironmentDetail;
+    float EnvironmentColour;
 };
 
 class DlssNr_Common

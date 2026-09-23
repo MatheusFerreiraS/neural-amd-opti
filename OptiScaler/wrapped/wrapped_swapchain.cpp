@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "wrapped_swapchain.h"
+#include <hooks/DxgiSwapchainSizing.h>
 
 #include <Util.h>
 #include <Config.h>
@@ -16,6 +17,8 @@
 #include <d3d12.h>
 #include <misc/IdentifyGpu.h>
 #include <hooks/Xell_Hooks.h>
+
+#include <magic_enum.hpp>
 
 #ifdef LOW_LATENCY_INPUTS
 #include <low_latency/input/input_antilag2.h>
@@ -50,6 +53,126 @@ const GUID IID_IUnwrappedDXGISwapChain = {
 static ID3D12Fence* resizeFence = nullptr;
 static UINT64 resizeFenceValue = 0;
 static HANDLE resizeFenceEvent = nullptr;
+
+static void UpdateOutputColorSpace(DXGI_COLOR_SPACE_TYPE colorSpace)
+{
+    auto& state = State::Instance();
+
+    OutputColorSpace info {};
+    info.dxgiColorSpace = colorSpace;
+
+    switch (colorSpace)
+    {
+        // ------------------------------------------------------------
+        // SDR / Rec.709
+        // ------------------------------------------------------------
+
+    case DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709:
+        info.transfer = ColorTransfer::SRGB;
+        info.primaries = ColorPrimaries::Rec709;
+        info.range = ColorRange::Full;
+        info.model = ColorModel::RGB;
+        info.valid = true;
+
+        break;
+
+    case DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P709:
+        info.transfer = ColorTransfer::SRGB;
+        info.primaries = ColorPrimaries::Rec709;
+        info.range = ColorRange::Studio;
+        info.model = ColorModel::RGB;
+        info.valid = true;
+
+        break;
+
+        // ------------------------------------------------------------
+        // scRGB / linear Rec.709
+        // ------------------------------------------------------------
+
+    case DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709:
+        info.transfer = ColorTransfer::Linear;
+        info.primaries = ColorPrimaries::Rec709;
+        info.range = ColorRange::Full;
+        info.model = ColorModel::RGB;
+        info.valid = true;
+
+        break;
+
+        // ------------------------------------------------------------
+        // HDR10 / PQ / Rec.2020
+        // ------------------------------------------------------------
+
+    case DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020:
+        info.transfer = ColorTransfer::PQ;
+        info.primaries = ColorPrimaries::Rec2020;
+        info.range = ColorRange::Full;
+        info.model = ColorModel::RGB;
+        info.valid = true;
+
+        break;
+
+    case DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020:
+        info.transfer = ColorTransfer::PQ;
+        info.primaries = ColorPrimaries::Rec2020;
+        info.range = ColorRange::Studio;
+        info.model = ColorModel::RGB;
+        info.valid = true;
+
+        break;
+
+    case DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020:
+    case DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020:
+        info.transfer = ColorTransfer::PQ;
+        info.primaries = ColorPrimaries::Rec2020;
+        info.range = ColorRange::Studio;
+        info.model = ColorModel::YCbCr;
+        info.valid = true;
+
+        break;
+
+        // ------------------------------------------------------------
+        // HLG / Rec.2020
+        // ------------------------------------------------------------
+
+    case DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020:
+        info.transfer = ColorTransfer::HLG;
+        info.primaries = ColorPrimaries::Rec2020;
+        info.range = ColorRange::Full;
+        info.model = ColorModel::YCbCr;
+        info.valid = true;
+
+        break;
+
+    case DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020:
+        info.transfer = ColorTransfer::HLG;
+        info.primaries = ColorPrimaries::Rec2020;
+        info.range = ColorRange::Studio;
+        info.model = ColorModel::YCbCr;
+        info.valid = true;
+
+        break;
+
+        // ------------------------------------------------------------
+        // Unknown / unsupported
+        // ------------------------------------------------------------
+
+    default:
+        info.transfer = ColorTransfer::Unknown;
+        info.primaries = ColorPrimaries::Unknown;
+        info.range = ColorRange::Unknown;
+        info.model = ColorModel::Unknown;
+        info.valid = false;
+
+        break;
+    }
+
+    state.outputColorSpace = info;
+
+    LOG_INFO("Output color space updated: DXGI: {}, Transfer: {}, Primaries: {}, Range: {}, Model: {}, Valid: {}",
+             magic_enum::enum_name(info.dxgiColorSpace), magic_enum::enum_name(info.transfer),
+             magic_enum::enum_name(info.primaries), magic_enum::enum_name(info.range),
+             magic_enum::enum_name(info.model), info.valid);
+}
 
 static void WaitForGPUIdle(IUnknown* object)
 {
@@ -365,7 +488,12 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     {
         // Tick feature to let it know if it's frozen
         if (auto currentFeature = State::Instance().currentFeature; currentFeature != nullptr)
-            currentFeature->TickFrozenCheck();
+        {
+            if (auto currentFg = State::Instance().currentFG; currentFg != nullptr)
+                currentFeature->TickFrozenCheck(currentFg->GetInterpolatedFrameCount());
+            else
+                currentFeature->TickFrozenCheck();
+        }
 
         // Draw overlay
         MenuOverlayDx::Present(pSwapChain, SyncInterval, Flags, pPresentParameters, pDevice, hWnd, isUWP);
@@ -400,6 +528,14 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         State::Instance().frameCount = _frameCounter;
     }
 
+    // Deferred feature work (e.g. the FSR-RR denoiser dispatch recorded into
+    // its own command list at evaluate) must execute after every title
+    // submission of this frame and before the next frame's list, which is
+    // exactly this point: the title has submitted all its command lists and
+    // the swapchain has not been presented yet.
+    if (auto* feature = State::Instance().currentFeature)
+        feature->SubmitDeferredCommandLists();
+
     LOG_DEBUG("Calling original present");
 
     // swapchain present
@@ -424,8 +560,8 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 }
 
 WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* pDevice, HWND hWnd, UINT flags,
-                                               bool isUWP)
-    : _real(real), _device(pDevice), _handle(hWnd), _refcount(1), _uwp(isUWP)
+                                               bool isUWP, bool isComposition)
+    : _real(real), _device(pDevice), _handle(hWnd), _refcount(1), _uwp(isUWP), _composition(isComposition)
 {
     _id = ++scCount;
     _lastFlags = flags;
@@ -652,6 +788,11 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UIN
     OwnedLockGuard lock(_localMutex, 4);
 #endif
 
+    if (_composition && !IsCompositionWindow(_handle))
+        _handle = FindCompositionWindow();
+    if (_composition && _handle == nullptr)
+        return _real->Present(SyncInterval, Flags);
+
     HRESULT result;
 
     if ((Flags & DXGI_PRESENT_TEST) == 0)
@@ -774,7 +915,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers(UINT BufferCount
 
     State::Instance().scChanged = true;
 
-    if (Config::Instance()->OverrideVsync.value_or_default() && !State::Instance().SCExclusiveFullscreen &&
+    if (!_composition && Config::Instance()->OverrideVsync.value_or_default() && !State::Instance().SCExclusiveFullscreen &&
         State::Instance().currentFG == nullptr)
     {
         LOG_DEBUG("Overriding flags");
@@ -1010,6 +1151,11 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UI
     OwnedLockGuard lock(_localMutex, 5);
 #endif
 
+    if (_composition && !IsCompositionWindow(_handle))
+        _handle = FindCompositionWindow();
+    if (_composition && _handle == nullptr)
+        return _real1->Present1(SyncInterval, Flags, pPresentParameters);
+
     HRESULT result;
 
     if ((Flags & DXGI_PRESENT_TEST) == 0)
@@ -1108,42 +1254,17 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::CheckColorSpaceSupport(DXGI_CO
     return _real3->CheckColorSpaceSupport(ColorSpace, pColorSpaceSupport);
 }
 
-HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace)
+// What one unit of the buffer means, which is the question the white point is really asking.
+//
+// Two of these encodings are absolute. PQ (ST.2084) puts 1.0 at 10,000 nits by definition, and
+// scRGB -- linear, Rec.709 primaries -- puts 1.0 at 80 nits. In either the divisor this pass
+// wants is arithmetic rather than a guess or a reading: paper white in nits over the unit. The
+// rest are relative and say nothing about scale.
+//
+// Logged rather than used, for now. Whether a game that reports one of these actually honours it
+// is the thing worth knowing before anything is built on it.
+static void LogSwapchainColourSpaceScale(DXGI_COLOR_SPACE_TYPE ColorSpace)
 {
-    if (ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
-        ColorSpace == DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020 ||
-        ColorSpace == DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020 ||
-        ColorSpace == DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020)
-    {
-        State::Instance().swapchainEncoding = ColorEncoding::PQ;
-    }
-    else if (ColorSpace == DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020 ||
-             ColorSpace == DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020)
-    {
-        State::Instance().swapchainEncoding = ColorEncoding::HLG;
-    }
-    else if (ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709)
-    {
-        State::Instance().swapchainEncoding = ColorEncoding::ScRGB;
-    }
-    else
-    {
-        State::Instance().swapchainEncoding = ColorEncoding::SDR;
-    }
-
-    CheckForHdrOutput();
-
-    MenuOverlayDx::CleanupRenderTarget(true, _handle);
-
-    // What one unit of the buffer means, which is the question the white point is really asking.
-    //
-    // Two of these encodings are absolute. PQ (ST.2084) puts 1.0 at 10,000 nits by definition, and
-    // scRGB -- linear, Rec.709 primaries -- puts 1.0 at 80 nits. In either the divisor this pass
-    // wants is arithmetic rather than a guess or a reading: paper white in nits over the unit. The
-    // rest are relative and say nothing about scale.
-    //
-    // Logged rather than used, for now. Whether a game that reports one of these actually honours it
-    // is the thing worth knowing before anything is built on it.
     const char* meaning = "relative -- no scale to be had";
     const char* name = "other";
 
@@ -1171,8 +1292,28 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetColorSpace1(DXGI_COLOR_SPAC
     }
 
     LOG_INFO("DLSS-NR: swapchain colour space {} -- {} ({})", (int) ColorSpace, name, meaning);
+}
 
-    return _real3->SetColorSpace1(ColorSpace);
+HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace)
+{
+    auto result = _real3->SetColorSpace1(ColorSpace);
+
+    if (SUCCEEDED(result))
+    {
+        UpdateOutputColorSpace(ColorSpace);
+
+        CheckForHdrOutput();
+
+        LOG_INFO("Output HDR Active: {}", State::Instance().hdrOutputActive);
+
+        MenuOverlayDx::ApplyThemeStyle();
+
+        MenuOverlayDx::CleanupRenderTarget(true, _handle);
+
+        LogSwapchainColourSpaceScale(ColorSpace);
+    }
+
+    return result;
 }
 
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCount, UINT Width, UINT Height,
@@ -1221,7 +1362,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
 
     State::Instance().scChanged = true;
 
-    if (Config::Instance()->OverrideVsync.value_or_default() && !State::Instance().SCExclusiveFullscreen &&
+    if (!_composition && Config::Instance()->OverrideVsync.value_or_default() && !State::Instance().SCExclusiveFullscreen &&
         State::Instance().currentFG == nullptr)
     {
         LOG_DEBUG("Overriding flags");

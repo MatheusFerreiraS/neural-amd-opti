@@ -20,9 +20,11 @@ def convert_shader_to_header(input_file_path, output_file_path, array_name):
             for i, byte in enumerate(byte_array):
                 output_file.write(f"0x{byte:02x}")
                 if i < len(byte_array) - 1:
-                    output_file.write(", ")
-                if (i + 1) % 12 == 0:
-                    output_file.write("\n    ")
+                    output_file.write(",")
+                    if (i + 1) % 12 == 0:
+                        output_file.write("\n    ")
+                    else:
+                        output_file.write(" ")
 
             output_file.write("\n};\n")
 

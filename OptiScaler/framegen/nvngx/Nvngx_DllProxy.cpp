@@ -183,7 +183,18 @@ NVSDK_NGX_Result Nvngx_DllProxy::D3D12_EvaluateFeature(ID3D12GraphicsCommandList
         InParameters->Set("DLSSG.ShowDebug", showDebug);
         InParameters->Set("DLSSG.DispatchFlags", flags);
 
-        return _DLSSG_D3D12_EvaluateFeature(InCmdList, InFeatureHandle, InParameters, InCallback);
+        const auto result = _DLSSG_D3D12_EvaluateFeature(InCmdList, InFeatureHandle, InParameters, InCallback);
+        static thread_local int lastCount = -1;
+        static thread_local NVSDK_NGX_Result lastResult = NVSDK_NGX_Result_Fail;
+        int count = 0;
+        InParameters->Get("DLSSG.MultiFrameCount", &count);
+        if (count != lastCount || result != lastResult)
+        {
+            LOG_INFO("DLSSG replacement evaluate: generatedFrames={} result={:X}", count, static_cast<unsigned>(result));
+            lastCount = count;
+            lastResult = result;
+        }
+        return result;
     }
 
     return NVSDK_NGX_Result_Fail;
