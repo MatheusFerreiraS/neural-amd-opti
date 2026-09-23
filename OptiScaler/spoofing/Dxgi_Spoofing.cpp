@@ -35,6 +35,8 @@ HRESULT DxgiSpoofing::hkGetDesc3(IDXGIAdapter4* This, DXGI_ADAPTER_DESC3* pDesc)
     auto result = o_GetDesc3(This, pDesc);
 
     auto caller = Util::WhoIsTheCaller(_ReturnAddress());
+    LOG_INFO("GetDesc3 caller={} vendor={:x} name={}", caller, (UINT) pDesc->VendorId,
+             wstring_to_string(pDesc->Description));
 
     if (iequals(caller, "vulkan-1.dll") || iequals(caller, "amdvlk64.dll") || iequals(caller, "dxgi.dll") ||
         iequals(caller, "d3d12.dll") || iequals(caller, "d3d12Core.dll"))
@@ -84,6 +86,7 @@ HRESULT DxgiSpoofing::hkGetDesc2(IDXGIAdapter2* This, DXGI_ADAPTER_DESC2* pDesc)
     auto result = o_GetDesc2(This, pDesc);
 
     auto caller = Util::WhoIsTheCaller(_ReturnAddress());
+    LOG_INFO("hkGetDesc2 caller={} vendor={:x}", caller, (UINT) pDesc->VendorId);
 
     if (iequals(caller, "vulkan-1.dll") || iequals(caller, "amdvlk64.dll") || iequals(caller, "dxgi.dll") ||
         iequals(caller, "d3d12.dll") || iequals(caller, "d3d12Core.dll"))
@@ -135,6 +138,7 @@ HRESULT DxgiSpoofing::hkGetDesc1(IDXGIAdapter1* This, DXGI_ADAPTER_DESC1* pDesc)
     auto result = o_GetDesc1(This, pDesc);
 
     auto caller = Util::WhoIsTheCaller(_ReturnAddress());
+    LOG_INFO("hkGetDesc1 caller={} vendor={:x}", caller, (UINT) pDesc->VendorId);
 
     if (iequals(caller, "vulkan-1.dll") || iequals(caller, "amdvlk64.dll") || iequals(caller, "dxgi.dll") ||
         iequals(caller, "d3d12.dll") || iequals(caller, "d3d12Core.dll"))
@@ -197,6 +201,7 @@ HRESULT DxgiSpoofing::hkGetDesc(IDXGIAdapter* This, DXGI_ADAPTER_DESC* pDesc)
     auto result = o_GetDesc(This, pDesc);
 
     auto caller = Util::WhoIsTheCaller(_ReturnAddress());
+    LOG_INFO("hkGetDesc caller={} vendor={:x}", caller, (UINT) pDesc->VendorId);
 
     if (iequals(caller, "vulkan-1.dll") || iequals(caller, "amdvlk64.dll") || iequals(caller, "dxgi.dll") ||
         iequals(caller, "d3d12.dll") || iequals(caller, "d3d12Core.dll"))

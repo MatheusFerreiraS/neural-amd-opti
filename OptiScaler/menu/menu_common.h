@@ -88,6 +88,15 @@ class MenuCommon
     // mipmap calculations
     inline static bool _showMipmapCalcWindow = false;
     inline static bool _showHudlessWindow = false;
+    inline static bool _showRRResourceInspectorWindow = false;
+
+    // The FSR-RR denoiser tunables, debug views and inspectors draw into their own
+    // window, opened from the FSR-RR page.
+    inline static bool _showRRAdvancedWindow = false;
+    inline static bool _rrInspectorActiveOnly = true;
+    inline static bool _rrInspectorEmissivePassOnly = false;
+    inline static uint64_t _rrInspectorPsoFilter = 0;
+    inline static int _rrInspectorMaxWriteAge = 4;
     inline static float _mipBias = 0.0f;
     inline static float _mipBiasCalculated = 0.0f;
     inline static uint32_t _mipmapUpscalerQuality = 0;
@@ -159,8 +168,9 @@ class MenuCommon
 
     // RenderMainMenuWindow section helpers. These keep the main window flow readable
     // without changing the existing ImGui layout, labels, or setting side effects.
+    static void RenderMainMenuStatusPills(RenderMenuContext& ctx);
     static void RenderMainMenuHeaderMessages(RenderMenuContext& ctx);
-    static void RenderMainMenuTable(RenderMenuContext& ctx);
+    static void RenderMainMenuTabs(RenderMenuContext& ctx);
     static void RenderActiveUpscalerSettings(RenderMenuContext& ctx);
     static void RenderFrameGenerationSelection(RenderMenuContext& ctx);
     static void RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx);
@@ -182,6 +192,7 @@ class MenuCommon
     static void RenderMainMenuBottomBar(RenderMenuContext& ctx);
     static void RenderMipmapBiasWindow(RenderMenuContext& ctx, ImGuiWindowFlags flags);
     static void RenderHudlessResourcesWindow(RenderMenuContext& ctx, ImGuiWindowFlags flags);
+    static void RenderRRResourceInspectorWindow(RenderMenuContext& ctx, ImGuiWindowFlags flags);
 
     static void UpdateManualInput(HWND targetHwnd);
 
@@ -198,4 +209,5 @@ class MenuCommon
     static void Shutdown();
     static void HideMenu();
     static void Present();
+    static void ApplyThemeStyle();
 };

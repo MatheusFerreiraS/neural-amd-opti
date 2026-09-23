@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <dlssnr/amd/AmdBridge.h>
 #include "Util.h"
 #include "Config.h"
 
@@ -9,6 +10,7 @@
 #include "dlssnr/DlssNr_ExposureScan.h"
 #include <upscalers/dlss/DLSSFeature_Dx12.h>
 #include <shaders/output_scaling/OS_Dx12.h>
+#include <proxies/FfxApi_Proxy.h>
 
 #include <upscalers/FeatureProvider_Dx12.h>
 #include "upscalers/dlss/DLSSFeature_Dx12.h"
@@ -610,6 +612,11 @@ static Upscaler GetUpscalerBackend()
     if (Config::Instance()->Dx12Upscaler.has_value())
         upscaler = Config::Instance()->Dx12Upscaler.value();
 
+    // FSR-RR is only ever created for Ray Reconstruction requests; fall back to the
+    // regular FFX backend for ordinary upscaling requests while it is configured.
+    if (upscaler == Upscaler::FSR_RR)
+        upscaler = Upscaler::FFX;
+
     return upscaler;
 }
 
@@ -654,8 +661,16 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
     }
     else
     {
-        upscalerBackend = Upscaler::DLSSD;
-        LOG_INFO("Creating DLSSD (Ray Reconstruction) feature");
+        if (IdentifyGpu::getPrimaryGpu().vendorId == VendorId::Nvidia)
+        {
+            upscalerBackend = Upscaler::DLSSD;
+            LOG_INFO("Creating DLSSD (Ray Reconstruction) feature");
+        }
+        else
+        {
+            upscalerBackend = Upscaler::FSR_RR;
+            LOG_INFO("Creating FSR_RR (Ray Regeneration) feature");
+        }
     }
 
     // Root signature restoration setup
@@ -708,6 +723,8 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
     // Initialize feature
     if (feature->Init(D3D12Device, InCmdList, InParameters))
     {
+        Dx12Contexts[handleId].featureKey = upscalerBackend;
+        Dx12Contexts[handleId].featureID = InFeatureID;
         state.currentFeature = feature;
         evalCounter = 0;
         UpscalerInputsDx12::Reset();
@@ -716,6 +733,8 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
     {
         LOG_ERROR("Feature '{}' initialization failed falling back to FSR 2.1.2", UpscalerDisplayName(upscalerBackend));
         state.newBackend = Upscaler::FSR21;
+        Dx12Contexts[handleId].featureKey = Upscaler::FSR21;
+        Dx12Contexts[handleId].featureID = InFeatureID;
         state.changeBackend[handleId] = true;
     }
 
@@ -818,6 +837,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     if (!InHandle)
         return NVSDK_NGX_Result_Success;
 
+    // Capture the actual native/GPU state before any release-side cleanup.
+    // Diagnostic only: do not infer that game-owned work has retired here.
+    if (!shutdown)
+        DlssNr::AmdBridge::TraceContextRelease(InHandle->Id, false);
+
     // Before any feature's resources are freed, drop the exposure scan's references to whatever it
     // captured. The scan AddRef's candidates and never released them; a Streamline/DLSS-D resource it
     // pinned would otherwise be used after its heap is freed here -- the Cyberpunk device-removal.
@@ -883,6 +907,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
 
             // Erase from map (smart pointer reset is implicit on erase)
             Dx12Contexts.erase(it);
+            if (!shutdown)
+                DlssNr::AmdBridge::TraceContextRelease(handleId, true);
         }
     }
     else
@@ -925,6 +951,40 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_GetFeatureRequirements(
         // Some old windows 10 os version
         strcpy_s(OutSupported->MinOSVersion, "10.0.10240.16384");
         return NVSDK_NGX_Result_Success;
+    }
+
+    // FSR Ray Regen check
+    if (IdentifyGpu::getPrimaryGpu().vendorId != VendorId::Nvidia &&
+        FeatureDiscoveryInfo->FeatureID == NVSDK_NGX_Feature_RayReconstruction)
+    {
+        if (!FfxApiProxy::IsDenoiserReady())
+            FfxApiProxy::InitFfxDx12();
+
+        /* Somewhat flawed check. ffxQuery can't be used for RR to check support because
+        this runs before the D3D12Device* is captured, and the newer FFX APIs require it
+        to validate support. Slightly inconvenient, but actually a non-issue.
+
+        InitNGXParameters() executes later, after the device is available, so full validation
+        can be done there. All this does is allow the game to actually checks the params
+        instead of failing early.
+        */
+        if (FfxApiProxy::IsSRReady() && FfxApiProxy::IsDenoiserReady())
+        {
+            LOG_DEBUG("Reporting support for DLSSD -> FSR Ray Regeneration");
+
+            if (OutSupported == nullptr)
+            {
+                static auto tmp = NVSDK_NGX_FeatureRequirement();
+                OutSupported = &tmp;
+            }
+
+            OutSupported->FeatureSupported = NVSDK_NGX_FeatureSupportResult_Supported;
+            OutSupported->MinHWArchitecture = 0;
+            strcpy_s(OutSupported->MinOSVersion, "10.0.10240.16384");
+            return NVSDK_NGX_Result_Success;
+        }
+        else
+            LOG_DEBUG("DLSSD -> FSR Ray Regeneration not supported");
     }
 
     if (Config::Instance()->DLSSEnabled.value_or_default() && IdentifyGpu::getPrimaryGpu().dlssCapable &&
@@ -1072,8 +1132,20 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
 
     if (!evalSuccess)
     {
-        LOG_ERROR("Feature evaluation failed for '{}'", feature->Name());
-        ImGui::InsertNotification({ ImGuiToastType::Error, 10000, "Upscaler failed to run!" });
+        // A feature that asked to be rebuilt from inside its own evaluate declined this one frame on
+        // purpose and returns on the next: a preset change can land the render size past the
+        // allocation ceiling the context was created with, and releasing those resources mid-frame
+        // would pull them out from under command lists already submitted. The player sees the preset
+        // apply normally, so reporting it as a failure only says the upscaler broke when it did not.
+        if (state.changeBackend[handleId])
+        {
+            LOG_INFO("Feature '{}' declined this frame and asked to be rebuilt", feature->Name());
+        }
+        else
+        {
+            LOG_ERROR("Feature evaluation failed for '{}'", feature->Name());
+            ImGui::InsertNotification({ ImGuiToastType::Error, 10000, "Upscaler failed to run!" });
+        }
     }
 
     // Restore root signatures
@@ -1203,8 +1275,14 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
 
             LOG_DEBUG("Passthrough to native DLSS EvaluateFeature for handle {}", handleId);
 
+            // Pre-SR placement is valid only for Super Resolution. Ray Reconstruction carries a
+            // different set of inputs and stays on the post-upscale path.
+            if (feature == NVSDK_NGX_Feature_SuperSampling)
+                DlssNr::EvaluateBeforeUpscale(InCmdList, InParameters);
+
             NVSDK_NGX_Result result =
                 NVNGXProxy::D3D12_EvaluateFeature()(InCmdList, InFeatureHandle, InParameters, InCallback);
+            DlssNr::AmdBridge::Restore(InParameters);
             LOG_DEBUG("Native DLSS EvaluateFeature result: 0x{:X}", (uint32_t) result);
 
             // Neural Rendering runs over what the upscaler just wrote, on the same list, so frame
@@ -1217,7 +1295,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
             // the same per-frame cost, placed at one seam or the other.
             if (result == NVSDK_NGX_Result_Success && feature != NVSDK_NGX_Feature_FrameGeneration &&
                 !preNr.substituted)
-                DlssNr::EvaluateAfterUpscale(InCmdList, InParameters);
+                DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr,
+                                             feature == NVSDK_NGX_Feature_RayReconstruction);
 
             return result;
         }
@@ -1239,11 +1318,16 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     if (lastDlssgCameraFar.has_value())
         InParameters->Set("DLSSG.CameraFar", lastDlssgCameraFar.value());
 
+    if (feature == NVSDK_NGX_Feature_SuperSampling)
+        DlssNr::EvaluateBeforeUpscale(InCmdList, InParameters);
+
     // OptiScaler internal handling
     PreUpscaleNr preNr;
     preNr.run(InCmdList, InParameters, feature);
 
     const NVSDK_NGX_Result optiResult = TryEvaluateOptiFeature(InCmdList, InFeatureHandle, InParameters, InCallback);
+
+    DlssNr::AmdBridge::Restore(InParameters);
 
     // Same pass, for OptiScaler's own upscalers rather than native DLSS.
     //
@@ -1254,7 +1338,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     // EvaluateAfterUpscale declines by itself on a frame the pipeline stage already handled, so every
     // call site is covered rather than this one.
     if (optiResult == NVSDK_NGX_Result_Success && feature != NVSDK_NGX_Feature_FrameGeneration && !preNr.substituted)
-        DlssNr::EvaluateAfterUpscale(InCmdList, InParameters);
+        DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, feature == NVSDK_NGX_Feature_RayReconstruction);
 
     return optiResult;
 }

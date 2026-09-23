@@ -19,9 +19,13 @@ namespace
 {
 
 // How many candidates are worth keeping. The shape being looked for is rare -- in a frame's worth of
-// unordered access views a game creates hundreds, and a handful are this small -- so a low cap is
-// not a compromise, it is a statement that finding twenty means the filter is wrong.
-constexpr size_t kMaxCandidates = 24;
+// A cap on how many candidates are tracked. Kept low originally as a statement that a tight filter
+// should find only a handful -- but buffer-heavy engines crowd the real exposure out of a low cap:
+// Cyberpunk's REDengine creates dozens of tiny UAV buffers the same 4/12 bytes as an exposure, and its
+// real one can land past slot 24. Now that the scan is crash-safe (references dropped at feature
+// teardown), the real discriminator is MOVEMENT, not scarcity, so a larger cap costs only a few tiny
+// copies a frame and stops the answer being crowded out.
+constexpr size_t kMaxCandidates = 64;
 
 // Ring depth for the readbacks. Four, so the slot being read is four frames behind the slot being
 // written and the read never waits on the GPU. Same depth and the same reason as the meter's.
@@ -45,13 +49,13 @@ struct Tracked
     std::string shape;
     bool isBuffer = false;
     unsigned int bytes = 4;
-    DXGI_FORMAT texFormat = DXGI_FORMAT_UNKNOWN;  // the source texture's format, for CopyTextureRegion
+    DXGI_FORMAT texFormat = DXGI_FORMAT_UNKNOWN; // the source texture's format, for CopyTextureRegion
 
     float latest = 0.0f;
     float lowest = 0.0f;
     float highest = 0.0f;
     unsigned int reads = 0;
-    unsigned int inRange = 0;   // reads that could plausibly be an exposure
+    unsigned int inRange = 0; // reads that could plausibly be an exposure
     bool moves = false;
 };
 
@@ -63,7 +67,7 @@ struct ScanState
     unsigned long long frames = 0;
     const char* status = "not started";
     bool complained = false;
-    unsigned int nearMissLogged = 0;   // bounded diagnostic; see NoteResource
+    unsigned int nearMissLogged = 0; // bounded diagnostic; see NoteResource
 };
 
 ScanState g_scan;
@@ -181,9 +185,8 @@ bool EnsureReadback(ID3D12Device* device)
         desc.SampleDesc.Count = 1;
         desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-        if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                                                   D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                                   IID_PPV_ARGS(&g_scan.readback[i]))))
+        if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                   nullptr, IID_PPV_ARGS(&g_scan.readback[i]))))
         {
             g_scan.status = "could not allocate the readback buffers";
             return false;
@@ -216,8 +219,8 @@ bool Wanted()
 // engines actually allocate: some keep a small histogram beside the value, some keep a few frames of
 // history, and some put the whole thing in a four-channel texture and use one channel. The filter
 // only has to be tight enough that the list stays readable.
-bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsigned int* outBytes,
-                      bool* outIsBuffer, DXGI_FORMAT* outFormat)
+bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsigned int* outBytes, bool* outIsBuffer,
+                      DXGI_FORMAT* outFormat)
 {
     // An exposure is computed, so it is written by a shader. This is the one condition worth being
     // strict about: it removes almost everything without removing anything that could be the answer.
@@ -264,8 +267,7 @@ bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsi
     return false;
 }
 
-void Adopt(ID3D12Resource* resource, const std::string& shape, unsigned int bytes, bool isBuffer,
-           DXGI_FORMAT texFormat)
+void Adopt(ID3D12Resource* resource, const std::string& shape, unsigned int bytes, bool isBuffer, DXGI_FORMAT texFormat)
 {
     for (const Tracked& t : g_scan.tracked)
     {
@@ -326,9 +328,9 @@ void NoteResource(const D3D12_RESOURCE_DESC* desc, ID3D12Resource* resource)
         if ((desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0 && g_scan.nearMissLogged < 40)
         {
             g_scan.nearMissLogged++;
-            LOG_INFO("DLSS-NR scan near-miss #{}: UAV dim {} {}x{}x{} fmt {} (filter rejected)",
-                     g_scan.nearMissLogged, (int) desc->Dimension, (unsigned int) desc->Width,
-                     desc->Height, desc->DepthOrArraySize, (int) desc->Format);
+            LOG_INFO("DLSS-NR scan near-miss #{}: UAV dim {} {}x{}x{} fmt {} (filter rejected)", g_scan.nearMissLogged,
+                     (int) desc->Dimension, (unsigned int) desc->Width, desc->Height, desc->DepthOrArraySize,
+                     (int) desc->Format);
         }
 
         return;
@@ -483,6 +485,32 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
         }
     }
 
+    // Periodic movement readout. The menu's Advanced panel shows which candidate tracks the light, but
+    // the log did not -- so a game the scan is being taught (Cyberpunk) could not be cracked from a log
+    // alone. Every ~300 frames, name the candidates that MOVE and their travel: the exposure is the one
+    // that swings widely between bright and dark. Throttled, and only while the scan is wanted.
+    if (g_scan.frames > 0 && g_scan.frames % 300 == 0)
+    {
+        unsigned int movers = 0;
+
+        for (size_t i = 0; i < g_scan.tracked.size(); ++i)
+        {
+            const Tracked& t = g_scan.tracked[i];
+
+            if (!t.moves)
+                continue;
+
+            movers++;
+            LOG_INFO("DLSS-NR scan mover: candidate {} ({}) range {:.5f}..{:.5f} (x{:.1f}), latest {:.5f}",
+                     (unsigned int) (i + 1), t.shape, t.lowest, t.highest,
+                     t.lowest > kFloor ? t.highest / t.lowest : 0.0f, t.latest);
+        }
+
+        if (movers == 0)
+            LOG_INFO("DLSS-NR scan: {} candidates tracked, none moving yet -- go between bright and dark",
+                     (unsigned int) g_scan.tracked.size());
+    }
+
     ID3D12Resource* dst = g_scan.readback[g_scan.frames % kSlots];
 
     if (dst == nullptr)
@@ -503,8 +531,7 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
         if (t.resource == nullptr)
             continue;
 
-        Barrier(cmdList, t.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_COPY_SOURCE);
+        Barrier(cmdList, t.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
 
         if (t.isBuffer)
         {
@@ -531,8 +558,7 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
             cmdList->CopyTextureRegion(&to, 0, 0, 0, &src, &one);
         }
 
-        Barrier(cmdList, t.resource, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Barrier(cmdList, t.resource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
 
     g_scan.frames++;
@@ -598,8 +624,8 @@ const char* Headline()
             mostReads = std::max(mostReads, t.reads);
 
         line = "DLSS-NR exposure scan: watching " + std::to_string(g_scan.tracked.size()) +
-               ", none moving yet -- walk between light and shade  (" +
-               std::to_string(mostReads * 100 / kPatience) + "%)";
+               ", none moving yet -- walk between light and shade  (" + std::to_string(mostReads * 100 / kPatience) +
+               "%)";
         break;
     }
 
@@ -631,10 +657,9 @@ const char* Headline()
         char buf[192];
         // The live value is in here so the line visibly ticks. Without it the indicator looks stuck
         // the moment the range settles, which is exactly when it has succeeded.
-        snprintf(buf, sizeof(buf),
-                 "DLSS-NR exposure scan: FOUND -- candidate %zu = %.5f  (%.5f..%.5f, x%.0f)  done",
-                 best + 1, g_scan.tracked[best].latest, g_scan.tracked[best].lowest,
-                 g_scan.tracked[best].highest, bestRatio);
+        snprintf(buf, sizeof(buf), "DLSS-NR exposure scan: FOUND -- candidate %zu = %.5f  (%.5f..%.5f, x%.0f)  done",
+                 best + 1, g_scan.tracked[best].latest, g_scan.tracked[best].lowest, g_scan.tracked[best].highest,
+                 bestRatio);
         line = buf;
         break;
     }
@@ -721,38 +746,40 @@ bool Scanning() { return Wanted(); }
 
 namespace
 {
-std::vector<AnchorPoint> g_anchors;   // guarded by g_scanMutex, kept sorted by scan ascending
+std::vector<AnchorPoint> g_anchors; // guarded by g_scanMutex, kept sorted by scan ascending
 
 void SortAnchorsLocked()
 {
     std::sort(g_anchors.begin(), g_anchors.end(),
               [](const AnchorPoint& a, const AnchorPoint& b) { return a.scan < b.scan; });
 }
-}  // namespace
+} // namespace
 
 // Load the persisted table (or migrate a pre-existing single anchor) exactly once, before any lock
 // is taken -- LoadAnchors/AnchorAdd take g_scanMutex themselves, so this must not hold it.
 void EnsureAnchorsLoaded()
 {
     static std::once_flag once;
-    std::call_once(once, [] {
-        auto& cfg = *Config::Instance();
-        const std::string ser = cfg.DlssNrScanAnchors.value_or_default();
+    std::call_once(once,
+                   []
+                   {
+                       auto& cfg = *Config::Instance();
+                       const std::string ser = cfg.DlssNrScanAnchors.value_or_default();
 
-        if (!ser.empty())
-        {
-            LoadAnchors(ser);
-            return;
-        }
+                       if (!ser.empty())
+                       {
+                           LoadAnchors(ser);
+                           return;
+                       }
 
-        // Migration: fold a single-anchor ini from before this feature into a one-row table so the
-        // user does not lose the calibration they already set.
-        const float v = cfg.DlssNrScanAnchorValue.value_or_default();
-        const float w = cfg.DlssNrScanAnchorWhitePoint.value_or_default();
+                       // Migration: fold a single-anchor ini from before this feature into a one-row table so the
+                       // user does not lose the calibration they already set.
+                       const float v = cfg.DlssNrScanAnchorValue.value_or_default();
+                       const float w = cfg.DlssNrScanAnchorWhitePoint.value_or_default();
 
-        if (v > kFloor && w > 1e-6f)
-            AnchorAdd(v, w);
-    });
+                       if (v > kFloor && w > 1e-6f)
+                           AnchorAdd(v, w);
+                   });
 }
 
 std::vector<AnchorPoint> Anchors()

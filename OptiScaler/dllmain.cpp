@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <psapi.h>
 #include "dllmain.h"
 
 #include "Util.h"
@@ -6,6 +7,7 @@
 #include "Logger.h"
 #include "resource.h"
 #include "DllNames.h"
+#include <misc/FirstLightPTUnlock.h>
 
 #include "proxies/Dxgi_Proxy.h"
 #include "proxies/Kernel32_Proxy.h"
@@ -1326,6 +1328,9 @@ static void printQuirks(flag_set<GameQuirk>& quirks)
     if (quirks & GameQuirk::CreateSLOnThe2ndDevice)
         stringQuirks.push_back("Create SL on the 2nd device");
 
+    if (quirks & GameQuirk::UnlockPathTracingMenu)
+        stringQuirks.push_back("Unlock Path Tracing / Ray Reconstruction menu options");
+
     state->detectedQuirks.append_range(stringQuirks);
     for (auto& stringQuirk : stringQuirks)
         spdlog::info("Quirk: {}", stringQuirk);
@@ -1672,6 +1677,9 @@ static void CheckQuirks(bool isNvidia)
     State::Instance().gameQuirks = quirks;
 
     printQuirks(quirks);
+
+    if (quirks & GameQuirk::UnlockPathTracingMenu)
+        FirstLightPTUnlock::StartWatcher();
 }
 
 void CheckForExcludedProcess()
@@ -1740,6 +1748,9 @@ void CheckMemoryForProxies()
 
 DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
 {
+    // TODO: dxvk deadlocks when the game and identify gpu calls create at the same time
+    // Sleep(1000);
+
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
 
     // We don't yet know if the GPU supports FSR 4 so hook any AMD
@@ -1764,6 +1775,56 @@ DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
     if (hModuleVoid)
         IdentifyGpu::updateD3d12Capabilities();
 
+    return 0;
+}
+
+// 007 First Light: the engine registers the Path Tracing / DLSS-RR graphics
+// options only when its cached GPU vendor equals NVIDIA. Vendor is read from
+// the graphics info block early (before our DXGI spoof attaches), so force the
+// registration branch instead: NOP the conditional jump after the vendor cmp.
+static DWORD WINAPI PatchFirstLightPTGate(LPVOID)
+{
+    const BYTE pattern[] = { 0x8B, 0x85, 0xC0, 0x03, 0x00, 0x00, 0x3D, 0xDE, 0x10, 0x00, 0x00, 0x0F, 0x85 };
+    HMODULE exe = GetModuleHandle(nullptr);
+    if (exe == nullptr)
+        return 0;
+
+    MODULEINFO mi {};
+    GetModuleInformation(GetCurrentProcess(), exe, &mi, sizeof(mi));
+    const BYTE* base = (const BYTE*) mi.lpBaseOfDll;
+    const SIZE_T size = mi.SizeOfImage;
+
+    for (int attempt = 0; attempt < 120; attempt++) // retry ~60s while the packer unpacks
+    {
+        for (SIZE_T i = 0; i + sizeof(pattern) + 4 <= size; i++)
+        {
+            bool match = true;
+            for (SIZE_T j = 0; j < sizeof(pattern); j++)
+            {
+                if (base[i + j] != pattern[j])
+                {
+                    match = false;
+                    break;
+                }
+            }
+            if (match)
+            {
+                void* jneAddr = const_cast<BYTE*>(base + i + 11); // skip cmp, land on 0F 85
+                BYTE nops[6] = { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 };
+                DWORD oldProtect = 0;
+                if (VirtualProtect(jneAddr, sizeof(nops), PAGE_EXECUTE_READWRITE, &oldProtect))
+                {
+                    memcpy(jneAddr, nops, sizeof(nops));
+                    VirtualProtect(jneAddr, sizeof(nops), oldProtect, &oldProtect);
+                    FlushInstructionCache(GetCurrentProcess(), jneAddr, sizeof(nops));
+                    LOG_INFO("007 FL: PT/RR registration gate patched at {:#x}", (size_t) jneAddr);
+                }
+                return 0;
+            }
+        }
+        Sleep(500);
+    }
+    LOG_WARN("007 FL: PT/RR gate pattern not found");
     return 0;
 }
 
@@ -1869,6 +1930,22 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 #endif
 
         // Initial state of FG
+        State::Instance().externalFrameGeneration = Config::Instance()->ExternalFrameGeneration.value_or_default();
+        if (State::Instance().externalFrameGeneration)
+        {
+            // Only runtime overrides: preserve the user's OptiFG configuration for the next
+            // startup with External=false. Do not load a second FG provider or change Reflex.
+            auto* cfg = Config::Instance();
+            cfg->FGInput.set_volatile_value(FGInput::NoFG);
+            cfg->FGOutput.set_volatile_value(FGOutput::NoFG);
+            cfg->FGNvngxReplacement.set_volatile_value(FGNvngxReplacement::None);
+            cfg->FGEnabled.set_volatile_value(false);
+            cfg->ForceXeLL.set_volatile_value(false);
+            cfg->UseFakenvapi.set_volatile_value(false);
+            cfg->FN_ForceReflex.set_volatile_value(ForceReflex::InGame);
+            LOG_INFO("External frame generation: leaving Streamline/Reflex and MFG control to the game or unlocker; "
+                     "NR/SR remain available");
+        }
         State::Instance().activeFgInput = Config::Instance()->FGInput.value_or_default();
         State::Instance().activeFgOutput = Config::Instance()->FGOutput.value_or_default();
         State::Instance().activeFgNvngx = Config::Instance()->FGNvngxReplacement.value_or_default();
@@ -2070,6 +2147,15 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
 
         // Asi plugins
+        // 007 First Light: force the PT/RR settings registration branch (needs the unpacked image)
+        {
+            auto exePath = Util::ExePath().filename().string();
+            std::transform(exePath.begin(), exePath.end(), exePath.begin(),
+                           [](unsigned char c) { return (char) std::tolower(c); });
+            if (exePath == "007firstlight.exe")
+                CreateThread(nullptr, 0, PatchFirstLightPTGate, nullptr, 0, nullptr);
+        }
+
         if (Config::Instance()->LoadAsiPlugins.value_or_default())
         {
             spdlog::info("");

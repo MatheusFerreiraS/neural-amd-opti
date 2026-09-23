@@ -9,8 +9,12 @@
 # and the user supplies their own copy per game folder. Only the ~108 KB forwarder ships.
 
 param(
+    [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]*$')]
     [string]$Version = "v0.1.0-dlssnr",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$IncludeDlssFrameGeneration,
+    [switch]$AcceptNvidiaLicenses,
+    [string]$StreamlineArchive
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,11 +23,33 @@ $ErrorActionPreference = "Stop"
 # than one now -- the experiment runs in a git worktree beside the main tree, and a hardcoded root
 # silently packages the other one's build output while reporting success.
 $root = Split-Path -Parent $PSCommandPath
-$msb = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
-$stage = "$root\release\$Version"
-$zip = "$root\release\OptiScaler-DLSSNR-$Version.zip"
+$flavour = if ($IncludeDlssFrameGeneration) { '-with-dlss-fg' } else { '' }
+$stage = "$root\release\$Version$flavour"
+$zip = "$root\release\OptiScaler-DLSSNR-$Version$flavour.zip"
+if ((Test-Path -LiteralPath $stage) -or (Test-Path -LiteralPath $zip)) {
+    throw 'Release output already exists. Choose a new -Version; existing packages are never deleted or overwritten.'
+}
+if ($IncludeDlssFrameGeneration -and -not $AcceptNvidiaLicenses) {
+    throw 'Bundling NVIDIA binaries requires -AcceptNvidiaLicenses. Read docs/DLSS-FRAME-GENERATION.md first.'
+}
+if ($IncludeDlssFrameGeneration) {
+    Write-Warning 'LOCAL USE ONLY: this DLL-containing package has not been cleared for redistribution. Publish the downloader-only variant instead; see docs/DLSS-FRAME-GENERATION.md.'
+}
 
 if (-not $SkipBuild) {
+    $msb = (Get-Command MSBuild.exe -ErrorAction SilentlyContinue).Source
+    if (-not $msb) {
+        $msb = @(
+            "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe",
+            "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\MSBuild.exe",
+            "C:\Program Files\Microsoft Visual Studio\2022\Professional\MSBuild\Current\Bin\MSBuild.exe",
+            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe"
+        ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    }
+    if (-not $msb) {
+        throw 'MSBuild.exe was not found. Install Visual Studio C++ build tools or use -SkipBuild with a verified existing build.'
+    }
+
     foreach ($proj in @("$root\OptiScaler\dlssnr\forwarder\dlssnr_forwarder.vcxproj", "$root\OptiScaler.sln")) {
         $out = & $msb $proj /p:Configuration=Release /p:Platform=x64 /v:minimal /m 2>&1
         $err = $out | Select-String "error "
@@ -56,29 +82,64 @@ if ($missing.Count -gt 0) {
     exit 1
 }
 
-if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-# Files, then folders. Anything not named here does not ship.
-$files = @(
+# Files, then folders. Anything not named here does not ship. Runtime files and user-facing
+# instructions come from the checkout rather than the build directory so a stale post-build copy
+# cannot put old GPU guidance or an old INI into a fresh package.
+$buildFiles = @(
     "OptiScaler.dll",
+    "!! EXTRACT ALL FILES TO GAME FOLDER !!"
+)
+
+$sourceFiles = @(
     "OptiScaler.ini",
     "setup_windows.bat",
     "setup_linux.sh",
-    "!! EXTRACT ALL FILES TO GAME FOLDER !!",
-    "READ ME - DLSS Neural Rendering.txt"
+    "get_streamline.ps1",
+    "README.md",
+    "INSTALL-DLSSNR.md",
+    "LICENSE"
 )
 
-foreach ($f in $files) {
-    if (Test-Path "$src\$f") { Copy-Item "$src\$f" "$stage\$f" -Force }
-    else { Write-Host "missing from build output: $f" }
+foreach ($f in $buildFiles) {
+    $source = "$src\$f"
+    if (-not (Test-Path -LiteralPath $source)) {
+        throw "Required build output is missing: $source"
+    }
+    Copy-Item -LiteralPath $source -Destination "$stage\$f" -Force
+}
+
+foreach ($f in $sourceFiles) {
+    $source = "$root\$f"
+    if (-not (Test-Path -LiteralPath $source)) {
+        throw "Required release file is missing: $source"
+    }
+    Copy-Item -LiteralPath $source -Destination "$stage\$f" -Force
 }
 
 foreach ($d in @("Licenses", "OptiScaler")) {
-    Copy-Item "$src\$d" "$stage\$d" -Recurse -Force
+    $source = "$src\$d"
+    if (-not (Test-Path -LiteralPath $source -PathType Container)) {
+        throw "Required dependency directory is missing: $source"
+    }
+    Copy-Item -LiteralPath $source -Destination "$stage\$d" -Recurse -Force
 }
 
 Copy-Item $forwarder "$stage\nvngx.dll_dlssnr.dll" -Force
+Copy-Item -LiteralPath "$root\docs" -Destination "$stage\docs" -Recurse -Force
+New-Item -ItemType Directory -Path "$stage\redist\streamline" -Force | Out-Null
+Copy-Item -LiteralPath "$root\redist\streamline\manifest.json" -Destination "$stage\redist\streamline\manifest.json"
+
+# An old test stack in the build directory must not silently enter a normal release. The optional
+# full application package gets only the pinned official production files, with their own licences.
+if (Test-Path -LiteralPath "$stage\OptiScaler\streamline") {
+    throw 'REFUSING: the build output contains an unmanaged Streamline stack. Move it aside and use -IncludeDlssFrameGeneration.'
+}
+if ($IncludeDlssFrameGeneration) {
+    & "$root\get_streamline.ps1" -Destination "$stage\OptiScaler\streamline" `
+        -ArchivePath $StreamlineArchive -AcceptNvidiaLicenses
+}
 
 # Logging on, in the release only.
 #
@@ -98,6 +159,12 @@ Set-Content $iniPath $ini -Encoding utf8 -NoNewline
 
 $check = Select-String -Path $iniPath -Pattern '^LogToFile=|^LogLevel=' | ForEach-Object { $_.Line }
 Write-Host "log settings: $($check -join ', ')"
+
+$targetProcess = Select-String -Path $iniPath -Pattern '^TargetProcessName=' | Select-Object -First 1
+if ($targetProcess.Line -ne 'TargetProcessName=auto') {
+    throw "REFUSING: portable package has a game-specific process filter: $($targetProcess.Line)"
+}
+Write-Host "process filter: portable (TargetProcessName=auto)"
 
 # Belt and braces: nothing that is a build artifact, and nothing from the abandoned warp work, may
 # survive into the zip regardless of how it got into the staging folder.
@@ -119,7 +186,32 @@ if ($on) {
 
 Write-Host "ini verified: nothing switched on by default"
 
-if (Test-Path $zip) { Remove-Item $zip -Force }
+# The proprietary runtime must never slip into a public artifact. Its two approved hashes are
+# documentation/diagnostic inputs only; users obtain the GPU-appropriate file themselves.
+if (Get-ChildItem -LiteralPath $stage -Recurse -File | Where-Object { $_.Name -ieq 'nvngx_dlssnr.dll' }) {
+    throw 'REFUSING: proprietary nvngx_dlssnr.dll is present in the staging directory'
+}
+
+$crossGenHash = 'E67DEE209320CDAFE0E93E45675D7AA34323A53ACC57A72B2E40A181581C989A'
+foreach ($requiredTextFile in @("$stage\README.md", "$stage\INSTALL-DLSSNR.md", "$stage\setup_windows.bat")) {
+    if ((Get-Content -LiteralPath $requiredTextFile -Raw).IndexOf($crossGenHash, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        throw "REFUSING: cross-generation runtime hash is missing from $requiredTextFile"
+    }
+}
+Write-Host "cross-generation guidance: present and hash-pinned"
+
+# Hash every shipped file after the staging tree is final. Use forward slashes so the list is easy
+# to verify from PowerShell, 7-Zip, Linux, or Wine.
+$checksumLines = Get-ChildItem -LiteralPath $stage -Recurse -File |
+    Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
+    Sort-Object FullName |
+    ForEach-Object {
+        $relative = [IO.Path]::GetRelativePath($stage, $_.FullName).Replace('\', '/')
+        "{0} *{1}" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash, $relative
+    }
+[IO.File]::WriteAllLines("$stage\SHA256SUMS.txt", $checksumLines, [Text.UTF8Encoding]::new($false))
+Write-Host "checksums: $($checksumLines.Count) files"
+
 Compress-Archive -Path "$stage\*" -DestinationPath $zip -CompressionLevel Optimal
 
 Write-Host ""

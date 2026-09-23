@@ -77,8 +77,8 @@ bool OS_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InR
     const auto dstW = (uint32_t) dstDesc.Width;
     const auto dstH = (uint32_t) dstDesc.Height;
 
-    FsrEasuCon(fsr1Constants.const0, fsr1Constants.const1, fsr1Constants.const2, fsr1Constants.const3, srcW, srcH,
-               srcW, srcH, dstW, dstH);
+    FsrEasuCon(fsr1Constants.const0, fsr1Constants.const1, fsr1Constants.const2, fsr1Constants.const3, srcW, srcH, srcW,
+               srcH, dstW, dstH);
 
     constants.srcWidth = srcW;
     constants.srcHeight = srcH;
@@ -87,7 +87,7 @@ bool OS_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InR
 
     // fsr upscaling
     bool createdConstantsBuffer = false;
-    if (Config::Instance()->OutputScalingDownscaler.value_or_default() == Scaler::FSR1)
+    if (ActiveScaler() == Scaler::FSR1)
     {
         createdConstantsBuffer =
             CreateConstantsBuffer(_device, _constantBuffer, fsr1Constants, currentHeap.GetCbvCPU(0));
@@ -122,8 +122,22 @@ bool OS_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InR
     return true;
 }
 
+// The Output Scaling constructor: no override, so ActiveScaler() reads the global config -- unchanged.
 OS_Dx12::OS_Dx12(std::string InName, ID3D12Device* InDevice, bool InUpsample)
-    : Shader_Dx12(InName, InDevice), _upsample(InUpsample)
+    : OS_Dx12(InName, InDevice, InUpsample, Scaler::Count)
+{
+}
+
+// The override this instance uses instead of the global downscaler config, or the global when it is
+// Scaler::Count. Read in the constructor (pipeline choice) and in Dispatch (FSR1 constants).
+Scaler OS_Dx12::ActiveScaler() const
+{
+    return _scalerOverride != Scaler::Count ? _scalerOverride
+                                            : Config::Instance()->OutputScalingDownscaler.value_or_default();
+}
+
+OS_Dx12::OS_Dx12(std::string InName, ID3D12Device* InDevice, bool InUpsample, Scaler InScalerOverride)
+    : Shader_Dx12(InName, InDevice), _upsample(InUpsample), _scalerOverride(InScalerOverride)
 {
     if (InDevice == nullptr)
     {
@@ -148,7 +162,7 @@ OS_Dx12::OS_Dx12(std::string InName, ID3D12Device* InDevice, bool InUpsample)
     InDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ,
                                       nullptr, IID_PPV_ARGS(&_constantBuffer));
 
-    auto downscalerConfig = Config::Instance()->OutputScalingDownscaler.value_or_default();
+    auto downscalerConfig = ActiveScaler();
 
     const void* csoData = nullptr;
     size_t csoSize = 0;

@@ -30,19 +30,9 @@
 // there has to be enough for three passes times the deepest pipeline we might sit behind.
 // Descriptor and constant slots, consumed one per dispatch and reused round-robin with no fence.
 //
-// The pass records four dispatches per frame -- meter, encode, downsample, resolve -- so sixteen slots
-// is four frames of coverage before a slot is rewritten. The comment this replaces said "three passes
-// times the deepest pipeline we might sit behind", and the pass count has since grown to four while
-// the ring did not.
-//
-// Four frames is not enough. Frame generation deliberately runs the GPU several frames behind the CPU,
-// and the constants live in an UPLOAD heap written at record time -- so a wrap while the GPU is still
-// reading a slot rewrites descriptors and constants underneath it.
-//
-// A fifth dispatch has since been added -- the calibration grid -- which at thirty-two slots would
-// have left six frames, spending exactly the headroom the previous note set aside. Forty-eight
-// restores eight frames at five dispatches. If a sixth is ever added, raise this with it rather than
-// spending the margin again.
+// The shader still records at most meter + encode + downsample + resolve per frame. Extra model layers
+// are NGX evaluates and do not consume this ring; their A/B resources and feature histories are
+// persistent. Forty-eight slots leave twelve fully populated frames before descriptor/constant reuse.
 #define DLSSNR_NUM_OF_HEAPS 48
 
 class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
@@ -95,11 +85,10 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     // their place so every descriptor in the table is valid.
     // One compute pass. The public entry below drives three of these plus the model.
     bool DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants,
-                  ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
-                  ID3D12Resource* InMotion,
-                  // Vestigial. Fed to the slot the removed edit accumulator read its history from;
-                  // nothing reads it now and every caller passes nullptr. Kept only so the binding
-                  // table keeps its shape -- not evidence that temporal accumulation exists.
-                  ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget,
-                  ID3D12Resource* OutKeep);
+                      ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
+                      ID3D12Resource* InMotion,
+                      // Vestigial. Fed to the slot the removed edit accumulator read its history from;
+                      // nothing reads it now and every caller passes nullptr. Kept only so the binding
+                      // table keeps its shape -- not evidence that temporal accumulation exists.
+                      ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget, ID3D12Resource* OutKeep);
 };

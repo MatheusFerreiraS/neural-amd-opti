@@ -15,7 +15,7 @@
 // depth and motion vectors and synthesises detail. NVIDIA ships no public integration for it, so it is
 // driven directly through nvngx_dlssnr.dll as feature 18.
 //
-// OptiScaler is the right host for it because of one thing it knows that an external hook cannot: which
+// OptiScaler is the right place to own it because of one thing it knows that an external hook cannot: which
 // NGX evaluate belongs to the upscaler and which to frame generation. Both are handed depth and motion
 // vectors, so anything guessing from the parameter block alone attaches to both and runs the model twice
 // per rendered frame. Here it is a lookup on the feature handle.
@@ -31,6 +31,10 @@ constexpr unsigned int kMaxPasses = 30;
 // What the slider offers unless the ceiling is lifted. Cost is exactly linear and the model is nearly
 // all of it, so five is already several times the frame budget of the pass at one.
 constexpr unsigned int kDefaultMaxPasses = 5;
+
+// The pre-SR / AMD path's name for the same ceiling. Kept as an alias rather than a second number so
+// both lineages' pass arrays and clamps are sized by one constant.
+inline constexpr unsigned int MaxPassCount = kMaxPasses;
 
 // Per-pass model settings, sparse: a field with no value follows the global setting. Serialised as
 // "2:intensity=0.5,style=1;3:intensity=0.3" -- one-based, so "1" is the first pass.
@@ -59,8 +63,16 @@ std::string SerializePassOverrides(const std::array<PassTuning, kMaxPasses>& pas
 // timingQueue is the queue this command list will be executed on, when the caller knows it.
 // State::currentCommandQueue only exists once a D3D12 swapchain has been created, which a Vulkan
 // game never does -- so without this the pass runs and never reports what it cost.
+// forcePost identifies an RR feature: selects ApplyAfterRR, RRPasses and RRWorkingScale.
+// Do not set it for ordinary SR fallback; that decision is made from Color's active subrect.
 void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                          ID3D12CommandQueue* timingQueue = nullptr);
+                          ID3D12CommandQueue* timingQueue = nullptr, bool forcePost = false,
+                          unsigned long long submissionEpoch = 0);
+
+// Runs the same pass over Color immediately before Super Resolution consumes it. The call is a no-op
+// unless RunBeforeSR is enabled. Color is returned in its original readable state.
+void EvaluateBeforeUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
+                           ID3D12CommandQueue* timingQueue = nullptr, unsigned long long submissionEpoch = 0);
 
 // The same pass, run on the frame the upscaler is about to read rather than on the one it wrote.
 //
@@ -71,9 +83,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
 //
 // The edit lands on a surface of ours. The caller substitutes it for the upscale and puts the game's
 // own buffer back afterwards.
-void EvaluateBeforeUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
-                           ID3D12CommandQueue* timingQueue = nullptr);
-
 // The surface EvaluateBeforeUpscale wrote, or null when this frame's pass did not run.
 ID3D12Resource* PreUpscaleResult();
 
@@ -99,15 +108,11 @@ bool StageCarriesTheModel();
 // Frame generation titles tag their UI layer through Streamline; a copy of it makes the HUD mask
 // exact at the finished frame. Called at tag time.
 
-
-
-
 // The settings panel, drawn inside OptiScaler's menu.
 void RenderMenu(::Config* config, float menuResScale);
 
 // Clears the session failure latch, so a failure caused by transient thrash does not cost a restart.
 void RetryAfterFailure();
-
 
 // Asks the model whether it will work on Direct3D 11 at all, once, and logs the answer.
 //
@@ -155,10 +160,10 @@ const char* FailureReason();
 // the menu can say whether turning it on would do anything here.
 struct ExposureStatus
 {
-    unsigned long long seenFrames = 0;   // evaluates observed; 0 means nothing has run yet
-    bool offeredNow = false;             // a texture on the most recent frame
-    bool everOffered = false;            // a texture on any frame so far
-    float exposure = 0.0f;               // last value read back, 0 if none
+    unsigned long long seenFrames = 0; // evaluates observed; 0 means nothing has run yet
+    bool offeredNow = false;           // a texture on the most recent frame
+    bool everOffered = false;          // a texture on any frame so far
+    float exposure = 0.0f;             // last value read back, 0 if none
     float preExposure = 1.0f;
 };
 
@@ -171,7 +176,6 @@ ExposureStatus GameExposureStatus();
 std::optional<double> LastGpuTime();
 
 // What the white point meter last settled on, or 0 when it is not running. For the menu.
-
 
 // Writes a run of consecutive frames, each as the upscaler produced it and again after the model's edit.
 // The pair is a control: same frames, same run, one variable.

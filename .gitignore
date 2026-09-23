@@ -447,3 +447,19 @@ CyberFSR/imgui.ini
 /OptiScaler/misc/Telemetry.h
 release
 build_out
+
+# Official NVIDIA SDK download/extraction cache; provenance is in redist/streamline/manifest.json.
+/.dependencies/
+/OptiScaler/streamline/
+
+# Output of the AMD host tests and tools/build-release-local.cmd.
+/exports/
+
+# Packages written by tools/PACKAGE_RELEASE.ps1, which stages beside the tracked files in dist/.
+/dist/*.zip
+/dist/OptiScaler-*/
+
+# Editor and assistant settings kept per machine. The project tracks no VS Code configuration, so
+# this also covers the launch.json exception the template above makes.
+/.vscode/
+/.claude/

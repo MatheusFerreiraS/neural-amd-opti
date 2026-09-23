@@ -56,8 +56,12 @@ struct Parameter
 {
     template <typename T> void operator=(T value)
     {
-        if constexpr (std::is_same<T, void*>::value || std::is_same<T, ID3D11Resource*>::value ||
-                      std::is_same<T, ID3D12Resource*>::value)
+        if constexpr (std::is_same<T, ID3D11Resource*>::value || std::is_same<T, ID3D12Resource*>::value)
+        {
+            key = typeid(T).hash_code();
+            values.vp = (void*) value;
+        }
+        else if constexpr (std::is_same<T, void*>::value)
         {
             key = typeid(void*).hash_code();
             values.vp = (void*) value;
@@ -186,6 +190,20 @@ struct Parameter
     size_t key = 0;
 };
 
+enum class NGXPointerParameterKind : uint32_t
+{
+    OpaquePointer,
+    D3D11Resource,
+    D3D12Resource
+};
+
+struct NGXPointerParameter
+{
+    std::string name;
+    NGXPointerParameterKind kind = NGXPointerParameterKind::OpaquePointer;
+    void* address = nullptr;
+};
+
 /// @brief Implementation of the NVSDK_NGX_Parameter interface, providing thread-safe storage and retrieval of NGX
 /// parameters.
 struct NVNGX_Parameters : public NVSDK_NGX_Parameter
@@ -226,6 +244,7 @@ struct NVNGX_Parameters : public NVSDK_NGX_Parameter
     void Reset() override;
 
     std::vector<std::string> enumerate() const;
+    std::vector<NGXPointerParameter> enumeratePointerParameters() const;
 
   private:
     ankerl::unordered_dense::map<std::string, Parameter> m_values;
@@ -241,6 +260,26 @@ struct NVNGX_Parameters : public NVSDK_NGX_Parameter
  * whether the table should be destroyed when NGX DestroyParameters() is used.
  */
 NVNGX_Parameters* GetNGXParameters(API api, bool isPersistent);
+
+template <typename T>
+static bool TryGetToggleableNGXParam(const NVSDK_NGX_Parameter& ngxParams, const char* key,
+                                     const CustomOptional<bool>& isEnabled, T& outValue)
+{
+    return isEnabled.value_or_default() && (ngxParams.Get(key, &outValue) == NVSDK_NGX_Result_Success);
+}
+
+template <typename T>
+    requires std::is_pointer_v<T>
+static bool TryGetNGXVoidPointer(const NVSDK_NGX_Parameter& ngxParams, const char* key, T& outValue)
+{
+    NVSDK_NGX_Result result = ngxParams.Get(key, &outValue);
+
+    // Fallback
+    if (result != NVSDK_NGX_Result_Success)
+        result = ngxParams.Get(key, reinterpret_cast<void**>(&outValue));
+
+    return (result == NVSDK_NGX_Result_Success) && outValue != nullptr;
+}
 
 /**
  * @brief Sets a custom tracking tag to indicate the memory management strategy required by

@@ -57,6 +57,16 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
     auto normalizedPath = path.wstring();
     to_lower_in_place(normalizedPath);
 
+    if (State::Instance().externalFrameGeneration)
+    {
+        const auto filename = std::filesystem::path(normalizedPath).filename().wstring();
+        const bool streamline = filename.starts_with(L"sl.") && filename.ends_with(L".dll");
+        const bool otaFg = normalizedPath.contains(L"\\versions\\") &&
+                           (normalizedPath.contains(L"\\sl_") || normalizedPath.contains(L"\\dlssg\\"));
+        if (streamline || otaFg || filename == L"nvngx_dlssg.dll")
+            return nullptr; // not handled: preserve the original loader/unlocker's path
+    }
+
     std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
     localSlPath = localSlPath / L"streamline"; // Hardcoded streamline folder
     auto normalizedLocalSlPath = localSlPath.lexically_normal();

@@ -1,6 +1,7 @@
 #include <pch.h>
 #include <Config.h>
 #include <Util.h>
+#include <dlssnr/amd/AmdBridge.h>
 #include <proxies/FfxApi_Proxy.h>
 #include "FFXFeature_Dx12.h"
 #include "MathUtils.h"
@@ -137,7 +138,10 @@ bool FFXFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, 
 
     params.commandList = InCommandList;
 
-    ID3D12Resource* paramColor;
+    // The AMD replacement arrives in COMPUTE_READ and must remain there.
+    // Game-specific barriers describe the original texture, not this scratch UAV.
+    const bool amdReplacement = DlssNr::AmdBridge::HasReplacement(InParameters);
+    ID3D12Resource* paramColor = nullptr;
     if (InParameters->Get(NVSDK_NGX_Parameter_Color, &paramColor) != NVSDK_NGX_Result_Success)
         InParameters->Get(NVSDK_NGX_Parameter_Color, (void**) &paramColor);
 
@@ -145,15 +149,15 @@ bool FFXFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, 
     {
         LOG_DEBUG("Color exist..");
 
-        if (Config::Instance()->ColorResourceBarrier.has_value())
+        if (!amdReplacement && Config::Instance()->ColorResourceBarrier.has_value())
         {
             ResourceBarrier(InCommandList, paramColor,
                             (D3D12_RESOURCE_STATES) Config::Instance()->ColorResourceBarrier.value(),
                             D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
-        else if (State::Instance().NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL ||
-                 State::Instance().gameEngine == GameEngineType::Unreal ||
-                 State::Instance().gameQuirks & GameQuirk::ForceUnrealEngine)
+        else if (!amdReplacement && (State::Instance().NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL ||
+                                     State::Instance().gameEngine == GameEngineType::Unreal ||
+                                     State::Instance().gameQuirks & GameQuirk::ForceUnrealEngine))
         {
             Config::Instance()->ColorResourceBarrier.set_volatile_value(D3D12_RESOURCE_STATE_RENDER_TARGET);
             ResourceBarrier(InCommandList, paramColor, D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -595,7 +599,7 @@ bool FFXFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, 
     }
 
     // restore resource states
-    if (paramColor && Config::Instance()->ColorResourceBarrier.has_value())
+    if (!amdReplacement && paramColor && Config::Instance()->ColorResourceBarrier.has_value())
         ResourceBarrier(InCommandList, paramColor, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                         (D3D12_RESOURCE_STATES) Config::Instance()->ColorResourceBarrier.value());
 

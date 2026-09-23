@@ -2,7 +2,10 @@
 
 A self-contained module that drives NVIDIA's DLSS Neural Rendering model (`nvngx_dlssnr.dll`, NGX
 feature 18) over the frames OptiScaler already handles. Nothing in it is officially supported by
-NVIDIA; the model ships in driver packages and is not redistributed here.
+NVIDIA, and the proprietary runtime is not redistributed here. RTX 50 uses the original 310.8
+runtime; RTX 20/30/40 requires ShortFuse's cross-generation 310.8 compatibility runtime. The latter
+preserves the model while supplying architecture-compatible GPU programs. See
+[`INSTALL-DLSSNR.md`](../../INSTALL-DLSSNR.md) for the pinned source, hashes, and security caveat.
 
 ## For maintainers: how to remove it
 

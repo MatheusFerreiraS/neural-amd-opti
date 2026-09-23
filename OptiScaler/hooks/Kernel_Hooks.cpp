@@ -170,8 +170,6 @@ HMODULE WINAPI KernelHooks::hk_K32_GetModuleHandleW(LPCWSTR lpModuleName)
         {
             LOG_TRACE("amdxc64.dll call");
 
-            // See comments in hk_K32_GetModuleHandleA
-
             auto original = o_K32_GetModuleHandleW(lpModuleName);
 
             auto primaryGpu = IdentifyGpu::getPrimaryGpu();

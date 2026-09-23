@@ -49,7 +49,7 @@ namespace ExposureScan
 // One thing that looks like it could be an exposure, and what it has been seen doing.
 struct Candidate
 {
-    std::string shape;  // "1x1 R32_FLOAT" and the like, for the readout
+    std::string shape; // "1x1 R32_FLOAT" and the like, for the readout
     float latest = 0.0f;
     float lowest = 0.0f;
     float highest = 0.0f;
@@ -87,11 +87,11 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);
 // What the scan has to say right now, in one line, for an indicator that can be read while playing.
 enum class Verdict
 {
-    Off,       // not scanning
-    Waiting,   // scanning, nothing shaped like an exposure has appeared
-    Watching,  // candidates found, none of them has moved yet
-    Found,     // at least one candidate moves -- this is the result
-    Barren     // watched long enough with no movement to keep hoping
+    Off,      // not scanning
+    Waiting,  // scanning, nothing shaped like an exposure has appeared
+    Watching, // candidates found, none of them has moved yet
+    Found,    // at least one candidate moves -- this is the result
+    Barren    // watched long enough with no movement to keep hoping
 };
 
 Verdict Where();
@@ -116,8 +116,8 @@ bool Scanning();
 // pass (render thread) never tear it.
 struct AnchorPoint
 {
-    float scan;   // the scan's value when this point was captured
-    float white;  // the white point that looked right there
+    float scan;  // the scan's value when this point was captured
+    float white; // the white point that looked right there
 };
 
 // A snapshot for the menu to draw, sorted by scan ascending.

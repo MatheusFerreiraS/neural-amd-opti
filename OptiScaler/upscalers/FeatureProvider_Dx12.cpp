@@ -11,8 +11,10 @@
 #include "upscalers/fsr2/FSR2Feature_Dx12.h"
 #include "upscalers/fsr2_212/FSR2Feature_Dx12_212.h"
 #include "upscalers/ffx/FFXFeature_Dx12.h"
+#include "upscalers/fsr31/FSRDFeature_Dx12.h"
 #include "upscalers/xess/XeSSFeature_Dx12.h"
 #include "FeatureProvider_Dx11.h"
+#include <proxies/FfxApi_Proxy.h>
 #include <misc/IdentifyGpu.h>
 
 bool FeatureProvider_Dx12::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NGX_Parameter* parameters,
@@ -67,6 +69,21 @@ bool FeatureProvider_Dx12::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
             break;
         }
 
+    case Upscaler::FSR_RR:
+        if (FfxApiProxy::IsDenoiserApiImplementedDx12())
+        {
+            *feature = std::make_unique<FSRDFeatureDx12>(handleId, parameters);
+            break;
+        }
+        else
+        {
+            // FSR-RR has no upscaler fallback: a Ray Reconstruction request without
+            // the denoiser API is a failure, not a quality downgrade. UpscalerOnly
+            // opts into creating the feature anyway with the denoiser skipped.
+            LOG_ERROR("FfxApi denoiser API is not implemented for Dx12");
+            return false;
+        }
+
     default:
         *feature = std::make_unique<FSR2FeatureDx12_212>(handleId, parameters);
         upscaler = Upscaler::FSR21;
@@ -106,6 +123,13 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
     const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && state.newBackend == Upscaler::DLSS;
     if (state.newBackend == Upscaler::Reset || dlssOnNonCapable)
         state.newBackend = cfg.Dx12Upscaler.value_or_default();
+
+    if (contextData->featureID == NVSDK_NGX_Feature_RayReconstruction)
+    {
+        // RR features are not allowed to change. They can only init/reinit.
+        if (state.newBackend != contextData->featureKey)
+            state.newBackend = contextData->featureKey;
+    }
 
     contextData->changeBackendCounter++;
 

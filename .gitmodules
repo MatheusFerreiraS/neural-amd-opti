@@ -25,3 +25,6 @@
 [submodule "external/nvapi"]
 	path = external/nvapi
 	url = https://github.com/NVIDIA/nvapi.git
+[submodule "external/RTX40MFG-Unlock"]
+	path = external/RTX40MFG-Unlock
+	url = https://github.com/dashdogy/RTX40MFG-Unlock.git
