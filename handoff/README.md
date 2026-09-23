@@ -33,11 +33,13 @@ AMD's FidelityFX denoiser as the RR provider. Super-resolution stays FFX/FSR in 
 
 ### Current state
 
-The merge and everything after it sit **staged and uncommitted** on
-`dlss-neural-rendering`. Zero commits were created. `git diff --cached` against
-`origin/dlss-neural-rendering` is the whole body of work.
+Committed on the branch `amd-nr-0.1.0`, made from `dlss-neural-rendering` at `7b7220bb`, in
+two commits: the three-fork merge exactly as it had been staged (the build tested in Cyberpunk
+2077 before any of section 5's later entries), then everything section 5 lists after the merge.
+Nothing is pushed. `dlss-neural-rendering` itself is unchanged and fast-forwards to the branch.
 
-Staged content survives `git checkout -- .` but **not** `git reset --hard`.
+The build reports itself as `0.1.0-amd-nr`, and `tools/PACKAGE_RELEASE.ps1` packages it as
+`dist/OptiScaler-0.1.0-amd-nr.zip`.
 
 ---
 
@@ -142,6 +144,13 @@ directly; VS 2026 (v18) also ships it — check for
 MSBuild.exe OptiScaler.sln -p:Configuration=Release -p:Platform=x64 -m -v:minimal
 ```
 
+`OptiScaler.vcxproj` sets `VcpkgEnabled=false`. With a machine-wide `vcpkg integrate install`, the
+build otherwise links vcpkg's freetype import library instead of the static
+`external/freetype/freetype.lib`, and the DLL then refuses to load in any game folder that has no
+`freetype.dll` of its own. Every build made on the development machine before that property was
+added had this dependency; Cyberpunk 2077 hid it because a `freetype.dll` sits in its folder. Check with
+`dumpbin /dependents`: `freetype.dll` must not appear.
+
 The binary is produced as `x64/Release/OptiScaler.dll` and then **moved** by a
 post-build step into `x64/Release/a/` together with the rest of the package. Look for
 it there, not in `x64/Release/`.
@@ -192,10 +201,13 @@ Dx12Upscaler=fsr-rr        ; or ffx/xess — fsr-rr routes RR to the FidelityFX 
 
 [DlssNr]
 Enabled=true               ; ships disabled; 'auto' resolves to false
-ApplyAfterRR=true          ; REQUIRED for any title driving Ray Reconstruction
-RunBeforeSR=false
+ApplyAfterRR=true          ; the AMD placement: true = after the finished frame, false = before SR
+                           ; true is REQUIRED for any title driving Ray Reconstruction
 RRWorkingScale=1.0         ; 1.0 = model over every pixel of the finished frame
 ```
+
+`RunBeforeSR` does nothing on the AMD backend. `ApplyAfterRR` alone places the model there (section
+5, "One placement switch").
 
 ---
 
@@ -221,6 +233,101 @@ model could never follow it. Added:
 **One pass count for the AMD backend.** It was reading `DlssNrRRPasses` in the post
 placement, which left the `Passes` control doing nothing in the only placement an RR
 title ever reaches. It now reads `DlssNrPasses` in both.
+
+**One placement switch for the AMD backend.** Every Super Resolution evaluate offers the pass
+both seams: first `EvaluateBeforeUpscale`, which the NGX entry and both bridges call unconditionally
+for SR, then `EvaluateAfterUpscale`. The AMD branch of `EvaluateAtSeam` only gated the seam after
+the upscaler. With "After the finished frame" chosen on an SR title, the backend got the render-size
+frame and the output-size frame on the same evaluate. `AmdBridge::Run`'s settling check (a static
+width/height/scale) saw a size change on every call, reset its 300 ms timer and invalidated history
+each time, so the model never ran, or ran twice where render and output sizes match. Cyberpunk's
+`amd_presr.log` recorded 939 of these size flips in about 16 minutes.
+
+Now `ApplyAfterRR` alone decides, and the AMD branch declines the seam not chosen before the backend
+sees it. The "Processing point" combo reads and writes only that key. It used to read `RunBeforeSR`,
+which the backend never consulted, so a fresh install displayed "After the finished frame" while
+running before SR. The amber warning for RR titles in the "before" placement now says the model is
+not running; it used to claim the model ran after the frame regardless. Defaults are unchanged:
+`ApplyAfterRR=false` is the before-SR placement dlss5 always ran. Checked in Cyberpunk 2077 in both
+placements, with and without RR.
+
+**sRGB is the default encoding.** `[DlssNr] AmdEncoding` defaults to 2 (sRGB) instead of 0
+(Auto) in `Config.h`, the menu's reset button and the packaged INI. In Cyberpunk 2077 it was the
+steadiest option and held highlights best. Auto was removed because it did exactly what Linear (1)
+does: neither converts, while sRGB and Gamma 2.2 decode before the model and re-encode after. The
+combo offers Linear, sRGB and Gamma 2.2. The stored numbers stay 1/2/3 so existing INIs keep their
+meaning, and `AmdBridge.cpp` clamps a leftover `AmdEncoding=0` to Linear.
+
+**"Every-frame" is now "Disable temporal stabilization", off by default.**
+`[DlssNr] AmdEveryFrame` sets the runtime's `temporal` byte
+(`AmdPreSr.cpp`, `L->temporal = everyFrame ? 0 : 1`), so with it on the model runs without
+temporal history. Its only other effect, the post-Execute
+wait in `WaitAfterSubmitIfEveryFrame`, is skipped whenever more than one slot is configured (the
+default is 3), except during a native rebuild. The old label named neither effect. The menu label,
+help text and INI comments now describe it, and the default moved from `true` to `false` (history
+on) in `Config.h` and the packaged INI. The INI key keeps its name so existing files still load.
+
+**Dynamic NR resolution (AMD backend).** `[DlssNr] AmdDynamicScale` (default off) and
+`AmdDynamicTargetFps` (default 60). While the rendered frame rate stays under the target, the model
+scale steps down from the configured one (`AmdModelScale` before SR, `RRWorkingScale` after the
+finished frame) through 85, 70, 55 and 40% of it, never under 25% of the frame. The controller is
+`OptiScaler/dlssnr/amd/DynamicScale.h`, stepped once per frame from `AmdBridge::Run`, where the
+interval between calls is the rendered frame time even with frame generation on. It changes rarely
+on purpose: down after 2 s under the target, up after 5 s with 15% headroom, a 10 s hold after any
+change and 60 s after a step down before it tries to go back up. Every scale change rebuilds the
+runtime's staging and restarts the model's history, and in Cyberpunk's logs NR was off for 0.3 to
+5.4 s after each change (median 1.25 s over 31 changes in one session, 2.8 s over 15 in the first
+dynamic-scale test). A step must cut the scale by at least 10%, so the 25% floor cannot turn the
+last level into a rebuild for almost nothing (from a 50% ceiling it stops at 27.5% instead of
+going on to 25%). In that test, going from 50% to 35% raised the rendered frame rate from about 60
+to 67-74 fps, and the lower levels gave no consistent gain. A continuous controller would keep the
+effect blinking; that cost only goes away if the runtime can run on a subregion of a fixed
+allocation, which it cannot today. A frame cap at or under the target hides the headroom, so the
+level never climbs back; the menu help says to set the target a little under the cap.
+
+Every host of this runtime has been seen to keep a little more VRAM after each resolution change.
+OptiScaler releases everything it allocates per size (slot colours, guide crops, scale scratch,
+the encoding output), so the growth is most likely inside the runtime's staging rebuild, which
+OptiScaler cannot fix. The controller therefore makes at most 8 changes per session
+(`DynamicScale::kMaxChanges`) and then holds its level until the option is turned off and on. Each
+"AMD boundary: settings change" line in `amd_presr.log` now ends with the process's local VRAM use
+and budget (`VramUsage` in `AmdBridge.cpp`), so the cost per change can be read off a session:
+standing still and flipping the NR resolution slider back and forth gives the cleanest numbers,
+since the game's own streaming moves the total too.
+`tests/amd_dynamic_scale.cpp` covers the controller and runs first in
+`tools/test-amd-host-contracts.cmd`.
+Exercised once in Cyberpunk 2077 in the "after" placement: it stepped down every 12 s as designed,
+never found the headroom to step up, and the session ended cleanly.
+
+**Neural pass meter (AMD backend).** The AMD section of the menu shows "Neural pass: N ms per
+frame (M fps on its own)". `AmdBridge::Run` wraps `Backend::Record` in a `GpuTime_Dx12` pair, the
+same timestamp helper the NVIDIA path and the upscalers use, so the number is the GPU time of
+everything Record puts on the game's list for all passes: input copies, the wait for the model and
+the applied result. Readings under 0.1 ms are dropped because a refused Record records nothing, and
+the rest is smoothed (10% per frame) so the text stays readable. The fps is 1000 divided by that
+time, the rate the model alone could sustain.
+
+**Tabbed main menu.** The two-column table (`RenderMainMenuTable`) became `RenderMainMenuTabs` in
+`menu_common.cpp`: Neural, Upscaling, Frame Gen, Image, Interface and Advanced, each tab a list of
+the same section functions the table called. Above the tabs, `RenderMainMenuStatusPills` shows one
+pill per route into OptiScaler (nvngx.dll or nvngx_dlss/dlssd on DLSS-capable GPUs, nvngx
+replacement, libxess, FSR hooks, FSR 3.1, SR and FG), green when present; the "Exists / Doesn't
+Exist" lines of the no-upscaler message were removed in its favour. The theme keeps unselected tabs
+neutral and the selected one in the accent colour, and the DLSS-NR header opens by default since it
+fills the Neural tab. The window still auto-resizes, so its width is the widest of the pill row and
+the open tab.
+
+**Tools and packaging after the flatten.** The dlss5 scripts still pointed into the vendored
+`OptiScaler-DLSSNR-PreSR-Multipass-main/` folder and at a Visual Studio BuildTools install at a
+fixed path. The tests include headers from `OptiScaler/` directly now, the `.cmd` scripts find
+Visual Studio through `vswhere`, and `tools/build-release-local.cmd` (all regression tests, then a
+Release build into `exports/release-local/`) passes end to end. `tools/PACKAGE_RELEASE.ps1` reads
+from the repository root, packages whichever of `x64/Release/a/OptiScaler.dll` and
+`exports/release-local/OptiScaler.dll` is newer, adds `amd_fidelityfx_denoiser_dx12.dll` for
+FSR-RR, and ships the root `README.md`, which gained an "Installing the release" section. Its
+existing tripwire still refuses the danielblnc runtime (`version.dll`, `dlssnr_amd_pass*.dll`,
+`dlssnr_on_amd_setup.exe`), the weights and any `nvngx*.dll`, in the staged folder and again in
+the finished zip, so users supply those themselves as the README explains.
 
 **"Upscaler failed to run!" on preset changes.** `FSRDFeatureDx12::UpdateSize` refuses a
 frame and requests a rebuild when the render size exceeds the allocation ceiling the
@@ -287,7 +394,6 @@ version in use comes from `AmdBridge::RuntimeName()`.
 
 ## 7. Known issues and open items
 
-- **Nothing is committed.** See section 1.
 - **`[FSR-RR] TaggedNormalRoughness` has never been observed to fire.** It was written
   for a title whose normals binding looked like it carried no roughness; the real cause
   turned out to be an external mod zeroing the ray-tracing buffers. It is left in reach,
@@ -321,6 +427,9 @@ version in use comes from `AmdBridge::RuntimeName()`.
   `std::array<HMODULE, 3> runtime` in `AmdPreSr.cpp`.
 - **The AMD menu branch returns early.** Anything added to the shared DLSS-NR menu below
   that point is dead code while the AMD backend is installed.
+- **Every SR frame offers the pass both seams.** Any gate added to one placement needs its
+  counterpart on the other, or both reach the AMD backend on the same evaluate and its settling
+  check stalls it (section 5, "One placement switch").
 - **A feature can decline a frame on purpose.** `changeBackend` set from inside an
   evaluate means "rebuild me", not "I failed".
 

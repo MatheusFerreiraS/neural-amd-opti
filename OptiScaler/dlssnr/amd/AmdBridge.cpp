@@ -1,13 +1,17 @@
 #include "pch.h"
 #include "AmdBridge.h"
 #include "AmdPreSr.h"
+#include "DynamicScale.h"
 #include "PresentExperimental.h"
 #include <State.h>
 #include <Util.h>
 #include <misc/SkipSpoof.h>
+#include <gpu_time/GpuTime_Dx12.h>
 #include <detours/detours.h>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -49,6 +53,17 @@ struct FrameIdentity
 std::mutex frameMutex;
 FrameIdentity lastFrame {};
 UINT stableFrames = 0;
+
+// Dynamic NR resolution. The controller is stepped under frameMutex; the menu reads the atomics,
+// which stay zero while it is off.
+AmdPreSr::DynamicScale dynamicScale;
+std::atomic<float> dynamicScaleNow { 0 }, dynamicFpsNow { 0 };
+std::atomic<int> dynamicChangesNow { 0 };
+
+// GPU time of everything Record puts on the game's list: the input copies, the wait for the model
+// and the applied result, every pass together. Used under frameMutex; the menu reads neuralMsNow.
+std::unique_ptr<GpuTime_Dx12> neuralTimer;
+std::atomic<float> neuralMsNow { 0 };
 void ExecuteBatch(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* c)
 {
     auto b = backend.load();
@@ -98,7 +113,8 @@ ID3D12Resource* Resource(NVSDK_NGX_Parameter* p, const char* name)
         p->Get(name, reinterpret_cast<void**>(&r));
     return r;
 }
-bool IsAmd(ID3D12Device* d)
+// Calls use with the physical adapter behind luid, past the vendor spoof.
+template <class Use> void WithPhysicalAdapter(LUID luid, Use&& use)
 {
     struct PhysicalAdapterScope
     {
@@ -107,19 +123,41 @@ bool IsAmd(ID3D12Device* d)
     } physicalAdapterScope;
     IDXGIFactory4* f = nullptr;
     IDXGIAdapter1* a = nullptr;
-    bool amd = false;
     if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&f))))
     {
-        if (SUCCEEDED(f->EnumAdapterByLuid(d->GetAdapterLuid(), IID_PPV_ARGS(&a))))
+        if (SUCCEEDED(f->EnumAdapterByLuid(luid, IID_PPV_ARGS(&a))))
         {
-            DXGI_ADAPTER_DESC1 desc {};
-            amd = SUCCEEDED(a->GetDesc1(&desc)) && desc.VendorId == 0x1002;
-            LOG_INFO("AMD pre-SR physical adapter vendor: {:04X}, AMD: {}", desc.VendorId, amd);
+            use(a);
             a->Release();
         }
         f->Release();
     }
+}
+bool IsAmd(ID3D12Device* d)
+{
+    bool amd = false;
+    WithPhysicalAdapter(d->GetAdapterLuid(), [&](IDXGIAdapter1* a) {
+        DXGI_ADAPTER_DESC1 desc {};
+        amd = SUCCEEDED(a->GetDesc1(&desc)) && desc.VendorId == 0x1002;
+        LOG_INFO("AMD pre-SR physical adapter vendor: {:04X}, AMD: {}", desc.VendorId, amd);
+    });
     return amd;
+}
+// This process's share of the adapter's local memory. Logged at every resolution change, because
+// the runtime keeps a little more after each rebuild and this is how much.
+std::string VramUsage(LUID luid)
+{
+    std::string text = "vram unknown";
+    WithPhysicalAdapter(luid, [&](IDXGIAdapter1* a) {
+        IDXGIAdapter3* a3 = nullptr;
+        DXGI_QUERY_VIDEO_MEMORY_INFO info {};
+        if (FAILED(a->QueryInterface(IID_PPV_ARGS(&a3))))
+            return;
+        if (SUCCEEDED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+            text = "vram " + std::to_string(info.CurrentUsage >> 20) + "/" + std::to_string(info.Budget >> 20) + " MB";
+        a3->Release();
+    });
+    return text;
 }
 } // namespace
 bool HasFiles()
@@ -237,6 +275,7 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         }
         b = new AmdPreSr::Backend(device, q, Directory());
         backend.store(b);
+        neuralTimer = std::make_unique<GpuTime_Dx12>(device);
     }
     device->Release();
     // The hook observes this list when the current frame is submitted and then
@@ -306,16 +345,21 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     static ULONGLONG settlingSince=0;
     // Post-upscale answers to the "after RR" controls, so the two placements can be tuned apart.
     // The AMD backend never supersamples, so its scale tops out at 1.0 (the frame's own size).
-    const float sessionScale =
+    const bool dynamicOn = Config::Instance()->AmdDynamicScale.value_or_default();
+    const float sessionScale = dynamicScale.Step(
+        std::chrono::steady_clock::now(), dynamicOn, Config::Instance()->AmdDynamicTargetFps.value_or_default(),
         afterUpscale ? std::clamp(Config::Instance()->DlssNrRRWorkingScale.value_or_default(), .25f, 1.f)
-                     : Config::Instance()->AmdNrScale.value_or_default();
+                     : Config::Instance()->AmdNrScale.value_or_default());
+    dynamicScaleNow = dynamicOn ? sessionScale : 0.f;
+    dynamicFpsNow = dynamicOn ? static_cast<float>(dynamicScale.Fps()) : 0.f;
+    dynamicChangesNow = dynamicScale.changes;
     const float requestedScale=sessionScale;
     const auto now=GetTickCount64();
     if(settlingWidth!=f.width || settlingHeight!=f.height || settlingScale!=requestedScale) {
         b->TraceBoundary("settings change: input " + std::to_string(settlingWidth) + "x" +
             std::to_string(settlingHeight) + " -> " + std::to_string(f.width) + "x" +
             std::to_string(f.height) + "; NR scale " + std::to_string(settlingScale) +
-            " -> " + std::to_string(requestedScale));
+            " -> " + std::to_string(requestedScale) + "; " + VramUsage(adapter));
         settlingWidth=f.width;settlingHeight=f.height;settlingScale=requestedScale;settlingSince=now;
         b->InvalidateHistory();
     }
@@ -410,14 +454,27 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     s.spinDraw = Config::Instance()->AmdGraphicsWait.value_or_default() ? 1 : 0;
     // The pinned AMD binary explicitly disables the broad lighting/colour
     // channels. Its embedded UI warns that nonzero tone mostly darkens frames.
-    s.encoding=std::clamp(cfg.AmdEncoding.value_or_default(),0,3);
+    // An old INI's 0 (Auto) converted nothing, the same as Linear, so it reads as Linear.
+    s.encoding=std::clamp(cfg.AmdEncoding.value_or_default(),1,3);
     s.toneChannels=cfg.AmdNeuralLightingStrength.value_or_default()>0;
     s.tone=s.toneChannels ? std::clamp(cfg.AmdNeuralLightingStrength.value_or_default(),0.f,1.f) : 0.f;
     s.structure = cfg.DlssNrLocalStructure.value_or_default();
     s.skin = cfg.DlssNrSkinStructure.value_or_default();
     if (s.skin < 0)
         s.skin = s.structure;
+    if (neuralTimer)
+        neuralTimer->Start(cmd);
     auto replacement = b->Record(cmd, f, s);
+    if (neuralTimer)
+    {
+        neuralTimer->End(cmd);
+        // A refused Record puts nothing between the timestamps: that frame ran no model.
+        if (auto ms = neuralTimer->ReadGpuTime(q); ms.has_value() && ms.value() > .1)
+        {
+            const float now = static_cast<float>(ms.value()), shown = neuralMsNow.load();
+            neuralMsNow = shown > 0 ? shown * .9f + now * .1f : now;
+        }
+    }
     if (replacement && afterUpscale)
     {
         // Nothing is substituted here: the upscaler has already run. The caller writes this into
@@ -467,6 +524,25 @@ void TraceContextRelease(unsigned int handle, bool after)
     if (auto b = backend.load())
         b->TraceBoundary(std::string(after ? "after" : "before") +
                          " SR context release handle=" + std::to_string(handle));
+}
+float NeuralMs() { return neuralMsNow.load(); }
+std::string DynamicStatus()
+{
+    const float scale = dynamicScaleNow.load();
+    if (scale <= 0)
+        return {};
+    const float fps = dynamicFpsNow.load();
+    const int changes = dynamicChangesNow.load();
+    char text[160] {};
+    int n = fps > 0 ? std::snprintf(text, sizeof(text), "Now at %.0f%%, %.0f fps rendered", scale * 100.f, fps)
+                    : std::snprintf(text, sizeof(text), "Now at %.0f%%, measuring", scale * 100.f);
+    if (changes >= AmdPreSr::DynamicScale::kMaxChanges)
+        std::snprintf(text + n, sizeof(text) - n, "\nChange limit reached (%d): it stays here until turned off and on",
+                      changes);
+    else
+        std::snprintf(text + n, sizeof(text) - n, ", %d of %d changes used", changes,
+                      AmdPreSr::DynamicScale::kMaxChanges);
+    return text;
 }
 bool GraphicsRestartNeeded(UINT activePasses)
 {

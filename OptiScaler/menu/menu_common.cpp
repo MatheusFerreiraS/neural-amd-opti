@@ -1303,9 +1303,10 @@ void MenuCommon::ApplyThemeStyle()
     c[ImGuiCol_ResizeGripHovered] = AccentStrong(0.70f);
     c[ImGuiCol_ResizeGripActive] = AccentStrong(0.95f);
 
-    c[ImGuiCol_Tab] = AccentSoft();
-    c[ImGuiCol_TabHovered] = AccentMed();
-    c[ImGuiCol_TabSelected] = AccentSoft();
+    // Unselected tabs stay neutral so the selected one reads as the accent.
+    c[ImGuiCol_Tab] = BgTint(bgLight);
+    c[ImGuiCol_TabHovered] = AccentSoft();
+    c[ImGuiCol_TabSelected] = AccentMed();
     c[ImGuiCol_TabSelectedOverline] = AccentStrong();
     c[ImGuiCol_TabDimmed] = BgTint(bgDark, 0.60f);
     c[ImGuiCol_TabDimmedSelected] = AccentSoft(0.75f);
@@ -2469,32 +2470,7 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
             else
                 ImGui::SetWindowFontScale(menuResScale);
 
-            ImGui::Spacing();
-
-            if (primaryGpu.dlssCapable)
-            {
-                ImGui::Text("nvngx_dlss : %s", state.NVNGX_DLSS_Path.has_value() ? "Exists" : "Doesn't Exist");
-                ImGui::SameLine(0.0f, 16.0f);
-                ImGui::Text("nvngx_dlssd : %s", state.NVNGX_DLSSD_Path.has_value() ? "Exists" : "Doesn't Exist");
-            }
-            else
-            {
-                ImGui::Text("nvngx.dll: %s", state.nvngxExists ? "Exists" : "Doesn't Exist");
-                ImGui::SameLine(0.0f, 16.0f);
-                ImGui::Text("nvngx replacement: %s", state.nvngxReplacement.has_value() ? "Exists" : "Doesn't Exist");
-            }
-
-            ImGui::Text("libxess: %s",
-                        (state.libxessExists || XeSSProxy::Module() != nullptr) ? "Exists" : "Doesn't Exist");
-
-            ImGui::Text("FSR Hooks: %s", state.fsrHooks ? "Exist" : "Don't Exist");
-            ImGui::SameLine(0.0f, 16.0f);
-            ImGui::Text("FSR 3.1: %s", FfxApiProxy::Dx12Module() != nullptr ? "Exists" : "Doesn't Exist");
-            ImGui::SameLine(0.0f, 16.0f);
-            ImGui::Text("FSR 3.1 SR: %s", FfxApiProxy::Dx12Module_SR() != nullptr ? "Exists" : "Doesn't Exist");
-            ImGui::SameLine(0.0f, 16.0f);
-            ImGui::Text("FSR 3.1 FG: %s", FfxApiProxy::Dx12Module_FG() != nullptr ? "Exists" : "Doesn't Exist");
-
+            // Which of those files exist is in the pill row above.
             ImGui::Spacing();
         }
         else
@@ -9410,41 +9386,129 @@ void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)
     }
 }
 
-void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
+// One pill per component the game can reach OptiScaler through: a green dot when it is there, a grey
+// one when it is not. The same facts the no-upscaler message spells out, kept in view all the time.
+void MenuCommon::RenderMainMenuStatusPills(RenderMenuContext& ctx)
 {
-    if (ImGui::BeginTable("main", 2, ImGuiTableFlags_SizingStretchSame))
-    {
-        ImGui::TableNextColumn();
+    auto& state = ctx.state;
+    const bool xessThere = state.libxessExists || XeSSProxy::Module() != nullptr;
 
-        // Left column: active upscaler state, frame generation, FSR common, latency and fakenvapi controls.
+    struct Pill
+    {
+        const char* label;
+        bool on;
+    };
+
+    const Pill dlssPills[] { { "nvngx_dlss", state.NVNGX_DLSS_Path.has_value() },
+                             { "nvngx_dlssd", state.NVNGX_DLSSD_Path.has_value() } };
+    const Pill nvngxPills[] { { "nvngx.dll", state.nvngxExists },
+                              { "nvngx replacement", state.nvngxReplacement.has_value() } };
+    const Pill otherPills[] { { "libxess", xessThere },
+                              { "FSR hooks", state.fsrHooks },
+                              { "FSR 3.1", FfxApiProxy::Dx12Module() != nullptr },
+                              { "FSR 3.1 SR", FfxApiProxy::Dx12Module_SR() != nullptr },
+                              { "FSR 3.1 FG", FfxApiProxy::Dx12Module_FG() != nullptr } };
+
+    const float height = ImGui::GetFrameHeight();
+    const float pad = ImGui::GetStyle().FramePadding.x;
+    const float dot = height * 0.2f;
+    const ImU32 onDot = ImGui::GetColorU32(toneMapColor(ImVec4(0.30f, 0.85f, 0.45f, 1.0f)));
+    const ImU32 offDot = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    bool first = true;
+
+    auto draw = [&](const Pill& pill)
+    {
+        if (!first)
+            ImGui::SameLine(0.0f, pad);
+        first = false;
+
+        const ImVec2 text = ImGui::CalcTextSize(pill.label);
+        const float width = pad + dot * 2.0f + pad * 0.75f + text.x + pad;
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const ImVec2 end { at.x + width, at.y + height };
+        auto* list = ImGui::GetWindowDrawList();
+
+        list->AddRectFilled(at, end, ImGui::GetColorU32(ImGuiCol_FrameBg), height * 0.5f);
+        list->AddRect(at, end, ImGui::GetColorU32(ImGuiCol_Border), height * 0.5f);
+        list->AddCircleFilled({ at.x + pad + dot, at.y + height * 0.5f }, dot, pill.on ? onDot : offDot);
+        list->AddText({ at.x + pad + dot * 2.0f + pad * 0.75f, at.y + (height - text.y) * 0.5f },
+                      ImGui::GetColorU32(pill.on ? ImGuiCol_Text : ImGuiCol_TextDisabled), pill.label);
+        ImGui::Dummy({ width, height });
+    };
+
+    // A DLSS-capable GPU loads NVIDIA's own DLSS and RR files; anything else goes through nvngx.dll.
+    if (ctx.primaryGpu != nullptr && ctx.primaryGpu->dlssCapable)
+        for (const auto& pill : dlssPills)
+            draw(pill);
+    else
+        for (const auto& pill : nvngxPills)
+            draw(pill);
+
+    for (const auto& pill : otherPills)
+        draw(pill);
+
+    ImGui::Spacing();
+}
+
+// The settings, one tab per area. Each section keeps its own function and header, so a tab is only
+// a list of calls; the window auto-fits to the widest of the pill row and the open tab.
+void MenuCommon::RenderMainMenuTabs(RenderMenuContext& ctx)
+{
+    if (!ImGui::BeginTabBar("mainTabs"))
+        return;
+
+    if (ImGui::BeginTabItem("Neural"))
+    {
+        DlssNr::RenderMenu(ctx.config, ctx.menuResScale);
+        ImGui::EndTabItem();
+    }
+
+    if (ImGui::BeginTabItem("Upscaling"))
+    {
         RenderActiveUpscalerSettings(ctx);
+        RenderFsrCommonSettings(ctx);
+        RenderUpscalerInputsSettings(ctx);
+        ImGui::EndTabItem();
+    }
+
+    if (ImGui::BeginTabItem("Frame Gen"))
+    {
         RenderFrameGenerationSelection(ctx);
         RenderFrameGenerationRuntimeSettings(ctx);
-        RenderFsrCommonSettings(ctx);
         RenderFramerateSettings(ctx);
 #ifdef LOW_LATENCY_INPUTS
         RenderLowLatencySettings(ctx);
 #else
         RenderFakenvapiSettings(ctx);
 #endif
+        ImGui::EndTabItem();
+    }
 
-        ImGui::TableNextColumn();
-
-        // Right column: image quality, initialization, advanced options, appearance, overlay and input settings.
+    if (ImGui::BeginTabItem("Image"))
+    {
         RenderActiveImageSettings(ctx);
-        DlssNr::RenderMenu(ctx.config, ctx.menuResScale);
+        RenderApiAndTextureSettings(ctx);
         RenderMagnifierSettings(ctx);
+        ImGui::EndTabItem();
+    }
+
+    if (ImGui::BeginTabItem("Interface"))
+    {
+        RenderThemeSettings(ctx);
+        RenderFpsOverlaySettings(ctx);
+        RenderKeybindSettings(ctx);
+        ImGui::EndTabItem();
+    }
+
+    if (ImGui::BeginTabItem("Advanced"))
+    {
         RenderQuirksSettings(ctx);
         RenderAdvancedSettings(ctx);
         RenderLoggingSettings(ctx);
-        RenderThemeSettings(ctx);
-        RenderFpsOverlaySettings(ctx);
-        RenderUpscalerInputsSettings(ctx);
-        RenderApiAndTextureSettings(ctx);
-        RenderKeybindSettings(ctx);
-
-        ImGui::EndTable();
+        ImGui::EndTabItem();
     }
+
+    ImGui::EndTabBar();
 }
 
 void MenuCommon::RenderMainMenuGraphs(RenderMenuContext& ctx)
@@ -10122,13 +10186,12 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
 
     if (ImGui::Begin(windowTitle.c_str(), NULL, flags))
     {
-        // Header/status messages shown above the two-column settings table.
+        // Which of the game's upscaler routes are present, then any status message, then the tabs.
+        RenderMainMenuStatusPills(ctx);
         RenderMainMenuHeaderMessages(ctx);
+        RenderMainMenuTabs(ctx);
 
-        // Main two-column settings content.
-        RenderMainMenuTable(ctx);
-
-        // Diagnostics and footer actions below the settings table.
+        // Diagnostics and footer actions below the tabs.
         RenderMainMenuGraphs(ctx);
         RenderMainMenuBottomBar(ctx);
 

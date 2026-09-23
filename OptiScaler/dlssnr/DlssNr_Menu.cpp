@@ -166,7 +166,8 @@ void RenderMenu(Config* config, float menuResScale)
 
     // DLSS Neural Rendering -----------------------------
     ImGui::Spacing();
-    if (auto ch = ScopedCollapsingHeader("DLSS Neural Rendering"); ch.IsHeaderOpen())
+    // Open from the start: it is the whole of the Neural tab.
+    if (auto ch = ScopedCollapsingHeader("DLSS Neural Rendering", ImGuiTreeNodeFlags_DefaultOpen); ch.IsHeaderOpen())
     {
         ScopedIndent indent {};
         ImGui::Spacing();
@@ -184,17 +185,19 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::TextDisabled("%s", haveVer ? ver : "pass1?");
             HelpMarker(haveVer ? "AMD NR runtime (original project / original author)."
                                : "AMD NR runtime: pass1 not identified yet.");
-            HGap(0.55f);
 
-            bool everyFrame = config->AmdEveryFrame.value_or_default();
-            if (ImGui::Checkbox("Every-frame", &everyFrame))
-                config->AmdEveryFrame = everyFrame;
-            HelpMarker("Off: Temporal history on, skip a frame if the previous network is"
-                       "\nstill busy. Closer to 60 FPS; more ghosting because FSR also accumulates."
-                       "\n\nOn: after Execute, wait for the HIP job only (Temporal off). Does not wait"
-                       "\nfor the D3D12 fence / FSR batch. Closer to author 0.3's 40+ at a 4K FSR"
-                       "\nUltra Performance render; the next Record may still skip if GPU work is"
-                       "\nin flight.");
+            // Stored as [DlssNr] AmdEveryFrame, the key's original name, so existing INIs keep working.
+            // It switches off the model's temporal history.
+            bool noTemporal = config->AmdEveryFrame.value_or_default();
+            if (ImGui::Checkbox("Disable temporal stabilization", &noTemporal))
+                config->AmdEveryFrame = noTemporal;
+            HelpMarker("Off (default): the model keeps its temporal history, building each frame"
+                       "\non the ones before it, which steadies the image. The upscaler accumulates"
+                       "\ntoo, so some ghosting is possible."
+                       "\n\nOn: every frame is processed on its own, with no history. Less ghosting,"
+                       "\nmore flicker and shimmer. With the INI-only single slot (AmdSlots=1) the"
+                       "\nrender thread also waits for the model every frame."
+                       "\n\nChanging it restarts the model's history.");
 
             // Slots first, then New wait — quantity next to the enable row, wait
             // mode after it. Combo is a narrow digit control, not a full-width bar.
@@ -289,20 +292,29 @@ void RenderMenu(Config* config, float menuResScale)
 
         if (DlssNr::AmdBridge::HasFiles())
         {
+            if (const float ms = DlssNr::AmdBridge::NeuralMs(); ms > 0 && config->DlssNrEnabled.value_or_default())
+            {
+                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Neural pass: %.1f ms per frame (%.0f fps on its own)",
+                                   ms, 1000.f / ms);
+                HelpMarker("GPU time the game's queue spends on the model each frame, all passes"
+                           "\ntogether: copying its inputs, waiting for its result and applying it."
+                           "\n\nThe fps is 1000 divided by that time: how many frames per second the"
+                           "\nmodel alone could keep up with. The game runs slower than that, because"
+                           "\nthe rest of the frame takes time too.");
+            }
+
             // Where the model sits, and what its resolution is a percentage OF. This line used to be
             // fixed text claiming "before Super Resolution" whichever placement was running, while
             // the switch that chose it sat in a branch this backend never reaches -- so the
             // percentage below had no stated frame of reference at all.
-            int placement = config->DlssNrRunBeforeSr.value_or_default() ? 0 : 1;
+            //
+            // ApplyAfterRR alone decides it, the same key EvaluateAtSeam reads. RunBeforeSR is not
+            // consulted on this backend.
+            int placement = config->DlssNrApplyAfterRR.value_or_default() ? 1 : 0;
 
             if (ImGui::Combo("Processing point", &placement,
                              "Before Super Resolution\0After the finished frame\0"))
-            {
-                config->DlssNrRunBeforeSr = (placement == 0);
-                // The post placement is gated a second time inside the pass. Moving both together
-                // keeps this one switch honest instead of leaving another to find.
                 config->DlssNrApplyAfterRR = (placement != 0);
-            }
 
             HelpMarker(placement == 0
                            ? "The model is handed the render-resolution frame the upscaler is about to"
@@ -312,14 +324,13 @@ void RenderMenu(Config* config, float menuResScale)
                              "\nand enlarges in one dispatch, leaving no seam before it. Pick the other"
                              "\nplacement there, or the model will not run at all."
                            : "The model is handed the finished frame, and the percentage below is of"
-                             "\nthat frame: at 50%% a 4K picture is reduced to 1080p, the model runs on"
+                             "\nthat frame: at 50% a 4K picture is reduced to 1080p, the model runs on"
                              "\nit, and its answer is enlarged back to fill the frame."
                              "\n\nThis is the placement Ray Reconstruction titles need, and the only one"
                              "\nthey can reach.");
 
-            // A Ray Reconstruction title has no seam before the upscaler, so the pass runs after the
-            // frame whatever this switch says. Saying so here is the difference between fixing the
-            // old fixed-text confusion and simply moving it somewhere else.
+            // A Ray Reconstruction title has no seam before the upscaler, and the pass declines the
+            // one after it unless this switch picks it, so in this placement the model does not run.
             if (placement == 0)
             {
                 if (auto feature = State::Instance().currentFeature; feature != nullptr)
@@ -327,13 +338,19 @@ void RenderMenu(Config* config, float menuResScale)
                     const auto kind = feature->GetUpscalerType();
                     if (kind == Upscaler::DLSSD || kind == Upscaler::FSR_RR)
                         ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f),
-                                           "This title drives Ray Reconstruction: the pass runs after"
-                                           "\nthe frame regardless, and the percentage is of the finished frame.");
+                                           "This title drives Ray Reconstruction, which has no seam before it:"
+                                           "\nthe model is not running. Choose \"After the finished frame\".");
                 }
             }
 
-            int encoding=std::clamp(config->AmdEncoding.value_or_default(),0,3);
-            if(ImGui::Combo("Encoding",&encoding,"Auto (existing)\0Linear\0sRGB\0Gamma 2.2\0")) config->AmdEncoding=encoding;
+            // The stored value is 1 Linear, 2 sRGB, 3 Gamma 2.2, and the combo index is one below it.
+            // An old INI's 0 (Auto, which converted nothing) shows as Linear.
+            int encoding=std::clamp(config->AmdEncoding.value_or_default(),1,3)-1;
+            if(ImGui::Combo("Encoding",&encoding,"Linear\0sRGB (default)\0Gamma 2.2\0")) config->AmdEncoding=encoding+1;
+            HelpMarker("sRGB and Gamma 2.2 decode the frame to linear light before the model and"
+                       "\nencode its answer back afterwards. Linear hands it over unchanged."
+                       "\n\nsRGB is the default: the steadiest in testing, and the one that held"
+                       "\nhighlights best. Some games may look better with another.");
 
             // One slider, bound to whichever placement is live. The two keep separate values, so
             // switching back and forth does not make you retune each time.
@@ -341,12 +358,39 @@ void RenderMenu(Config* config, float menuResScale)
             static float scale = 100.f;
             static bool editingScale = false;
             if (!editingScale) scale = modelScale.value_or_default()*100.f;
-            ImGui::SliderFloat(placement == 0 ? "NR resolution (% of render)"
-                                              : "NR resolution (% of frame)",
+            // With dynamic resolution on, this is the ceiling it steps down from.
+            const bool dynamicScale = config->AmdDynamicScale.value_or_default();
+            ImGui::SliderFloat(placement == 0 ? (dynamicScale ? "NR resolution, maximum (% of render)"
+                                                              : "NR resolution (% of render)")
+                                              : (dynamicScale ? "NR resolution, maximum (% of frame)"
+                                                              : "NR resolution (% of frame)"),
                                &scale,25,100,"%.0f%%");
             editingScale = ImGui::IsItemActive();
             // Commit once after dragging or text entry, not one model rebuild per mouse move.
             if(ImGui::IsItemDeactivatedAfterEdit()) modelScale=scale/100.f;
+
+            bool dynamic = dynamicScale;
+            if (ImGui::Checkbox("Dynamic NR resolution", &dynamic))
+                config->AmdDynamicScale = dynamic;
+            HelpMarker("Lowers the model's resolution while the game runs under the target frame"
+                       "\nrate, in steps of 85%, 70%, 55% and 40% of the resolution above."
+                       "\n\nIt steps down after 2 s under the target and back up after 5 s with 15%"
+                       "\nheadroom, and waits 10 s after every change (60 s after a step down"
+                       "\nbefore it tries to go back up). Each change rebuilds the model, so the"
+                       "\neffect is off for one to five seconds and its history restarts."
+                       "\n\nThe AMD runtime keeps a little more VRAM after every rebuild, so it makes"
+                       "\nat most 8 changes per session and then stays where it is. Turning this"
+                       "\noff and on again resets the count."
+                       "\n\nWith a frame cap, set the target a little below the cap, or it never"
+                       "\nsees the headroom to step back up.");
+            if (dynamic)
+            {
+                int target = config->AmdDynamicTargetFps.value_or_default();
+                if (ImGui::SliderInt("Target FPS (rendered)", &target, 30, 240))
+                    config->AmdDynamicTargetFps = target;
+                if (const auto status = DlssNr::AmdBridge::DynamicStatus(); !status.empty())
+                    ImGui::TextDisabled("%s", status.c_str());
+            }
             // Stage costly neural parameter edits in ImGui state. Keep rendering
             // with the committed parameters until release/text-edit completion.
             auto neuralSlider = [](const char* label, auto& option, float lo, float hi) {
@@ -478,10 +522,12 @@ void RenderMenu(Config* config, float menuResScale)
                     config->DlssNrPasses = 1u;
                     config->DlssNrLocalStructure = 1.0f;
                     config->DlssNrSkinStructure = 1.0f;
-                    config->DlssNrRunBeforeSr = true;
+                    config->DlssNrApplyAfterRR = false; // before Super Resolution
                     config->AmdNrScale = 1.0f;
+                    config->AmdDynamicScale = false;
+                    config->AmdDynamicTargetFps = 60;
                     config->AmdNeuralLighting=true;
-                    config->AmdEncoding=0;
+                    config->AmdEncoding=2;
                     config->AmdNeuralLightingStrength=.5f;
                     DlssNr::AmdBridge::InvalidateHistory();
                 }

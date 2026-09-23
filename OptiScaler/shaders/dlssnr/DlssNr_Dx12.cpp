@@ -3757,10 +3757,19 @@ void EvaluateAtSeam(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* par
         // denoise and enlargement are one dispatch and cannot be split.
         const bool postPlacement = !beforeUpscale;
 
-        if (postPlacement && !cfg.DlssNrApplyAfterRR.value_or_default())
+        // ApplyAfterRR alone places the model. Every Super Resolution evaluate offers both seams, and
+        // if both reached the backend, the size change between them would reset its settling check
+        // on every call and neither would run. The seam not chosen is declined here.
+        const bool placedAfter = cfg.DlssNrApplyAfterRR.value_or_default();
+
+        if (postPlacement != placedAfter)
         {
-            ReportSkipOnce(forcePost ? "Ray Reconstruction is active; enable \"After RR\" to process its output"
-                                     : "AMD neural: enable \"After RR\" to run over the finished frame");
+            // Every frame in the other placement offers the seam before the upscaler, so declining
+            // it is routine and stays quiet. Only the seam after it is reported.
+            if (postPlacement)
+                ReportSkipOnce(forcePost ? "Ray Reconstruction is active; choose \"After the finished frame\" to "
+                                           "process its output"
+                                         : "AMD neural: choose \"After the finished frame\" to run over it");
             return;
         }
 

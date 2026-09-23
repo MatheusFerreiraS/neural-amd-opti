@@ -1,5 +1,5 @@
 // Exercises the production HIP selection/validation flow without a GPU or AMD runtime.
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/dlssnr/amd/HipRuntimeLoad.h"
+#include "../OptiScaler/dlssnr/amd/HipRuntimeLoad.h"
 #include <cstdio>
 
 using namespace AmdPreSr::HipRuntimeLoad;

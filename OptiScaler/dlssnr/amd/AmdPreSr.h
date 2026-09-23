@@ -49,7 +49,7 @@ struct RtgiSettings {
 };
 struct Settings
 {
-    UINT encoding = 0; // Auto, Linear, sRGB, Gamma 2.2
+    UINT encoding = 1; // 1 Linear, 2 sRGB, 3 Gamma 2.2
     bool everyFrame = false;
     // How many frames may be running at the NR stage at once. Too few and a frame that
     // finds every buffer busy carries no NR at all. In one YYSLS AB session the

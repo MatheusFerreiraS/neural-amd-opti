@@ -295,7 +295,10 @@ class Config
     CustomOptional<float> DlssNrLocalTone { 1.0f };
     CustomOptional<bool> AmdNeuralLighting { true };
     CustomOptional<float> AmdNeuralLightingStrength { .5f };
-    CustomOptional<int> AmdEncoding { 0 };
+    // 1 Linear, 2 sRGB, 3 Gamma 2.2. An old INI's 0 (Auto) reads as Linear, which it matched.
+    // sRGB by default: in Cyberpunk 2077 it was the steadiest and held highlights best. The
+    // others stay selectable per game.
+    CustomOptional<int> AmdEncoding { 2 };
     // 1-5 in the ini; the menu offers 2-5. Too few and a frame that finds every
     // buffer busy carries no NR at all, so this decides whether the mode works
     // rather than how fast it runs. See AmdPreSr.cpp for the measurements.
@@ -310,11 +313,16 @@ class Config
     CustomOptional<int> AmdSlots { 3 };
 #endif
     CustomOptional<float> AmdNrScale { 1 };
-    // Product default remains every-frame. Exposed as "Every-frame" on the
-    // Ins menu (same row as "Enable NR"); [DlssNr] AmdEveryFrame still works
-    // from the INI. With more than one slot the post-Execute wait is skipped
-    // except during native rebuild.
-    CustomOptional<bool> AmdEveryFrame { true };
+    // Dynamic NR resolution: steps the model's scale down from the configured one while the
+    // rendered frame rate stays under AmdDynamicTargetFps. See dlssnr/amd/DynamicScale.h.
+    CustomOptional<bool> AmdDynamicScale { false };
+    CustomOptional<int> AmdDynamicTargetFps { 60 };
+    // true turns the model's temporal history off (and, with a single slot, waits
+    // for the model after every Execute; with more than one slot that wait is
+    // skipped except during a native rebuild). Exposed on the Ins menu as
+    // "Disable temporal stabilization"; the key keeps its original name so
+    // existing INIs still work. Off by default: history on, image steadied.
+    CustomOptional<bool> AmdEveryFrame { false };
     // Legacy INI key. SpinDraw is driven only by AmdGraphicsWait.
     CustomOptional<int> AmdSpinDraw { 0 };
     // New wait (1) vs original wait (0). Default 1 since 1.8.4; still being tested.

@@ -1,5 +1,5 @@
 // CPU-only production replay check. Requires the Windows SDK, not a device/GPU.
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/dlssnr/amd/GraphicsRestoreDx12.h"
+#include "../OptiScaler/dlssnr/amd/GraphicsRestoreDx12.h"
 #include <array>
 #include <cassert>
 #include <cstdlib>

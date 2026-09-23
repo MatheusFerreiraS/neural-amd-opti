@@ -1,4 +1,4 @@
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/dlssnr/amd/GraphicsInvocation.h"
+#include "../OptiScaler/dlssnr/amd/GraphicsInvocation.h"
 #include <cassert>
 #include <iostream>
 #include <thread>

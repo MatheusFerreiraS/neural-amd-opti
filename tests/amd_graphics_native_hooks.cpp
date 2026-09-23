@@ -1,6 +1,6 @@
 // CPU-only: exercise real Detours forwarding on two synthetic list implementations.
 // No D3D device, GPU, author runtime, or game is used.
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/dlssnr/amd/NativeWaitHooks.h"
+#include "../OptiScaler/dlssnr/amd/NativeWaitHooks.h"
 #include <limits>
 #include <stdexcept>
 #include <iostream>

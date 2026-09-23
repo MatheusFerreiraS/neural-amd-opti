@@ -6,8 +6,8 @@ set "SHADER_TEST_OUT=%~1"
 if not defined SHADER_TEST_OUT set "SHADER_TEST_OUT=exports\shader-compatibility"
 for %%I in ("%SHADER_TEST_OUT%") do set "SHADER_TEST_OUT=%%~fI"
 if not exist "%SHADER_TEST_OUT%" mkdir "%SHADER_TEST_OUT%"
-set "SHADER_PROJECT=OptiScaler-DLSSNR-PreSR-Multipass-main\OptiScaler"
-set "SHADER_EXTERNAL=OptiScaler-DLSSNR-PreSR-Multipass-main\external"
+set "SHADER_PROJECT=OptiScaler"
+set "SHADER_EXTERNAL=external"
 call :BuildAndRun shader_dx12_srv
 if not "%errorlevel%"=="0" exit /b 1
 call :BuildAndRun shader_dx11_ownership

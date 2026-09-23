@@ -1,8 +1,8 @@
 // Exercise the production DX11 helper implementations on Microsoft's WARP device.
 // Config's test constructor keeps the real defaults without reading a game INI.
 // No D3D interfaces, view creation, dispatch, or helper destructors are mocked.
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/pch.h"
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/Util.h"
+#include "../OptiScaler/pch.h"
+#include "../OptiScaler/Util.h"
 
 #include <array>
 #include <chrono>
@@ -11,11 +11,11 @@
 #include <thread>
 #include <wrl/client.h>
 
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/shaders/Shader_Common.cpp"
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/shaders/Shader_Dx11.cpp"
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/shaders/rcas/RCAS_Common.cpp"
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/shaders/rcas/RCAS_Dx11.cpp"
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/gpu_time/GpuTime_Dx11.cpp"
+#include "../OptiScaler/shaders/Shader_Common.cpp"
+#include "../OptiScaler/shaders/Shader_Dx11.cpp"
+#include "../OptiScaler/shaders/rcas/RCAS_Common.cpp"
+#include "../OptiScaler/shaders/rcas/RCAS_Dx11.cpp"
+#include "../OptiScaler/gpu_time/GpuTime_Dx11.cpp"
 
 Config::Config() = default;
 Config* Config::Instance()

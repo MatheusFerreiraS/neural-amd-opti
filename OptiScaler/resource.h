@@ -34,10 +34,12 @@
 #define VER_DEV_RELEASE
 // #define VER_PRE_RELEASE
 
-// Follows the release suffix in every flavour of VER_PRODUCT_VERSION_STR. Adjacent literals
-// concatenate, so an empty tag reproduces the upstream string byte for byte.
+// This fork's own version, which is what the menu title, the log and the DLL's product version
+// show. VER_MAJOR/MINOR/HOTFIX above stay the upstream base: the update check compares them with
+// upstream's latest release, and they are the DLL's file version.
+#define VER_FORK_VERSION "0.1.0"
 #ifndef VER_FORK_TAG
-#define VER_FORK_TAG "-fork-y4my4my4m-v4"
+#define VER_FORK_TAG "-amd-nr"
 #endif
 
 #define VER_FILE_VERSION VER_MAJOR_VERSION, VER_MINOR_VERSION, VER_HOTFIX_VERSION, VER_BUILD_NUMBER
@@ -48,14 +50,12 @@
 #define VER_PRODUCT_VERSION VER_FILE_VERSION
 
 #ifdef VER_DEV_RELEASE
-#define VER_PRODUCT_VERSION_STR                                                                                        \
-    STRINGIZE(VER_MAJOR_VERSION) "." STRINGIZE(VER_MINOR_VERSION) "." STRINGIZE(VER_HOTFIX_VERSION) "-dev" VER_FORK_TAG " (" VER_BUILD_COMMIT ") (" VER_BUILD_DATE ")"
+#define VER_PRODUCT_VERSION_STR VER_FORK_VERSION VER_FORK_TAG " (" VER_BUILD_COMMIT ") (" VER_BUILD_DATE ")"
 #elif VER_PRE_RELEASE
 #define VER_PRODUCT_VERSION_STR                                                                                        \
-    STRINGIZE(VER_MAJOR_VERSION) "." STRINGIZE(VER_MINOR_VERSION) "." STRINGIZE(VER_HOTFIX_VERSION) "-pre" STRINGIZE(VER_BUILD_NUMBER) VER_FORK_TAG " (" VER_BUILD_COMMIT ") (" VER_BUILD_DATE ")"
+    VER_FORK_VERSION "-pre" STRINGIZE(VER_BUILD_NUMBER) VER_FORK_TAG " (" VER_BUILD_COMMIT ") (" VER_BUILD_DATE ")"
 #else
-#define VER_PRODUCT_VERSION_STR                                                                                        \
-    STRINGIZE(VER_MAJOR_VERSION) "." STRINGIZE(VER_MINOR_VERSION) "." STRINGIZE(VER_HOTFIX_VERSION) "-final" VER_FORK_TAG " (" VER_BUILD_COMMIT ")"
+#define VER_PRODUCT_VERSION_STR VER_FORK_VERSION VER_FORK_TAG " (" VER_BUILD_COMMIT ")"
 #endif // VER_PRE_RELEASE
 
 #define VER_PRODUCT_NAME "OptiScaler v" VER_PRODUCT_VERSION_STR " (FSR-RR Alpha 2)"

@@ -1,5 +1,5 @@
 #include <Windows.h>
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/dlssnr/amd/SubmissionState.h"
+#include "../OptiScaler/dlssnr/amd/SubmissionState.h"
 #include <cassert>
 #include <iostream>
 

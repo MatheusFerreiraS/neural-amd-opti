@@ -1,5 +1,5 @@
 // Exercise the actual C++ writer; its log is also consumed by retirement_stats.py.
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/dlssnr/amd/RetirementDiagnostics.h"
+#include "../OptiScaler/dlssnr/amd/RetirementDiagnostics.h"
 #include <cassert>
 #include <memory>
 #include <string>

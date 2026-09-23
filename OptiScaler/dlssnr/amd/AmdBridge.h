@@ -16,6 +16,11 @@ bool HasReplacement(NVSDK_NGX_Parameter*);
 void InvalidateHistory();
 void TraceContextRelease(unsigned int handle, bool after);
 std::string Status();
+// Smoothed GPU time the neural work takes on the game's queue per frame, all passes; 0 before the
+// first reading.
+float NeuralMs();
+// Dynamic NR resolution: the scale in use and the rendered frame rate, or empty while it is off.
+std::string DynamicStatus();
 bool GraphicsRestartNeeded(UINT activePasses);
 // pass1 SHA name ("0.3.0" / "0.3.1" / …) or nullptr if missing/unknown.
 // Cached for menu display until the DLL path, size, or write time changes.

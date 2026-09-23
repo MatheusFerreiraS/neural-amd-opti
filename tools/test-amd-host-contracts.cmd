@@ -7,6 +7,10 @@ if not defined AMD_TEST_OUT set "AMD_TEST_OUT=exports\amd-host-tests"
 for %%I in ("%AMD_TEST_OUT%") do set "AMD_TEST_OUT=%%~fI"
 if not exist "%AMD_TEST_OUT%" mkdir "%AMD_TEST_OUT%"
 if not defined AMD_TEST_PYTHON set "AMD_TEST_PYTHON=python"
+cl /nologo /std:c++20 /EHsc /W4 /utf-8 tests\amd_dynamic_scale.cpp /Fe"%AMD_TEST_OUT%\amd_dynamic_scale.exe" /Fo"%AMD_TEST_OUT%\amd_dynamic_scale.obj"
+if not %errorlevel%==0 exit /b 1
+"%AMD_TEST_OUT%\amd_dynamic_scale.exe"
+if not %errorlevel%==0 exit /b 1
 cl /nologo /std:c++20 /EHsc /W4 tests\amd_submission_state.cpp /Fe"%AMD_TEST_OUT%\amd_submission_state.exe" /Fo"%AMD_TEST_OUT%\amd_submission_state.obj"
 if not %errorlevel%==0 exit /b 1
 "%AMD_TEST_OUT%\amd_submission_state.exe"
@@ -32,11 +36,11 @@ cl /nologo /std:c++20 /EHsc /W4 /utf-8 tests\amd_graphics_invocation.cpp /Fe"%AM
 if not %errorlevel%==0 exit /b 1
 "%AMD_TEST_OUT%\amd_graphics_invocation.exe"
 if not %errorlevel%==0 exit /b 1
-cl /nologo /std:c++20 /EHsc /W4 /O2 /utf-8 /IOptiScaler-DLSSNR-PreSR-Multipass-main\OptiScaler\include tests\amd_graphics_native_hooks.cpp /Fe"%AMD_TEST_OUT%\amd_graphics_native_hooks.exe" /Fo"%AMD_TEST_OUT%\amd_graphics_native_hooks.obj" /link OptiScaler-DLSSNR-PreSR-Multipass-main\OptiScaler\library\detours\detours.lib
+cl /nologo /std:c++20 /EHsc /W4 /O2 /utf-8 /IOptiScaler\include tests\amd_graphics_native_hooks.cpp /Fe"%AMD_TEST_OUT%\amd_graphics_native_hooks.exe" /Fo"%AMD_TEST_OUT%\amd_graphics_native_hooks.obj" /link OptiScaler\library\detours\detours.lib
 if not %errorlevel%==0 exit /b 1
 "%AMD_TEST_OUT%\amd_graphics_native_hooks.exe"
 if not %errorlevel%==0 exit /b 1
-cl /nologo /std:c++20 /EHsc /W4 /utf-8 /IOptiScaler-DLSSNR-PreSR-Multipass-main\OptiScaler\include tests\amd_runtime_host_load.cpp /Fe"%AMD_TEST_OUT%\amd_runtime_host_load.exe" /Fo"%AMD_TEST_OUT%\amd_runtime_host_load.obj" /link OptiScaler-DLSSNR-PreSR-Multipass-main\OptiScaler\library\detours\detours.lib
+cl /nologo /std:c++20 /EHsc /W4 /utf-8 /IOptiScaler\include tests\amd_runtime_host_load.cpp /Fe"%AMD_TEST_OUT%\amd_runtime_host_load.exe" /Fo"%AMD_TEST_OUT%\amd_runtime_host_load.obj" /link OptiScaler\library\detours\detours.lib
 if not %errorlevel%==0 exit /b 1
 "%AMD_TEST_PYTHON%" -B tests\amd_runtime_host_fixture.py "%AMD_TEST_OUT%\amd_runtime_bootstrap_fixture.dll"
 if not %errorlevel%==0 exit /b 1

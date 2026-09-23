@@ -17,9 +17,30 @@ denoiser as the RR provider. Super-resolution stays FFX/FSR in both. Pick one pe
 ### Where the settings live
 
 - `OptiScaler.ini` — `[DlssNr]` covers the neural pass and the `Amd*` bridge keys (slots, wait mode,
-  every-frame). `[FSR-RR]`, `[AmdRtgi]` and `[AmdLook]` hold the other two feature sets; those are
+  temporal stabilization). `[FSR-RR]`, `[AmdRtgi]` and `[AmdLook]` hold the other two feature sets; those are
   mostly driven from the in-game menu and written back here once touched.
 - **Ins** in game opens the overlay, which carries the same controls plus the live ones.
+
+### Installing the release
+
+The release zip does not contain the AMD neural runtime or its weights. Both belong to
+[danielblnc/DLSS-NR-on-AMD](https://github.com/danielblnc/DLSS-NR-on-AMD) and come from its releases.
+
+1. Download DLSS-NR-on-AMD 0.3.1 (0.3.0 also works). Put its `version.dll` or its
+   `dlssnr_on_amd_setup.exe` next to `Setup.bat` from this package. Add
+   `dlssnr_on_amd_weights.bin` too if you already have it from another game; it works in any game.
+2. Close the game and run `Setup.bat`. Pick the folder that holds the game's executable (for
+   Cyberpunk 2077, `bin\x64`) and a proxy name. `dxgi.dll` is the usual choice; `d3d12.dll` greys
+   out Cyberpunk's Ray Reconstruction option. Setup copies the runtime to `dlssnr_amd_pass1.dll`
+   through `pass3.dll`, runs the author's setup to create the weights when none are found (it may
+   ask for NVIDIA's `nvngx_dlssnr.dll`), and moves any `version.dll` of the author's out of the game
+   folder, because OptiScaler drives the runtime itself.
+3. Start the game, press **Ins**, open the **Neural** tab and turn on **Enable NR**. In a game
+   that uses Ray Reconstruction, set **Processing point** to **After the finished frame**.
+
+To use AMD's FidelityFX denoiser as the Ray Reconstruction provider instead (FSR-RR), set
+`Dx12Upscaler=fsr-rr` under `[Upscalers]` in `OptiScaler.ini`. Setup also puts
+`Uninstall_OptiScaler_NR.bat` in the game folder, which removes the install.
 
 ### Building
 

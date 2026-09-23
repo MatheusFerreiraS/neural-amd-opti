@@ -1,5 +1,5 @@
 // Host-only tests. Does not load an author runtime or use a GPU.
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/dlssnr/amd/RuntimeHostLoad.h"
+#include "../OptiScaler/dlssnr/amd/RuntimeHostLoad.h"
 #include <cstdio>
 
 using namespace AmdPreSr::RuntimeHostLoad;

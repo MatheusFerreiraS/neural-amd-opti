@@ -32,6 +32,10 @@
     <ProjectGuid>{8d2b73fb-eecd-45ce-b8e5-335610462f58}</ProjectGuid>
     <RootNamespace>OptiScaler</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <!-- A machine-wide `vcpkg integrate install` links vcpkg's freetype import library instead of
+         the static external\freetype\freetype.lib, and the DLL then fails to load in any game
+         folder without a freetype.dll. -->
+    <VcpkgEnabled>false</VcpkgEnabled>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -311,6 +315,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="dlssnr\amd\AmdBridge.cpp" />
     <ClInclude Include="dlssnr\amd\AmdPreSr.h" />
     <ClInclude Include="dlssnr\amd\SubmissionState.h" />
+    <ClInclude Include="dlssnr\amd\DynamicScale.h" />
     <ClInclude Include="dlssnr\amd\RuntimeNotification.h" />
     <ClInclude Include="dlssnr\amd\RuntimeHostLoad.h" />
     <ClInclude Include="dlssnr\amd\HipRuntimeLoad.h" />

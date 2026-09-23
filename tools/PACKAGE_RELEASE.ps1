@@ -1,17 +1,16 @@
 ﻿<#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-AMD-PreSR-1.8.6-0.3.1
-    1.8.6  = this fork's product version
-    0.3.1  = primary upstream NR runtime (0.3.0 still accepted)
+  Default product: OptiScaler-0.1.0-amd-nr, the version in OptiScaler/resource.h.
+  The danielblnc runtime it drives is 0.3.1 (0.3.0 still accepted), supplied by the user.
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 1.8.6-0.3.1 -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.1.0-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '1.8.6-0.3.1',
+    [string]$Version = '0.1.0-amd-nr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
@@ -35,20 +34,18 @@ function Get-Sha256([string]$path) {
 
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $root) { $root = (Get-Location).Path }
-$source = Join-Path $root 'OptiScaler-DLSSNR-PreSR-Multipass-main'
-if (-not $Name) { $Name = "OptiScaler-AMD-PreSR-$Version" }
+if (-not $Name) { $Name = "OptiScaler-$Version" }
 $stage = Join-Path $root (Join-Path $OutDir $Name)
 $zip = Join-Path $root (Join-Path $OutDir ($Name + '.zip'))
 
+# The newest build wins, so a leftover output from an older build is never packaged by mistake.
+# x64/Release/a is where the solution build's post-build step moves the DLL.
 if (-not $OptiDll) {
-    foreach ($c in @(
-        (Join-Path $root 'exports/release-local/OptiScaler.dll'),
-        (Join-Path $root 'exports/build/OptiScaler.dll'),
-        (Join-Path $source 'x64/Release/OptiScaler.dll'),
-        (Join-Path $root 'exports/release-r17/OptiScaler.dll')
-    )) {
-        if (Test-Path -LiteralPath $c) { $OptiDll = $c; break }
-    }
+    $newest = Get-Item -LiteralPath @(
+        (Join-Path $root 'x64/Release/a/OptiScaler.dll'),
+        (Join-Path $root 'exports/release-local/OptiScaler.dll')
+    ) -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($newest) { $OptiDll = $newest.FullName }
 }
 if (!(Test-Path -LiteralPath $OptiDll)) {
     throw 'OptiScaler.dll not found. Build Release first (r18: ordinary Release, multi-slot default).'
@@ -73,14 +70,16 @@ if ($DepsRoot) {
     $depSearch += (Join-Path $DepsRoot 'OptiScaler')
     $depSearch += $DepsRoot
 }
-$depSearch += (Join-Path $source 'external/FidelityFX-SDK-v2/Kits/FidelityFX/signedbin')
+$depSearch += (Join-Path $root 'external/FidelityFX-SDK-v2/Kits/FidelityFX/signedbin')
 $depSearch += (Join-Path $root 'OptiScaler-AMD-PreSR-R1/OptiScaler')
 $depSearch += (Join-Path $root 'OptiScaler-AMD-PreSR-Multipass-v2.25/OptiScaler')
 
 foreach ($name in @(
     'amd_fidelityfx_loader_dx12.dll',
     'amd_fidelityfx_upscaler_dx12.dll',
-    'amd_fidelityfx_framegeneration_dx12.dll'
+    'amd_fidelityfx_framegeneration_dx12.dll',
+    # FSR-RR's Ray Reconstruction provider, loaded from here like the upscaler.
+    'amd_fidelityfx_denoiser_dx12.dll'
 )) {
     $cands = @()
     foreach ($d in $depSearch) { $cands += (Join-Path $d $name) }
@@ -89,13 +88,13 @@ foreach ($name in @(
     else { $missing.Add($name) }
 }
 
-$vkCands = @(Join-Path $source 'external/FidelityFX-SDK/PrebuiltSignedDLL/amd_fidelityfx_vk.dll')
+$vkCands = @(Join-Path $root 'external/FidelityFX-SDK/PrebuiltSignedDLL/amd_fidelityfx_vk.dll')
 if ($depSearch.Count) { $vkCands += (Join-Path $depSearch[0] 'amd_fidelityfx_vk.dll') }
 $vk = Find-Dep $vkCands
 if ($vk) { Copy-Item -LiteralPath $vk -Destination $deps -Force }
 
 $xessDirs = @(
-    (Join-Path $source 'external/xess/bin'),
+    (Join-Path $root 'external/xess/bin'),
     (Join-Path $root 'OptiScaler-AMD-PreSR-R1/OptiScaler'),
     (Join-Path $root 'OptiScaler-AMD-PreSR-Multipass-v2.25/OptiScaler')
 )
@@ -118,7 +117,7 @@ New-Item -ItemType Directory -Path (Join-Path $deps 'D3D12_OptiScaler') -Force |
 # user-supplied DepsRoot for every *.dll — that could pick up version.dll.
 $agilityNames = @('D3D12Core.dll', 'd3d12SDKLayers.dll')
 $agilityCands = @(
-    (Join-Path $source 'external/directx_agility_sdk/lib'),
+    (Join-Path $root 'external/directx_agility_sdk/lib'),
     (Join-Path $root 'OptiScaler-AMD-PreSR-R1/OptiScaler/D3D12_OptiScaler')
 )
 if ($DepsRoot) {
@@ -149,12 +148,12 @@ if ($missing.Count -gt 0) {
 }
 
 # Licenses
-$optiLic = Join-Path $source 'LICENSE'
+$optiLic = Join-Path $root 'LICENSE'
 if (Test-Path $optiLic) {
     Copy-Item $optiLic (Join-Path $stage 'Licenses/OptiScaler_LICENSE.txt') -Force
 }
-if (Test-Path (Join-Path $source 'Licenses')) {
-    Get-ChildItem (Join-Path $source 'Licenses') -File | Copy-Item -Destination (Join-Path $stage 'Licenses') -Force
+if (Test-Path (Join-Path $root 'Licenses')) {
+    Get-ChildItem (Join-Path $root 'Licenses') -File | Copy-Item -Destination (Join-Path $stage 'Licenses') -Force
 }
 foreach ($pair in @(
     @('external/xess/LICENSE.txt', 'XeSS_LICENSE.txt'),
@@ -162,12 +161,12 @@ foreach ($pair in @(
     @('external/FidelityFX-SDK-v2/docs/license.md', 'FidelityFX_v2_LICENSE.md'),
     @('external/directx_agility_sdk/LICENSE.txt', 'DirectX_LICENSE.txt')
 )) {
-    $p = Join-Path $source $pair[0]
+    $p = Join-Path $root $pair[0]
     if (Test-Path $p) { Copy-Item $p (Join-Path $stage ('Licenses/' + $pair[1])) -Force }
 }
 
 # INI
-$iniSrc = Join-Path $source 'OptiScaler.ini'
+$iniSrc = Join-Path $root 'OptiScaler.ini'
 if (!(Test-Path $iniSrc)) { throw "Missing $iniSrc" }
 $ini = Get-Content -LiteralPath $iniSrc -Raw
 $ini = $ini -replace '(?m)^Dx12Upscaler=.*$', 'Dx12Upscaler=ffx'
@@ -179,15 +178,18 @@ $ini = [regex]::Replace($ini, '(?ms)^\[DlssNr\].*?(?=^\[|\z)', @"
 ; Product $Version - NR slots default 3 (2-5 in-game, 1-5 here).
 ; Requires DLSS-NR-on-AMD 0.3.0 or 0.3.1 (https://github.com/danielblnc/DLSS-NR-on-AMD)
 ; as dlssnr_amd_pass1-3.dll (Setup copies version.dll from the package folder).
-; AmdEveryFrame=true is the product default (Ins menu: "Every-frame"; also INI).
+; AmdEveryFrame=false keeps the model's temporal history (Ins menu: "Disable temporal
+; stabilization", off by default).
 ; AmdGraphicsWait=1 is New wait mode (0.3.1 1-pixel draw; still testing).
 ; Set 0 for Original wait.
 ; Unsafe dirty insert stays off (AmdGraphicsUnsafe=0).
 Enabled=false
 RunBeforeSR=true
 AmdModelScale=1
-AmdEncoding=0
-AmdEveryFrame=true
+AmdDynamicScale=false
+AmdDynamicTargetFps=60
+AmdEncoding=2
+AmdEveryFrame=false
 AmdSlots=3
 AmdGraphicsWait=1
 AmdGraphicsUnsafe=0
@@ -203,6 +205,9 @@ SkinStructure=1
 ; it); the AMD runtime does not supersample, so it stops at 1.0.
 ; RRPasses applies to the NVIDIA feature chain only -- the AMD backend runs one pass chain from
 ; Passes above, one runtime module per pass, capped at three by dlssnr_amd_pass1-3.dll.
+; On the AMD backend this key alone chooses the placement (Ins menu: "Processing point"):
+; false runs the model before Super Resolution, true after the finished frame. RunBeforeSR above
+; is kept for the NVIDIA backend and is not consulted there.
 ApplyAfterRR=false
 RRWorkingScale=1.0
 RRPasses=1
@@ -269,11 +274,9 @@ if (Test-Path $rtgiSrc) {
     Get-ChildItem -LiteralPath $rtgiSrc -File | Copy-Item -Destination $rtgiDst -Force
 }
 
-# Installer + docs (CN + EN). No duplicate 使用说明.txt.
-$readmeZh = Join-Path $root 'README.md'
-$readmeEn = Join-Path $root 'README.en.md'
-if (!(Test-Path $readmeZh)) { throw "Missing $readmeZh" }
-if (!(Test-Path $readmeEn)) { throw "Missing $readmeEn" }
+# Installer + README.
+$readme = Join-Path $root 'README.md'
+if (!(Test-Path $readme)) { throw "Missing $readme" }
 $installerSrc = Join-Path $root 'tools/install-amd-presr.ps1'
 if (!(Test-Path $installerSrc)) { throw "Missing $installerSrc" }
 Copy-Item $installerSrc (Join-Path $stage 'Setup.ps1') -Force
@@ -312,8 +315,7 @@ if not "%EC%"=="0" echo Uninstall failed ^(exit code %EC%^). See the error above
 pause
 exit /b %EC%
 '@ | Set-Content -LiteralPath (Join-Path $stage 'Uninstall_OptiScaler_NR.bat') -Encoding ASCII
-Copy-Item $readmeZh (Join-Path $stage 'README.md') -Force
-Copy-Item $readmeEn (Join-Path $stage 'README.en.md') -Force
+Copy-Item $readme (Join-Path $stage 'README.md') -Force
 
 # 绊线：这些文件名一旦出现在 stage 里就拒绝打包（含子目录，例如 Agility 误扫入 version.dll）。
 # 原作者 pass（dlssnr_amd_pass*.dll）必须不在包内 —— README 明写「包里没有原作者 pass」。

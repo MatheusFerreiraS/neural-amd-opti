@@ -73,14 +73,17 @@ jobs:
         $resourceLines = Get-Content $resourceFile
         $devRelease = $resourceLines | Select-String -Pattern '^\s*#define\s+VER_DEV_RELEASE' -Quiet
         $forkLine = $resourceLines | Select-String -Pattern '^\s*#define\s+VER_FORK_TAG' | Select-Object -First 1
+        $forkVersionLine = $resourceLines | Select-String -Pattern '^\s*#define\s+VER_FORK_VERSION' | Select-Object -First 1
 
         $forkTag = ''
         if ($forkLine) { $forkTag = ($forkLine.Line -replace '.*"(.*)".*', '$1') }
+        $forkVersion = "$majorVersion.$minorVersion.$hotfixVersion"
+        if ($forkVersionLine) { $forkVersion = ($forkVersionLine.Line -replace '.*"(.*)".*', '$1') }
 
-        if ($devRelease) { $suffix = "-dev" } else { $suffix = "-pre$buildVersion" }
+        if ($devRelease) { $suffix = "" } else { $suffix = "-pre$buildVersion" }
 
         # Merge into a single version string
-        $version = "v$majorVersion.$minorVersion.$hotfixVersion$suffix$forkTag"
+        $version = "v$forkVersion$suffix$forkTag"
         
         # Get the current date in a specific format (e.g., YYYYMMDD)
         $date = Get-Date -Format "yyyyMMdd"

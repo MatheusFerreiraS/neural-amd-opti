@@ -1,4 +1,4 @@
-#include "../OptiScaler-DLSSNR-PreSR-Multipass-main/OptiScaler/dlssnr/amd/GraphicsRestore.h"
+#include "../OptiScaler/dlssnr/amd/GraphicsRestore.h"
 #include <cassert>
 #include <iostream>
 
