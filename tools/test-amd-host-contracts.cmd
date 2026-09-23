@@ -11,6 +11,10 @@ cl /nologo /std:c++20 /EHsc /W4 /utf-8 tests\amd_dynamic_scale.cpp /Fe"%AMD_TEST
 if not %errorlevel%==0 exit /b 1
 "%AMD_TEST_OUT%\amd_dynamic_scale.exe"
 if not %errorlevel%==0 exit /b 1
+cl /nologo /std:c++20 /EHsc /W4 tests\nr_backend_selector.cpp /Fe"%AMD_TEST_OUT%\nr_backend_selector.exe" /Fo"%AMD_TEST_OUT%\nr_backend_selector.obj"
+if not %errorlevel%==0 exit /b 1
+"%AMD_TEST_OUT%\nr_backend_selector.exe"
+if not %errorlevel%==0 exit /b 1
 cl /nologo /std:c++20 /EHsc /W4 tests\amd_submission_state.cpp /Fe"%AMD_TEST_OUT%\amd_submission_state.exe" /Fo"%AMD_TEST_OUT%\amd_submission_state.obj"
 if not %errorlevel%==0 exit /b 1
 "%AMD_TEST_OUT%\amd_submission_state.exe"

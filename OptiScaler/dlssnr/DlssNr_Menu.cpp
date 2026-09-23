@@ -1,12 +1,15 @@
 #include "pch.h"
 #include "amd/PresentExperimental.h"
 #include "amd/AmdBridge.h"
+#include "amd/AmdLayout.h"
+#include "backend/Selector.h"
 #include "DlssNrFeature_Vk.h"
 
 #include "DlssNr.h"
 #include "DlssNr_ExposureScan.h"
 
 #include <Config.h>
+#include <Util.h>
 #include <hooks/D3D12_Hooks.h>
 #include <menu/menu_common.h>
 
@@ -17,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 namespace DlssNr
 {
@@ -159,6 +163,17 @@ static bool PassOverrideSlider(const char* label, std::optional<float>* own, flo
     return changed;
 }
 
+// GPU time the game's queue spends on the model each frame, from the bridge's timestamps.
+static void NeuralPassLine(Config* config, const char* help)
+{
+    const float ms = DlssNr::AmdBridge::NeuralMs();
+    if (ms <= 0 || !config->DlssNrEnabled.value_or_default())
+        return;
+    ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Neural pass: %.1f ms per frame (%.0f fps on its own)", ms,
+                       1000.f / ms);
+    HelpMarker(help);
+}
+
 void RenderMenu(Config* config, float menuResScale)
 {
 
@@ -174,6 +189,66 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::Checkbox("Enable NR", &enabled))
             config->DlssNrEnabled = enabled;
 
+        // With both runtimes installed, choose the one the next launch uses. This session keeps the
+        // one it started with: each installs its own D3D12 hooks as the device is created.
+        {
+            std::error_code ec;
+            const auto dir = Util::DllPath().parent_path();
+            if (std::filesystem::exists(dir / L"dlssnr_amd_pass1.dll", ec) &&
+                std::filesystem::exists(dir / L"LmxxfNrRuntime.dll", ec))
+            {
+                const bool running = DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Lmxxf;
+                int pick =
+                    DlssNr::Backend::ParseKind(config->NrBackend.value_or_default()) == DlssNr::Backend::Kind::Lmxxf;
+                if (ImGui::Combo("NR runtime", &pick, "danielblnc\0lmxxf\0"))
+                    config->NrBackend = std::string(pick ? "lmxxf" : "daniel");
+                if ((pick == 1) != running)
+                {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1.f, 0.8f, 0.f, 1.f), "(save and restart)");
+                }
+                HelpMarker("danielblnc: the DLSS-NR-on-AMD runtime, every control below."
+                           "\nlmxxf: open-source HIP kernels in the game's own queue, before Super"
+                           "\nResolution only. Detail, colour and debug view."
+                           "\n\nThe choice is stored as NrBackend. Press Save Settings and restart the"
+                           "\ngame to switch.");
+            }
+        }
+
+        // lmxxf picks its own network tier from the input size and runs only before Super
+        // Resolution, so none of the controls below reach it: resolution, passes, slots, wait
+        // mode, encoding and placement all belong to the danielblnc runtime.
+        if (DlssNr::AmdBridge::HasFiles() && DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Lmxxf)
+        {
+            HGap(0.12f);
+            ImGui::TextDisabled("lmxxf");
+            HelpMarker("AMD NR runtime: lmxxf (open-source HIP kernels, same-frame execution)."
+                       "\nNrBackend in OptiScaler.ini picks the runtime; restart after changing it.");
+
+            NeuralPassLine(config, "GPU time the game's queue spends on the model each frame: copying its"
+                                   "\ninputs, waiting while the HIP kernels run between the two halves of"
+                                   "\nthe game's command list, and applying the result."
+                                   "\n\nThe fps is 1000 divided by that time: how many frames per second the"
+                                   "\nmodel alone could keep up with. The game runs slower than that, because"
+                                   "\nthe rest of the frame takes time too.");
+
+            float transfer = config->DlssNrTransferStrength.value_or_default();
+            if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 1.0f, "%.2f"))
+                config->DlssNrTransferStrength = transfer;
+            float colour = config->DlssNrColourStrength.value_or_default();
+            if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 1.0f, "%.2f"))
+                config->DlssNrColourStrength = colour;
+            int debugView = std::clamp(int(config->DlssNrDebugView.value_or_default()), 0, 4);
+            if (ImGui::Combo("Debug view", &debugView,
+                             "Off\0What the model sees\0Model output alone\0Difference (x20)\0Tint\0"))
+                config->DlssNrDebugView = uint32_t(debugView);
+
+            ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
+            ImGui::TextWrapped("Runs before Super Resolution only, so a game driving Ray Reconstruction"
+                               " gets no NR. Built for a render resolution of 1080p or less.");
+            return;
+        }
+
         if (DlssNr::AmdBridge::HasFiles())
         {
             // Runtime name belongs with Enable NR — tight pair, not a separate group.
@@ -181,7 +256,7 @@ void RenderMenu(Config* config, float menuResScale)
             const bool haveVer = ver && *ver;
             HGap(0.12f);
             ImGui::TextDisabled("%s", haveVer ? ver : "pass1?");
-            HelpMarker(haveVer ? "AMD NR runtime (original project / original author)."
+            HelpMarker(haveVer ? "AMD NR runtime: danielblnc (DLSS-NR-on-AMD)."
                                : "AMD NR runtime: pass1 not identified yet.");
 
             // Stored as [DlssNr] AmdEveryFrame, the key's original name, so existing INIs keep working.
@@ -293,16 +368,11 @@ void RenderMenu(Config* config, float menuResScale)
 
         if (DlssNr::AmdBridge::HasFiles())
         {
-            if (const float ms = DlssNr::AmdBridge::NeuralMs(); ms > 0 && config->DlssNrEnabled.value_or_default())
-            {
-                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f),
-                                   "Neural pass: %.1f ms per frame (%.0f fps on its own)", ms, 1000.f / ms);
-                HelpMarker("GPU time the game's queue spends on the model each frame, all passes"
-                           "\ntogether: copying its inputs, waiting for its result and applying it."
-                           "\n\nThe fps is 1000 divided by that time: how many frames per second the"
-                           "\nmodel alone could keep up with. The game runs slower than that, because"
-                           "\nthe rest of the frame takes time too.");
-            }
+            NeuralPassLine(config, "GPU time the game's queue spends on the model each frame, all passes"
+                                   "\ntogether: copying its inputs, waiting for its result and applying it."
+                                   "\n\nThe fps is 1000 divided by that time: how many frames per second the"
+                                   "\nmodel alone could keep up with. The game runs slower than that, because"
+                                   "\nthe rest of the frame takes time too.");
 
             // Where the model sits, and what its resolution is a percentage OF. This line used to be
             // fixed text claiming "before Super Resolution" whichever placement was running, while
@@ -351,6 +421,39 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nencode its answer back afterwards. Linear hands it over unchanged."
                        "\n\nsRGB is the default: the steadiest in testing, and the one that held"
                        "\nhighlights best. Some games may look better with another.");
+
+            // Only a runtime whose layout maps its Scale can take a strength.
+            {
+                const char* runtime = DlssNr::AmdBridge::RuntimeName();
+                bool hasScale = false;
+                for (const auto* layout : AmdPreSr::kAmdLayouts)
+                    if (runtime && std::strcmp(layout->name, runtime) == 0)
+                        hasScale = layout->scale != 0;
+                ImGui::BeginDisabled(!hasScale);
+                static float strength = 100.f;
+                static bool editingStrength = false;
+                if (!editingStrength)
+                    strength = config->AmdEffectStrength.value_or_default() * 100.f;
+                ImGui::SliderFloat("Effect strength", &strength, 0, 100, "%.0f%%");
+                editingStrength = ImGui::IsItemActive();
+                // Commit once on release: every change restarts the model's history.
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                    config->AmdEffectStrength = strength / 100.f;
+                ImGui::EndDisabled();
+                HelpMarker("How much of the network's result reaches the frame. 100% is the"
+                           "\nruntime's own default; 0% leaves the frame as the game drew it while"
+                           "\nthe network still runs. Changing it restarts the model's history."
+                           "\n\nNeeds the danielblnc 0.3.1 runtime.");
+            }
+
+            int grade = std::clamp(config->AmdColourGrade.value_or_default(), 0, 2);
+            if (ImGui::Combo("Colour grade", &grade, "None\0Natural\0Cinematic\0"))
+                config->AmdColourGrade = grade;
+            HelpMarker("The colour grade NVIDIA applies after the network in its Model B and C,"
+                       "\nat NVIDIA's default strength."
+                       "\n\nNatural (Model B): exposure -0.1 EV, softer contrast, 10% less saturation."
+                       "\nCinematic (Model C): 15% less saturation."
+                       "\n\nColour only: the network itself runs the same either way.");
 
             // One slider, bound to whichever placement is live. The two keep separate values, so
             // switching back and forth does not make you retune each time.
@@ -544,6 +647,8 @@ void RenderMenu(Config* config, float menuResScale)
                     config->AmdDynamicTargetFps = 60;
                     config->AmdNeuralLighting = true;
                     config->AmdEncoding = 2;
+                    config->AmdEffectStrength = 1.0f;
+                    config->AmdColourGrade = 0;
                     config->AmdNeuralLightingStrength = .5f;
                     DlssNr::AmdBridge::InvalidateHistory();
                 }

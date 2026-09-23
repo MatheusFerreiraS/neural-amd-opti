@@ -1385,7 +1385,11 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         auto motion = f.motion;
         auto depth = f.depth;
         const auto& look = cfg.look;
-        const bool applyLook = look.enabled && (look.mix > 0 || look.tone > 0 || look.inspect != 0);
+        const bool lookOn = look.enabled && (look.mix > 0 || look.tone > 0 || look.inspect != 0);
+        // NVIDIA's Model B and C colour grade. The appearance pass carries it, so it runs for the
+        // grade alone too.
+        const bool colourGrade = cfg.grade == 1 || cfg.grade == 2;
+        const bool applyLook = lookOn || colourGrade;
         auto createScratch = [&](ComPtr<ID3D12Resource>& resource, UINT sw, UINT sh, DXGI_FORMAT format)
         {
             if (resource && resource->GetDesc().Width == sw && resource->GetDesc().Height == sh)
@@ -1584,11 +1588,11 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         UINT accepted = 0;
         if (scaled)
             copyGuide(sl->colour.Get(), p->scaleBaseline.Get());
-        const bool settingsChanged = cfg.encoding != p->lastSettings.encoding ||
-                                     cfg.toneChannels != p->lastSettings.toneChannels ||
-                                     cfg.modelScale != p->lastSettings.modelScale || !p->haveSettings ||
-                                     cfg.tone != p->lastSettings.tone || cfg.structure != p->lastSettings.structure ||
-                                     cfg.skin != p->lastSettings.skin || cfg.everyFrame != p->lastSettings.everyFrame;
+        const bool settingsChanged =
+            cfg.encoding != p->lastSettings.encoding || cfg.toneChannels != p->lastSettings.toneChannels ||
+            cfg.modelScale != p->lastSettings.modelScale || !p->haveSettings || cfg.tone != p->lastSettings.tone ||
+            cfg.structure != p->lastSettings.structure || cfg.skin != p->lastSettings.skin ||
+            cfg.everyFrame != p->lastSettings.everyFrame || (L->scale && cfg.strength != p->lastSettings.strength);
         const bool explicitReset = p->resetRequested.exchange(false);
         const bool gap = p->lastSubmitted && GetTickCount64() - p->lastSubmitted > 250;
         if (f.reset || resize || guideChange || passChange || p->resetAfterTimeout || settingsChanged ||
@@ -1632,6 +1636,8 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             At<float>(r, L->tone) = i == 0 ? cfg.tone : 0;
             At<float>(r, L->structure) = cfg.structure;
             At<float>(r, L->skin) = cfg.skin;
+            if (L->scale)
+                At<float>(r, L->scale) = cfg.strength * 4.f / 128.f;
             At<UINT>(r, L->toneChannels) = cfg.toneChannels ? 1u : 0u;
             At<UINT>(r, L->charMask) = 1; // Enable native semantic character-mask channel.
             // The old shader ceiling expired at high render resolutions even
@@ -1858,12 +1864,12 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                 float mix, material, shape, lighting, skin, softness, specular, rollOff;
                 float colour, shadow, halo, flat, tone, exposureEV, contrast, saturation;
                 float compression, preExposure;
-                UINT detectSkin, reserved;
+                UINT detectSkin, grade;
             } c { w,
                   h,
                   (std::min) (look.appearance, 3u),
-                  (std::min) (look.inspect, 3u),
-                  bounded(look.mix, 0, 1, 1),
+                  lookOn ? (std::min) (look.inspect, 3u) : 0u,
+                  lookOn ? bounded(look.mix, 0, 1, 1) : 0.f,
                   bounded(look.materialDetail, 0, 2, 1.15f),
                   bounded(look.shapeDefinition, 0, 2, 1.2f),
                   bounded(look.localLighting, 0, 2, 1.15f),
@@ -1875,14 +1881,14 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                   bounded(look.shadowDepth, 0, 1, .2f),
                   bounded(look.antiHalo, 0, 1, .901f),
                   bounded(look.flatAreaProtection, 0, 1, 0),
-                  bounded(look.tone, 0, 1, 0),
+                  lookOn ? bounded(look.tone, 0, 1, 0) : 0.f,
                   bounded(look.exposureEV, -3, 3, 1),
                   bounded(look.contrast, .5f, 1.5f, 1),
                   bounded(look.saturation, 0, 2, 1),
                   bounded(look.highlightCompression, 0, 1, 0),
                   std::isfinite(f.preExposure) && f.preExposure > 0 ? f.preExposure : 1,
                   look.detectSkin,
-                  0 };
+                  colourGrade ? cfg.grade : 0u };
             static_assert(sizeof(Constants) == 24 * sizeof(UINT));
             Barrier(cmd, p->lookColour.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);

@@ -185,10 +185,17 @@ $ini = [regex]::Replace($ini, '(?ms)^\[DlssNr\].*?(?=^\[|\z)', @"
 ; Unsafe dirty insert stays off (AmdGraphicsUnsafe=0).
 Enabled=false
 RunBeforeSR=true
+; NR runtime: daniel (dlssnr_amd_pass1-3.dll and dlssnr_on_amd_weights.bin) or lmxxf
+; (LmxxfNrRuntime.dll, lmxxf-modules\, shaders\ and native-game-tiled-assets\). Restart after changing.
+NrBackend=daniel
+; lmxxf: fit a render resolution above 1080p onto the 1080 network. Can hitch at ~2K; off by default.
+LmxxfFitLarge=false
 AmdModelScale=1
 AmdDynamicScale=false
 AmdDynamicTargetFps=60
 AmdEncoding=2
+AmdEffectStrength=1.0
+AmdColourGrade=0
 AmdEveryFrame=false
 AmdSlots=3
 AmdGraphicsWait=1
@@ -273,6 +280,18 @@ if (Test-Path $rtgiSrc) {
     New-Item -ItemType Directory -Path $rtgiDst -Force | Out-Null
     Get-ChildItem -LiteralPath $rtgiSrc -File | Copy-Item -Destination $rtgiDst -Force
 }
+
+# The lmxxf runtime is open source and ships in the package; its weights do not.
+$lmxxfDll = Join-Path $root 'exports/lmxxf-runtime/LmxxfNrRuntime.dll'
+if (!(Test-Path -LiteralPath $lmxxfDll -PathType Leaf)) {
+    throw "Missing $lmxxfDll. Build it with tools\build-lmxxf-runtime.cmd exports\lmxxf-runtime."
+}
+Copy-Item -LiteralPath $lmxxfDll -Destination (Join-Path $stage 'LmxxfNrRuntime.dll') -Force
+Copy-Item -Path (Join-Path $root 'third_party/lmxxf/modules') -Destination (Join-Path $stage 'lmxxf-modules') -Recurse -Force
+# Top-level *.hlsl only: the runtime compiles its own shader-cache\ on first use.
+New-Item -ItemType Directory -Path (Join-Path $stage 'shaders') -Force | Out-Null
+Get-ChildItem -LiteralPath (Join-Path $root 'third_party/lmxxf/shaders') -Filter '*.hlsl' -File |
+    Copy-Item -Destination (Join-Path $stage 'shaders') -Force
 
 # Installer + README.
 $readme = Join-Path $root 'README.md'

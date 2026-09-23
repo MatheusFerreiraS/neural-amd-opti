@@ -256,7 +256,7 @@ class Config
     CustomOptional<bool> LogToNGX { false };
     CustomOptional<bool> OpenConsole { false };
     CustomOptional<bool> DebugWait { false }; // not in ini
-    CustomOptional<int> LogLevel { 0 };
+    CustomOptional<int> LogLevel { 2 };
     CustomOptional<std::wstring> LogFileName { L"OptiScaler.log" };
     CustomOptional<bool> LogSingleFile { true };
     CustomOptional<bool> LogAsync { false };
@@ -299,6 +299,11 @@ class Config
     // sRGB by default: in Cyberpunk 2077 it was the steadiest and held highlights best. The
     // others stay selectable per game.
     CustomOptional<int> AmdEncoding { 2 };
+    // Share of the network's effect, 0-1: the runtime's Scale as a fraction of its 4/128 default.
+    // danielblnc 0.3.1 only.
+    CustomOptional<float> AmdEffectStrength { 1.0f };
+    // NVIDIA's colour grade for Model B (1, natural) or C (2, cinematic); 0 = none.
+    CustomOptional<int> AmdColourGrade { 0 };
     // 1-5 in the ini; the menu offers 2-5. Too few and a frame that finds every
     // buffer busy carries no NR at all, so this decides whether the mode works
     // rather than how fast it runs. See AmdPreSr.cpp for the measurements.
@@ -328,8 +333,17 @@ class Config
     // New wait (1) vs original wait (0). Default 1 since 1.8.4; still being tested.
     // Live switching needs installed hooks and a ready 1-pixel-draw PSO; otherwise restart.
     CustomOptional<int> AmdGraphicsWait { 1 };
+    // NR host: daniel (default), lmxxf, off. Missing key = daniel. Restart to change.
+    CustomOptional<std::string> NrBackend { "daniel" };
+    // lmxxf diagnostics: original/copy-current/staging-current/staging-previous,
+    // proxy-original/split-original (NO NR). off requires a same-frame boundary. Restart to change.
+    CustomOptional<std::string> LmxxfDiagnostic { "off" };
+    // Fit Color inputs above 1920x1080 onto the 1080 network (DLSS5_FIT_LARGE).
+    // Default false: missing/auto => false (Palworld: FitLarge+~2K Color same-frame can hitch ~2s/frame).
+    // Opt-in with explicit true; applied to env on Config load / lmxxf backend start; installer writes flags.
+    CustomOptional<bool> LmxxfFitLarge { false };
     // Experimental dirty insert: request SpinDraw=1 even when freeze/admission fails.
-    // No complete D3D12 graphics-state restore — risk matches the original author runtime. Default 0.
+    // No complete D3D12 graphics-state restore — risk matches the danielblnc runtime. Default 0.
     CustomOptional<int> AmdGraphicsUnsafe { 0 };
     CustomOptional<bool> AmdRtgiEnabled { false };
     CustomOptional<uint32_t> AmdRtgiQuality { 2 };

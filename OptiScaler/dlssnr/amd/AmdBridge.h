@@ -5,6 +5,8 @@
 namespace DlssNr::AmdBridge
 {
 bool HasFiles();
+// Install submission expansion before the first wrapped list is exposed. No runtime/HIP initialization.
+bool EnsureSubmissionHook(ID3D12CommandQueue*);
 bool Before(ID3D12GraphicsCommandList*, NVSDK_NGX_Parameter*, ID3D12CommandQueue*);
 // Post-upscale placement: runs the model over the frame the upscaler (or Ray Reconstruction) has
 // already finished, and hands its answer back instead of substituting the upscaler's input. The
@@ -25,4 +27,5 @@ bool GraphicsRestartNeeded(UINT activePasses);
 // pass1 SHA name ("0.3.0" / "0.3.1" / …) or nullptr if missing/unknown.
 // Cached for menu display until the DLL path, size, or write time changes.
 const char* RuntimeName();
+void UpdateConfirmedRenderQueue(ID3D12CommandQueue* q);
 } // namespace DlssNr::AmdBridge

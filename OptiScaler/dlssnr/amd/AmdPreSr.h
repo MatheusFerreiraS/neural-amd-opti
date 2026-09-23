@@ -65,6 +65,10 @@ struct Settings
     // Graphics preference from the bridge; each Record still requires admission.
     int spinDraw = 0;
     float tone = 0, structure = 1, skin = 1;
+    // Share of the network's effect, 1 = the runtime's default Scale of 4/128.
+    float strength = 1;
+    // NVIDIA's colour grade for Model B (1, natural) or C (2, cinematic); 0 = none.
+    UINT grade = 0;
     LookSettings look;
     RtgiSettings rtgi;
 };

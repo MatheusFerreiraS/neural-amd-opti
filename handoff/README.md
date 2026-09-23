@@ -45,7 +45,8 @@ Two GitHub releases, both built by `tools/PACKAGE_RELEASE.ps1`:
 - `v0.1.1-amd-nr`: that fixed (section 5, "FidelityFX modules load from the OptiScaler folder").
 
 The build reports itself as `0.1.1-amd-nr`, and the packager writes
-`dist/OptiScaler-0.1.1-amd-nr.zip`.
+`dist/OptiScaler-0.1.1-amd-nr.zip`. Work since then (the lmxxf runtime, effect strength, colour
+grade) is committed on the branch but not released; see section 5, "After 0.1.1".
 
 The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer)
 (v0.4.0 and later) installs this build as its OptiScaler route. Its payload manifest pins the
@@ -385,6 +386,43 @@ available. Also `[FSR-RR] TaggedNormalRoughness` (**default off**, see section 7
 **Packaging.** `tools/PACKAGE_RELEASE.ps1` rewrites the whole `[DlssNr]` section when
 building a release, so it did not know the post-RR keys. `RRWorkingScale` and `RRPasses`
 were added there; `Enabled=false` is unchanged.
+
+### After 0.1.1 (committed, not released)
+
+**Second NR runtime: lmxxf.** Ported from TheAutomatic's `release/1.9.0` up to `c127e04b`
+(tag `v1.9.1-alpha`, lmxxf upstream 0.29). The upstream folder
+`OptiScaler-DLSSNR-PreSR-Multipass-main/` maps to this repo's root; `tools/`, `tests/` and
+`third_party/` stay at the root. The next sync diffs from `c127e04b`. Their lmxxf files
+(`dlssnr/backend/`, `dlssnr/submission/`, `lmxxf_runtime/`) are best taken whole from upstream,
+then re-apply the one local change (`LmxxfBackend::Record` refuses `afterUpscale` frames) and
+run clang-format. `third_party/lmxxf/` is vendored MIT source plus gfx1201 modules;
+`tools/build-lmxxf-runtime.cmd exports\lmxxf-runtime` builds `LmxxfNrRuntime.dll`, and the
+packager ships it with the modules and the top-level `*.hlsl`. The weights
+(`native-game-tiled-assets\`) are never shipped.
+
+**Choosing the runtime.** `[DlssNr] NrBackend` (`daniel`, `lmxxf`, `off`, `auto`). The menu's
+"NR runtime" combo appears when both runtimes are present and applies on the next launch:
+`Backend::Selector` latches the value read at startup, because each backend installs its own
+D3D12 hooks when the device is created. `NrBackend`/`LmxxfDiagnostic` used to be skipped on
+save whenever they equalled the default, so switching back to daniel never reached the ini;
+they are now written as `auto`.
+
+**lmxxf menu.** Its own block: runtime label, neural pass meter, Detail/Colour strength, Debug
+view. Everything else in the AMD section belongs to the danielblnc runtime and is hidden. The
+meter works on lmxxf because the two timestamps land on either side of the list split, around
+the HIP work.
+
+**Effect strength and colour grade (danielblnc).** The runtime's `[DlssNrOnAmd] Scale`
+(0.3.1 RVA `0x9ad14`, default 4/128) scales how much of the network reaches the frame: 0 leaves
+the frame untouched. It sits where NVIDIA's `style/128` would be but is not the style; tested in
+Cyberpunk, 0/128 did nothing and 1/128 and 2/128 were weak. `AmdEffectStrength` (0 to 1 of 4/128,
+layout field `scale`, 0.3.1 only). `AmdColourGrade` applies NVIDIA's post-network grade for
+Model B (natural: -0.10 EV, contrast -0.25, saturation -10%) or C (cinematic: saturation -15%)
+in the AmdLook shader, at full strength. NVIDIA's real style input (network parameter `+0x94`
+in `nvngx_dlssnr.dll`) has no known slot in the danielblnc runtime.
+
+**Logging.** `slEvaluateFeature` logged at Info once per frame (5 MB in 17 minutes); it is Debug
+now.
 
 ---
 

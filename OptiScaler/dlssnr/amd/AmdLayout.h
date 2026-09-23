@@ -114,6 +114,11 @@ struct AmdLayout
     // Return addresses after Dispatch calls in the pinned wait helper.
     std::uint32_t waitDispatchInit = 0, waitDispatchFallback = 0;
     std::uint32_t waitDispatchSlices = 0, waitDispatchFinish = 0;
+    // The runtime's Scale ([DlssNrOnAmd] Scale in its own INI), the fifth control after tone,
+    // structure and the two mask-derived values. It scales how much of the network reaches the
+    // frame: 4/128 is the full effect, 0 leaves the frame untouched. It is not NVIDIA's style,
+    // though it sits where that would be. 0 = not mapped for this runtime.
+    std::uint32_t scale = 0;
 };
 
 // 0.2.17 pass DLL, SHA256 bc97f3b0...
@@ -174,7 +179,7 @@ inline constexpr AmdLayout kAmd031 {
     0x9ac40, 0x9ac50, 0x9ab14,
     0x9ab20, 0x9aa88, 0x17980,
     0x180a6, 0x17b70, 0x17f10,
-    0x17f6a, 0x18057
+    0x17f6a, 0x18057, 0x9ad14
 };
 
 inline constexpr const AmdLayout* kAmdLayouts[] = { &kAmd0217, &kAmd03, &kAmd031 };

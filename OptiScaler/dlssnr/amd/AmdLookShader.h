@@ -11,12 +11,25 @@ cbuffer Controls : register(b0) {
  float SkinDetail; float SkinSoftness; float SpecularControl; float HighlightRollOff;
  float ColourSeparation; float ShadowDepth; float AntiHalo; float FlatAreaProtection;
  float Tone; float ExposureEV; float Contrast; float Saturation;
- float HighlightCompression; float PreExposure; uint DetectSkin; uint reserved;
+ float HighlightCompression; float PreExposure; uint DetectSkin; uint ColourGrade;
 };
 float Y(float3 c) { return dot(c,float3(.2126,.7152,.0722)); }
 float3 Encode(float3 c) { c=max(c,0)/PreExposure; return pow(c/(1+c),1.0/2.2); }
 float3 Decode(float3 c) { c=pow(clamp(c,0,.9999),2.2); return c/max(1-c,.00001)*PreExposure; }
-float3 Sample(int2 p) { return Encode(src.Load(int3(clamp(p,int2(0,0),int2(w-1,h-1)),0)).rgb); }
+// NVIDIA's post-process grade for Model B (1, natural) and C (2, cinematic) at its default
+// strength, in the bounded domain: exposure, contrast toward smoothstep, then HSL saturation.
+float3 Grade(float3 c) {
+ float exposure=ColourGrade==1?-.10:0,contrast=ColourGrade==1?-.25:0,saturation=ColourGrade==1?-.10:-.15;
+ c=saturate(c*exp2(exposure));
+ c=saturate(c+contrast*(c*c*(3-2*c)-c));
+ float hi=max(c.r,max(c.g,c.b)),lo=min(c.r,min(c.g,c.b));
+ if(hi>lo) {
+  float l=(hi+lo)*.5,s=(hi-lo)/(l>.5?2-hi-lo:hi+lo);
+  c=l+(c-l)*(saturate(s*(1+saturation))/s);
+ }
+ return c;
+}
+float3 Sample(int2 p) { float3 s=Encode(src.Load(int3(clamp(p,int2(0,0),int2(w-1,h-1)),0)).rgb); return ColourGrade?Grade(s):s; }
 float Skin(float3 c,float y) {
  float cb=(c.b-y)*.539,cr=(c.r-y)*.635;
  return saturate(smoothstep(.012,.055,cr)*(1-smoothstep(.19,.30,cr))*(1-smoothstep(.025,.145,cb))*smoothstep(.05,.17,y)*(1-smoothstep(.86,1,y)));
@@ -25,6 +38,7 @@ float Skin(float3 c,float y) {
  if(tid.x>=w || tid.y>=h) return;
  int2 p=tid.xy;
  float4 original=src.Load(int3(p,0));
+ if(ColourGrade) original.rgb=Decode(Grade(Encode(original.rgb)));
  if(Mix==0 && Tone==0 && Inspect==0) { dst[p]=original; return; }
  float3 s=Encode(original.rgb),outc=s;
  float y=Y(s),skin=DetectSkin?Skin(s,y):0,residual=0,local=0;
