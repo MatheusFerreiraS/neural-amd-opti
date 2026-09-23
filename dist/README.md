@@ -81,7 +81,7 @@ generation to unlock and the ratio stops at 2X, whatever the ini asks for.
 
 ## Changelog
 
-The DLL reports its own version in the overlay title bar. This merge reports `0.1.0-amd-nr`; the
+The DLL reports its own version in the overlay title bar. This merge reports `0.1.1-amd-nr`; the
 y4my4my4m fork builds this changelog covers reported `10.0.0-dev-fork-y4my4my4m-vN`.
 Versions before 4 are not recorded here.
 

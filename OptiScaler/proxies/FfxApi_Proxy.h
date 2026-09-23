@@ -149,27 +149,26 @@ class FfxApiProxy
         if (module != nullptr)
             proxyModule.dll = module;
 
-        // If null, attempt to load the library by name
+        // If null, load it the way InitFfxDx12 loads the loader: the Opti dll path first, where the
+        // package keeps these modules, then by name. A bare LoadLibrary never looks in the Opti dll
+        // path, so the upscaler and denoiser failed to load and FSR fell back to FSR 2.
         if (proxyModule.dll == nullptr)
         {
-            // Try new api first
+            const auto optiPath = Config::Instance()->MainDllPath.value();
+
             for (const std::wstring& name : dllNames)
             {
                 WLOG_DEBUG(L"Trying to load {}", name);
 
-                if (proxyModule.dll == nullptr)
+                HMODULE memModule = nullptr;
+                Util::LoadProxyLibrary(name, optiPath, L"", &memModule, &proxyModule.dll);
+
+                if (proxyModule.dll != nullptr)
                 {
-                    proxyModule.dll = NtdllProxy::LoadLibraryExW_Ldr(name.c_str(), NULL, 0);
+                    if (loadCallback != nullptr)
+                        loadCallback(proxyModule.dll);
 
-                    if (proxyModule.dll != nullptr)
-                    {
-                        WLOG_INFO(L"{} loaded from exe folder", name);
-
-                        if (loadCallback != nullptr)
-                            loadCallback(proxyModule.dll);
-
-                        break;
-                    }
+                    break;
                 }
             }
         }

@@ -1,16 +1,16 @@
 ﻿<#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.1.0-amd-nr, the version in OptiScaler/resource.h.
+  Default product: OptiScaler-0.1.1-amd-nr, the version in OptiScaler/resource.h.
   The danielblnc runtime it drives is 0.3.1 (0.3.0 still accepted), supplied by the user.
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.1.0-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.1.1-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.1.0-amd-nr',
+    [string]$Version = '0.1.1-amd-nr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',

@@ -33,13 +33,19 @@ AMD's FidelityFX denoiser as the RR provider. Super-resolution stays FFX/FSR in 
 
 ### Current state
 
-Committed on the branch `amd-nr-0.1.0`, made from `dlss-neural-rendering` at `7b7220bb`, in
-two commits: the three-fork merge exactly as it had been staged (the build tested in Cyberpunk
-2077 before any of section 5's later entries), then everything section 5 lists after the merge.
-Nothing is pushed. `dlss-neural-rendering` itself is unchanged and fast-forwards to the branch.
+Everything is on `dlss-neural-rendering`. The work was committed on the branch `amd-nr-0.1.0`
+(the three-fork merge exactly as it had been staged, then everything section 5 lists after the
+merge, then formatting), which pull request #1 merged into `dlss-neural-rendering`. Fixes since
+then are committed there directly.
 
-The build reports itself as `0.1.0-amd-nr`, and `tools/PACKAGE_RELEASE.ps1` packages it as
-`dist/OptiScaler-0.1.0-amd-nr.zip`.
+Two GitHub releases, both built by `tools/PACKAGE_RELEASE.ps1`:
+
+- `v0.1.0-amd-nr`: the FidelityFX upscaler, frame generation and denoiser never load from the
+  package layout, so FSR falls back to FSR 2 and Ray Reconstruction is greyed out. Do not use it.
+- `v0.1.1-amd-nr`: that fixed (section 5, "FidelityFX modules load from the OptiScaler folder").
+
+The build reports itself as `0.1.1-amd-nr`, and the packager writes
+`dist/OptiScaler-0.1.1-amd-nr.zip`.
 
 ---
 
@@ -335,6 +341,19 @@ existing tripwire still refuses the danielblnc runtime (`version.dll`, `dlssnr_a
 `dlssnr_on_amd_setup.exe`), the weights and any `nvngx*.dll`, in the staged folder and again in
 the finished zip, so users supply those themselves as the README explains.
 
+**FidelityFX modules load from the OptiScaler folder (0.1.1).** The package keeps
+`amd_fidelityfx_upscaler_dx12.dll`, `..._framegeneration_dx12.dll` and `..._denoiser_dx12.dll` in
+`OptiScaler/`, next to the loader. burak113's `LoadFfxModuleDx12` (in `FfxApi_Proxy.h`) loaded
+these by bare name, which only searches the game folder, while the base and dlss5 lineages went
+through `Util::LoadProxyLibrary` with the Opti dll path. The merge took burak's version, so in
+0.1.0 none of the three loaded: FSR fell back to FSR 2, and on a non-DLSS GPU
+`NVNGX_Parameter.cpp` reports `SuperSamplingDenoising.Available` only when the upscaler and the
+denoiser are both ready, so the game greyed out Ray Reconstruction. The function now uses
+`LoadProxyLibrary` too: Opti dll path first, then by name. Confirmed in Cyberpunk 2077 from a
+clean install of the package: all three load from `OptiScaler/`, FSR 3.x runs, and FSR-RR (FSR
+Ray Regeneration 1.2.0) creates its context. `amd_fidelityfx_radiancecache_dx12.dll` is not
+shipped, so the log carries a harmless "Can't find" warning for it.
+
 **"Upscaler failed to run!" on preset changes.** `FSRDFeatureDx12::UpdateSize` refuses a
 frame and requests a rebuild when the render size exceeds the allocation ceiling the
 context was created with — a planned bail-out, not a failure, but it raised an error
@@ -403,7 +422,7 @@ version in use comes from `AmdBridge::RuntimeName()`.
 - **The clang-format check on tag `v0.1.0-amd-nr` stays red.** The tag points at `531c221a`,
   which predates the formatting commit `a12c4a9f`; the branch and its pull request pass. The
   formatting changed no code, so the released DLL is unaffected. It was left alone because moving
-  the tag would change what a published release points at. The next release tag will pass.
+  the tag would change what a published release points at. `v0.1.1-amd-nr` is formatted.
 - **`[FSR-RR] TaggedNormalRoughness` has never been observed to fire.** It was written
   for a title whose normals binding looked like it carried no roughness; the real cause
   turned out to be an external mod zeroing the ray-tracing buffers. It is left in reach,
@@ -437,6 +456,10 @@ version in use comes from `AmdBridge::RuntimeName()`.
   `std::array<HMODULE, 3> runtime` in `AmdPreSr.cpp`.
 - **The AMD menu branch returns early.** Anything added to the shared DLSS-NR menu below
   that point is dead code while the AMD backend is installed.
+- **Test a release in a clean game folder.** The 0.1.0 packaging bug survived a full test
+  session because the development game folder still had FidelityFX DLLs at its root from an
+  earlier manual install. Extract the zip into a folder holding only the game's own files, run
+  `Setup.bat`, and read `OptiScaler.log` for where each `amd_fidelityfx_*` module loaded from.
 - **Every SR frame offers the pass both seams.** Any gate added to one placement needs its
   counterpart on the other, or both reach the AMD backend on the same evaluate and its settling
   check stalls it (section 5, "One placement switch").
