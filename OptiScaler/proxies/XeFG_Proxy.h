@@ -4,6 +4,8 @@
 #include "Util.h"
 #include "Config.h"
 #include "Logger.h"
+#include "XeFGUnlock.h"
+#include "XeLL_Proxy.h"
 
 #include <proxies/Ntdll_Proxy.h>
 #include <proxies/KernelBase_Proxy.h>
@@ -116,6 +118,40 @@ class XeFGProxy
         return dll;
     }
 
+    // libxess_fg finds libxell with GetModuleHandleExA("libxell.dll"), which returns the first module of
+    // that name. When the game loaded its own older copy first (Cyberpunk ships 1.1), XeFG gets that one,
+    // misses xellSetGeneratedFramesCount and rejects the XeLL context made in OptiScaler's copy.
+    static BOOL WINAPI hkGetModuleHandleExA(DWORD flags, LPCSTR name, HMODULE* module)
+    {
+        if (name != nullptr && !(flags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) && _stricmp(name, "libxell.dll") == 0)
+        {
+            if (auto ours = XeLLProxy::Module_Path(); !ours.empty())
+                return GetModuleHandleExW(flags, ours.c_str(), module);
+        }
+
+        return GetModuleHandleExA(flags, name, module);
+    }
+
+    static void PointXeLLLookupAtOurs(HMODULE module)
+    {
+        DetourEnumerateImportsEx(module, nullptr, nullptr,
+                                 [](PVOID, DWORD, LPCSTR func, PVOID* slot) -> BOOL
+                                 {
+                                     if (func == nullptr || slot == nullptr || strcmp(func, "GetModuleHandleExA") != 0)
+                                         return TRUE;
+
+                                     DWORD protect = 0;
+                                     if (VirtualProtect(slot, sizeof(PVOID), PAGE_READWRITE, &protect))
+                                     {
+                                         *slot = (PVOID) &hkGetModuleHandleExA;
+                                         VirtualProtect(slot, sizeof(PVOID), protect, &protect);
+                                         LOG_INFO("libxess_fg looks up OptiScaler's libxell.dll");
+                                     }
+
+                                     return TRUE;
+                                 });
+    }
+
   public:
     static HMODULE Module() { return _dll; }
     static std::wstring Module_Path() { return _dllPath; }
@@ -172,6 +208,12 @@ class XeFGProxy
             return false;
 
         _dll = libxefgModule;
+
+        // Patch the provider in memory before anything calls into it - the MFG
+        // gate is evaluated during swapchain init, so it has to happen here.
+        // A failure just leaves the provider as Intel shipped it.
+        XeFGUnlock::Apply(_dll);
+        PointXeLLLookupAtOurs(_dll);
 
         {
             ScopedSkipDxgiLoadChecks skipDxgiLoadChecks {};

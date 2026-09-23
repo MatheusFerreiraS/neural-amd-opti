@@ -1153,8 +1153,42 @@ class Config
     CustomOptional<bool> FSRFGEnableWatermark { false };
 
     // XeFG
+    //
+    // The ceiling for the whole XeFG path, in interpolations: 7 is an 8X
+    // multiplier. This is the limit itself, not a sanity bound with the real one
+    // living somewhere else - FGXeFGMaxInterpolatedFrames defaults to it, the
+    // unlock patches report it to the provider as maxSupportedInterpolations,
+    // and XeFG_Dx12 declares it as the swapchain's maxInterpolatedFrames at init,
+    // so one number decides what the provider accepts, what the menu offers, and
+    // what the ini may ask for.
+    //
+    // It used to be 31 - a bound nothing enforced, so the menu went to 32X while
+    // the provider was still told 31 on every launch. Past 8X the burst outruns
+    // any display and the extra frames only buy latency, so 8X is where it stops.
+    //
+    // The patch that raises the provider's reported maximum writes a 4 byte
+    // immediate, so the encoding has never been what limited this.
+    static constexpr int32_t XeFGMaxInterpolations = 7;
+
     CustomOptional<bool> FGXeFGIgnoreInitChecks { false };
     CustomOptional<int> FGXeFGInterpolationCount { 1 };
+    CustomOptional<bool> FGXeFGUnlockEnabled { true };
+    // What the unlock patch reports to the provider as its maximum, and what
+    // the multiplier menu lets you pick. Those are not two settings: the number
+    // written into the U3/U4/U5 patches is read back as
+    // xefg_swapchain_properties_t::maxSupportedInterpolations, and
+    // XeFG_Dx12 fills xefg_swapchain_d3d12_init_params_t::maxInterpolatedFrames
+    // from it at swapchain init - so raising the menu ceiling necessarily
+    // declares the same number to the provider at init on every launch.
+    //
+    // It used to be 5, which is what capped the menu at 6X; the ceiling above is
+    // now 8X and is what this defaults to. Setting it lower narrows both the menu
+    // and what the provider is told, which is the supported way to go back down:
+    // if the provider sizes anything from this at init, the symptom would be a
+    // failed init or exhausted VRAM, and a value it rejects is clamped in
+    // XeFGUnlock to the ceiling rather than passed through.
+    CustomOptional<int> FGXeFGMaxInterpolatedFrames { XeFGMaxInterpolations };
+    CustomOptional<bool> FGXeFGExtraPacing { true };
     CustomOptional<bool> FGXeFGUIComposition { false };
     CustomOptional<bool> FGXeFGDepthInverted { true };
     CustomOptional<bool> FGXeFGJitteredMV { false };

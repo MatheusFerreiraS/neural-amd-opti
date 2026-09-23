@@ -8,12 +8,26 @@
 #include <resource_tracking/ResTrack_dx12.h>
 
 #include <nvapi/fakenvapi.h>
+#include <hooks/Streamline_Hooks.h>
 
 #include <magic_enum.hpp>
 
 #include <DirectXMath.h>
 
 using namespace DirectX;
+
+// Interpolation count requested by the game's own frame generation setting, in XeFG's unit
+// (interpolation count == multiplier - 1, the same convention as DLSSG.MultiFrameCount and
+// sl::DLSSGOptions::numFramesToGenerate). Returns 0 when the game has not requested FG at all.
+static int GameRequestedInterpolationCount()
+{
+    // Games that create DLSS-G through raw NGX report the count directly
+    if (const int ngxCount = State::Instance().dlssgDetectedInterpolationCount; ngxCount > 0)
+        return ngxCount;
+
+    // Games that go through Streamline report it via slDLSSGSetOptions instead
+    return StreamlineHooks::GameRequestedInterpolationCount();
+}
 
 void XeFG_Dx12::xefgLogCallback(const char* message, xefg_swapchain_logging_level_t level, void* userData)
 {
@@ -788,10 +802,25 @@ bool XeFG_Dx12::Dispatch()
                      _maxInterpolationCount);
         }
 
-        if (_framesToInterpolate != Config::Instance()->FGXeFGInterpolationCount.value_or_default())
+        // No value set means "auto": follow the multiplier of the game's own DLSSG setting, and keep
+        // using the value we already have as long as no DLSSG request has been seen yet
+        int targetCount = Config::Instance()->FGXeFGInterpolationCount.value_or_default();
+
+        if (!Config::Instance()->FGXeFGInterpolationCount.has_value())
         {
-            LOG_INFO("Interpolation count changed {} -> {}", _framesToInterpolate,
-                     Config::Instance()->FGXeFGInterpolationCount.value_or_default());
+            if (const int gameCount = GameRequestedInterpolationCount(); gameCount > 0)
+            {
+                targetCount = gameCount > _maxInterpolationCount ? _maxInterpolationCount : gameCount;
+
+                if (targetCount != gameCount)
+                    LOG_WARN("Game requested interpolation count {} but max supported is {}, capping to max", gameCount,
+                             _maxInterpolationCount);
+            }
+        }
+
+        if (_framesToInterpolate != targetCount)
+        {
+            LOG_INFO("Interpolation count changed {} -> {}", _framesToInterpolate, targetCount);
 
             state.WAR_xefgRequestFGToggle = true;
 
@@ -799,10 +828,9 @@ bool XeFG_Dx12::Dispatch()
             ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
 #endif // !DONT_USE_XMX
 
-            auto intResult = XeFGProxy::SetNumInterpolatedFrames()(
-                _swapChainContext, Config::Instance()->FGXeFGInterpolationCount.value_or_default());
+            auto intResult = XeFGProxy::SetNumInterpolatedFrames()(_swapChainContext, targetCount);
 
-            _framesToInterpolate = Config::Instance()->FGXeFGInterpolationCount.value_or_default();
+            _framesToInterpolate = targetCount;
 
             if (intResult != XEFG_SWAPCHAIN_RESULT_SUCCESS)
             {
@@ -871,8 +899,13 @@ bool XeFG_Dx12::Dispatch()
 
     XeFGProxy::EnableDebugFeature()(_swapChainContext, XEFG_SWAPCHAIN_DEBUG_FEATURE_TAG_INTERPOLATED_FRAMES,
                                     Config::Instance()->FGXeFGDebugView.value_or_default(), nullptr);
-    XeFGProxy::EnableDebugFeature()(_swapChainContext, XEFG_SWAPCHAIN_DEBUG_FEATURE_SHOW_ONLY_INTERPOLATION,
-                                    state.fgOnlyGenerated, nullptr);
+    static bool lastOnlyFG = false;
+    if (lastOnlyFG != state.fgOnlyGenerated)
+    {
+        lastOnlyFG = state.fgOnlyGenerated;
+        XeFGProxy::EnableDebugFeature()(_swapChainContext, XEFG_SWAPCHAIN_DEBUG_FEATURE_SHOW_ONLY_INTERPOLATION,
+                                        lastOnlyFG, nullptr);
+    }
 
     xefg_swapchain_frame_constant_data_t constData = {};
 
@@ -931,10 +964,40 @@ bool XeFG_Dx12::Dispatch()
     else
         constData.resetHistory = false;
 
+    // xefg_swapchain.h documents frameRenderTime as "time that was required to
+    // render current frame in milliseconds", and the provider drives its generated
+    // frame pacing with it.
+    //
+    // The value that should never be used for it is state.lastFGFrameTime, the
+    // present to present delta (see FG_Hooks.cpp). It brackets the whole of the
+    // previous present, the pacing included, so above 2X - where the provider
+    // really does space the generated frames - it is self-referential: the frames
+    // are asked to fill a period that only exists because they were asked to fill
+    // it, and the real frame period settles at renderTime * (count + 1) rather
+    // than coming down towards the time the game actually spends rendering. That
+    // is where the input latency came from. XeFGPacing measures its own blocking,
+    // so it can hand over the period with that taken back out.
+    //
+    // _ftDelta used to be tried first, on the understanding that nothing fills it
+    // on this backend. Something does: Upscaler_Inputs_Dx12.cpp sets it to
+    // State::Instance().lastFGFrameTime, so it is not a second source at all -
+    // it is the same self-referential number under another name. Tried first, it
+    // always won, RenderTimeMs() was never reached, and the report showed it:
+    // `fed` came out equal to `real frame` on every line while `render-est` sat
+    // far below both. Asking the pacing first is the whole fix; _ftDelta stays as
+    // the fallback for any path that fills it with something else.
+    auto frameRenderTime = XeFGPacing::RenderTimeMs();
+
+    if (!(frameRenderTime > 0.0))
+        frameRenderTime = _ftDelta[fIndex];
+
+    if (!(frameRenderTime > 0.0))
+        frameRenderTime = state.lastFGFrameTime;
+
     switch (Config::Instance()->FTInput.value_or_default())
     {
     case FrameTimeSource::Input:
-        constData.frameRenderTime = (float) _ftDelta[fIndex];
+        constData.frameRenderTime = static_cast<float>(frameRenderTime);
         break;
 
     case FrameTimeSource::Opti:
@@ -946,8 +1009,12 @@ bool XeFG_Dx12::Dispatch()
         break;
     }
 
-    LOG_DEBUG("Reset: {}, Opti FT: {}, Source FT: {}, Set FT: {}, Opti Id: {}, Reflex Id: {}", _reset[fIndex],
-              constData.frameRenderTime, _ftDelta[fIndex], constData.frameRenderTime, _frameCount,
+    // Report what the provider actually got, next to the period it came out of.
+    // The two numbers together are what says whether the loop above is real.
+    XeFGPacing::NoteFedFrameTime(constData.frameRenderTime);
+
+    LOG_DEBUG("Reset: {}, Input FT: {}, Opti FT: {}, Set FT: {} ms, Opti Id: {}, Reflex Id: {}", _reset[fIndex],
+              _ftDelta[fIndex], state.lastFGFrameTime, constData.frameRenderTime, _frameCount,
               State::Instance().reflexFrameId);
 
     auto frameId = static_cast<uint32_t>(willDispatchFrame);

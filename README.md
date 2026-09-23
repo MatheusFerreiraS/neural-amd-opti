@@ -30,6 +30,14 @@ grading, and a menu organised in tabs with status indicators.
 signal and responsivity controls. Set `Dx12Upscaler=fsr-rr` under `[Upscalers]`. The two denoising
 routes are alternatives: pick one per game.
 
+**XeSS multi frame generation.** Intel's XeFG generates up to 7 frames per rendered one (8X) on
+AMD cards too. Intel only allows it with its own driver build, so `libxess_fg.dll` and
+`libxell.dll` are patched in memory; the files on disk stay as shipped. Set `FGOutput=xefg`, and
+`FGInput=dlssg` in games with DLSS frame generation. The **MFG** combo in the XeFG section follows
+the game's multiplier (**Auto**) or takes 2X to 8X. Above 4X, turn on VSync or cap the frame rate.
+When a game ships an older `libxell.dll` of its own (Cyberpunk 2077 does), XeFG is pointed at
+OptiScaler's copy.
+
 ## Installing
 
 1. Extract the release next to the game's executable (for Cyberpunk 2077, `bin\x64`).
@@ -59,6 +67,9 @@ All in `OptiScaler.ini`, section `[DlssNr]`, and in the **Neural** tab of the ov
 | `AmdDynamicScale`, `AmdDynamicTargetFps` | Lower the NR resolution while under the target frame rate |
 | `LmxxfFitLarge` | Let lmxxf take a render resolution above 1080p (can hitch; off by default) |
 
+Multi frame generation reads `[XeFG]`: `InterpolationCount` (`auto` follows the game, 1 to 7 is
+2X to 8X), `UnlockMFG`, `MaxInterpolatedFrames` (default 7) and `ExtraPacing`.
+
 ## Building
 
 Visual Studio with the v143 toolset, `Release|x64`, after `git submodule update --init`. Keep
@@ -80,6 +91,9 @@ zip. CI checks formatting with clang-format 20 under `OptiScaler/`.
   bridge into the runtime, multi-slot scheduling, the D3D12 state freeze and restore, the lmxxf
   integration and its same-frame submission layer.
 - [burak113/OptiScaler](https://github.com/burak113/OptiScaler/tree/ffx-denoise-experimental): FSR-RR.
+- [Coldwood1026/OptiScalerDp4aUnlock](https://github.com/Coldwood1026/OptiScalerDp4aUnlock): the
+  XeFG multi frame generation unlock, its frame pacing, the `libxell` ceiling patch and the
+  multiplier that follows the game. YiBoF contributed its Intel Arc support.
 - [danielblnc/DLSS-NR-on-AMD](https://github.com/danielblnc/DLSS-NR-on-AMD): the AMD neural runtime
   this bridges into. It is not reimplemented here.
 - [lmxxf/dlss5-on-amd-9070xt-porting](https://github.com/lmxxf/dlss5-on-amd-9070xt-porting) (MIT):

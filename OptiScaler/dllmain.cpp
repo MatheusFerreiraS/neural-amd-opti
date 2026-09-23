@@ -1753,6 +1753,9 @@ DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
 
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
 
+    if (primaryGpu.vendorId == VendorId::Intel && !Config::Instance()->FGXeFGExtraPacing.has_value())
+        Config::Instance()->FGXeFGExtraPacing.set_volatile_value(false);
+
     // We don't yet know if the GPU supports FSR 4 so hook any AMD
     if (primaryGpu.vendorId == VendorId::AMD)
         Amdxc64Hooks::Init();

@@ -46,7 +46,8 @@ Two GitHub releases, both built by `tools/PACKAGE_RELEASE.ps1`:
 
 The build reports itself as `0.1.1-amd-nr`, and the packager writes
 `dist/OptiScaler-0.1.1-amd-nr.zip`. Work since then (the lmxxf runtime, effect strength, colour
-grade) is committed on the branch but not released; see section 5, "After 0.1.1".
+grade, XeSS multi frame generation) is committed on the branch but not released; see section 5,
+"After 0.1.1".
 
 The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer)
 (v0.4.0 and later) installs this build as its OptiScaler route. Its payload manifest pins the
@@ -423,6 +424,31 @@ in `nvngx_dlssnr.dll`) has no known slot in the danielblnc runtime.
 
 **Logging.** `slEvaluateFeature` logged at Info once per frame (5 MB in 17 minutes); it is Debug
 now.
+
+**XeSS multi frame generation on AMD.** Ported from
+[Coldwood1026/OptiScalerDp4aUnlock](https://github.com/Coldwood1026/OptiScalerDp4aUnlock), a fork
+of upstream at `5ee53e38`, which is already in this history: `git diff 5ee53e38 coldwood/master --
+OptiScaler OptiScaler.ini`, then `git apply -3`. `XeFGUnlock.h` patches `libxess_fg.dll` so it
+reports and accepts more than one interpolated frame, `XeLLUnLock.h` raises the frame count
+`libxell.dll` accepts in `xellSetGeneratedFramesCount`, and `XeFGPacing.h` spaces out each
+generated frame above 2X. All three patch the loaded image, check every byte first and roll back
+on a mismatch. They only know `libxess_fg` build `0x69CB0F4D` and `libxell` 1.3.2 (`0x6A561284`),
+the ones in `external/xess`: a newer XeSS SDK there needs new RVAs. The game is told the real
+ceiling, and the menu's Auto follows the game's DLSSG multiplier. Kept from our side in the
+merge: the generated labels of "Override DLSSG Ratio" (theirs went back to fixed arrays, which
+overflow past 6X) and the struct-version guard on `numFramesToGenerateMax`. Their Intel
+`ExtraPacing` default had been inserted between an `if` and its `else if` in `getGpuInfo`; it now
+sits before the chain.
+
+One addition of ours. `libxess_fg` has no static `libxell` import: it calls
+`GetModuleHandleExA("libxell.dll")` and gets the first module of that name. Cyberpunk loads its
+own 1.1 before OptiScaler starts, and that copy lacks `xellSetGeneratedFramesCount` and
+`xellSetDisplayInfo`, so XeFG refused OptiScaler's XeLL context ("XeLL context is not supported";
+the missing export is only logged at debug level). `RedirectAllExports` cannot cover exports the
+old copy does not have, and loading ours first does not help either, since the game's copy is
+already there. `XeFGProxy::PointXeLLLookupAtOurs` replaces that import in our `libxess_fg` with a
+lookup that returns OptiScaler's `libxell`. Tested in Cyberpunk: 2X to 8X switched live, Auto
+followed the game. Above 4X it needs VSync or a frame rate cap.
 
 ---
 

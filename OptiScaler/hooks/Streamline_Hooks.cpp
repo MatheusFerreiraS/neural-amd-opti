@@ -1147,13 +1147,29 @@ sl::Result StreamlineHooks::hkslGetFeatureVersion(sl::Feature feature, sl::Featu
     return o_slGetFeatureVersion(feature, version);
 }
 
+// Same answer as the shared helper, logged once per change so the log shows what the game was told
+static uint32_t GameFacingInterpolationCountMax()
+{
+    const uint32_t maxCount = (uint32_t) MaxInterpolationCountForGame(Config::XeFGMaxInterpolations);
+
+    // Only on change, this is called whenever the game asks about the FG state
+    static uint32_t lastReported = 0;
+    if (maxCount != lastReported)
+    {
+        lastReported = maxCount;
+        LOG_INFO("Reporting max interpolation count {} to the game", maxCount);
+    }
+
+    return maxCount;
+}
+
 static sl::Result dummy_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
                                         const sl::DLSSGOptions* options)
 {
     state.numFramesActuallyPresented = 1; // TODO: can do better
     if (state.structVersion >= 2)
     {
-        state.numFramesToGenerateMax = 1;
+        state.numFramesToGenerateMax = GameFacingInterpolationCountMax();
         state.bIsVsyncSupportAvailable = sl::Boolean::eTrue;
     }
     state.estimatedVRAMUsageInBytes = 300 * 1024 * 1024;
@@ -1163,6 +1179,11 @@ static sl::Result dummy_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::
 
 static sl::Result dummy_slDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options)
 {
+    // Still a dummy as far as the provider is concerned - the game is told the call succeeded and
+    // OptiScaler keeps driving frame generation itself. But the request is the game's own, and it is
+    // the only copy of it that exists on this path, so it has to be kept.
+    StreamlineHooks::RecordGameDlssgOptions(viewport, options);
+
     return sl::Result::eOk;
 }
 
@@ -2308,7 +2329,7 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
 
         // Struct version 1 ends at 56 bytes, ahead of this field.
         if (originalStructVersion >= 2)
-            state.numFramesToGenerateMax = 1;
+            state.numFramesToGenerateMax = GameFacingInterpolationCountMax();
 
         LOG_DEBUG("Status: {}, numFramesActuallyPresented: {}", magic_enum::enum_name(state.status),
                   state.numFramesActuallyPresented);
@@ -2780,6 +2801,41 @@ void StreamlineHooks::applyMenuDlssgInterlock(sl::DLSSGOptions& options, bool dl
     ReflexHooks::setDlssgFrameCount(0);
 }
 
+void StreamlineHooks::RecordGameDlssgOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options)
+{
+    lastDlssgViewport = viewport;
+    lastDlssgOptions = options;
+
+    // Only on change - the game re-applies its options every time the settings are touched, and
+    // this needs to say what the game asked for, not how often it said it.
+    static int lastCount = -1;
+    static int lastMode = -1;
+
+    const int count = (int) options.numFramesToGenerate;
+    const int mode = (int) options.mode;
+
+    if (count != lastCount || mode != lastMode)
+    {
+        lastCount = count;
+        lastMode = mode;
+
+        LOG_INFO("Game set DLSSG options: mode {}, numFramesToGenerate {}", magic_enum::enum_name(options.mode), count);
+    }
+}
+
+int StreamlineHooks::GameRequestedInterpolationCount()
+{
+    // lastDlssgOptions holds the game's raw, unmodified options, everything we override goes into a copy
+    const bool dlssgPotentiallyActive = lastDlssgOptions.mode == sl::DLSSGMode::eOn ||
+                                        lastDlssgOptions.mode == sl::DLSSGMode::eAuto ||
+                                        lastDlssgOptions.mode == sl::DLSSGMode::eDynamic;
+
+    if (!dlssgPotentiallyActive)
+        return 0;
+
+    return (int) lastDlssgOptions.numFramesToGenerate;
+}
+
 // SL INTERPOSER
 
 void StreamlineHooks::unhookInterposer()
@@ -2879,13 +2935,19 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
         unhookInterposer();
 
     {
-        char dllPath[MAX_PATH];
-        GetModuleFileNameA(slInterposer, dllPath, MAX_PATH);
+        // Wide on purpose. The A variant returns the path in the process's ANSI codepage while
+        // string_to_wstring() decodes as UTF-8, so any game installed under a path with non-ASCII
+        // characters got a mangled name here, GetFileVersion() failed and sl_version stayed 0.0.0.
+        // Every Streamline hook below is gated on that number, so a game with a real 2.x interposer
+        // ended up with no hooks installed at all and its FG input chain silently dead.
+        wchar_t dllPath[MAX_PATH] = { 0 };
+        GetModuleFileNameW(slInterposer, dllPath, MAX_PATH);
 
-        LOG_TRACE("slInterposer path: {}", dllPath);
+        LOG_TRACE("slInterposer path: {}", wstring_to_string(dllPath));
 
         version_t sl_version;
-        Util::GetFileVersion(string_to_wstring(dllPath), &sl_version);
+        if (!Util::GetFileVersion(dllPath, &sl_version))
+            LOG_WARN("Could not read sl.interposer.dll's version, reporting it as 0.0.0");
 
         State::Instance().streamlineVersion.major = sl_version.major;
         State::Instance().streamlineVersion.minor = sl_version.minor;

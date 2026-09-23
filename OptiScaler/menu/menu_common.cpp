@@ -6065,17 +6065,78 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         {
             ImGui::SameLine(0.0f, 16.0f);
 
-            const auto currentCount = fgOutput->GetInterpolatedFrameCount();
-            const auto currentIntCount = std::to_string(static_cast<uint64_t>(currentCount) + 1) + "X";
+            // 2X-4X are the multipliers that hold up without an external limiter, so
+            // they get names of their own. Anything above them goes through a single
+            // free-form slot: the provider does accept 5X and 6X, but at those rates
+            // the generated frames are presented faster than the display refreshes
+            // unless the present rate is capped, so they are better reached on
+            // purpose than by scrolling one click past the end of a list.
+            const char* intModes[] = { "2X", "3X", "4X" };
+            constexpr int namedCount = (int) IM_ARRAYSIZE(intModes);
+
+            // The named entries are 2X..4X, so the first multiplier *without* a name
+            // is one past the highest named one - not one past the number of them.
+            // Getting that wrong lands the custom slot on 4X, which already has a
+            // name, so the slot silently reverts to listing the named entry.
+            constexpr int highestNamedMultiplier = namedCount + 1;            // 4X
+            constexpr int firstCustomMultiplier = highestNamedMultiplier + 1; // 5X
+
+            // No ceiling of our own: this follows whatever the provider reports,
+            // which follows XeFG\MaxInterpolatedFrames. Capping it here as well is
+            // how the custom slot ended up unable to reach the values it is for.
+            const int maxMultiplier = maxInterpolationCount + 1;
+
+            const bool allowCustom = maxMultiplier >= firstCustomMultiplier;
+
+            // "Auto" is not a fourth value sitting next to 2X-4X: it is the absence of a
+            // value, which is what the backend reads as "use whatever the game asked
+            // for". It has to be tested before the count does, because an auto run still
+            // has a live count - namely the one that came from the game.
+            const bool autoMode = !config->FGXeFGInterpolationCount.has_value();
+
+            const int currentCount = (int) fgOutput->GetInterpolatedFrameCount();
+            const int currentSet = currentCount - 1;
+
+            // Only an explicit choice can be "custom". While auto is following the game
+            // the count is just as likely to land above 4X, and showing that as a custom
+            // entry would take credit for a multiplier this menu never picked.
+            const bool custom = !autoMode && allowCustom && currentSet >= namedCount;
+
+            // Remembers what was last typed, so leaving and re-entering the custom
+            // slot does not silently drop back to the first custom multiplier.
+            static int customMultiplier = firstCustomMultiplier;
+
+            char currentLabel[32];
+            if (autoMode)
+                // Spelling out the multiplier auto resolved to is the point of the
+                // entry, but before the first DLSSG request there is not one yet and
+                // the live count reads as 0.
+                std::snprintf(currentLabel, sizeof(currentLabel), currentCount > 0 ? "Auto (%dX)" : "Auto",
+                              currentCount + 1);
+            else if (custom)
+                std::snprintf(currentLabel, sizeof(currentLabel), "%dX (custom)", currentCount + 1);
+            else
+                std::snprintf(currentLabel, sizeof(currentLabel), "%s",
+                              intModes[currentSet >= 0 && currentSet < namedCount ? currentSet : 0]);
 
             ImGui::PushItemWidth(95.0f * menuResScale);
 
-            if (ImGui::BeginCombo("MFG", currentIntCount.c_str()))
+            if (ImGui::BeginCombo("MFG", currentLabel))
             {
-                for (int i = 0; i < maxInterpolationCount; i++)
+                if (ImGui::Selectable("Auto", autoMode))
                 {
-                    const auto mode = std::to_string(static_cast<int64_t>(i) + 2) + "X";
-                    if (ImGui::Selectable(mode.c_str(), (currentCount == static_cast<UINT>(i + 1))))
+                    // Clearing the optional is what selects auto: storing a number here
+                    // would leave a value behind and the backend would stop following the
+                    // game. An unset value is also what the ini gets - it is written back
+                    // as "auto" rather than as whatever auto last resolved to.
+                    LOG_INFO("MFG menu: Auto selected, following the game's frame generation multiplier");
+                    state.fgChanged = true;
+                    config->FGXeFGInterpolationCount = std::nullopt;
+                }
+
+                for (int i = 0; i < namedCount && i < maxInterpolationCount; i++)
+                {
+                    if (ImGui::Selectable(intModes[i], (currentSet == i)))
                     {
                         LOG_DEBUG("XeFG Interpolation Count set to: {}", i + 1);
                         state.fgChanged = true;
@@ -6083,12 +6144,77 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
                     }
                 }
 
+                if (allowCustom && ImGui::Selectable("Custom...", custom))
+                {
+                    if (customMultiplier < firstCustomMultiplier || customMultiplier > maxMultiplier)
+                        customMultiplier = firstCustomMultiplier;
+
+                    LOG_INFO("MFG menu: Custom selected, asking for {}X (interpolation count {})", customMultiplier,
+                             customMultiplier - 1);
+                    state.fgChanged = true;
+                    config->FGXeFGInterpolationCount = customMultiplier - 1;
+                }
+
                 ImGui::EndCombo();
             }
 
             ImGui::PopItemWidth();
 
-            ShowHelpMarker("Set XeFG interpolation count");
+            if (custom)
+            {
+                // The value in the config is the interpolation count, so the
+                // multiplier is always one more than it.
+                if (customMultiplier - 1 != currentCount)
+                    customMultiplier = currentCount + 1;
+
+                // On its own line rather than a SameLine off the MFG combo above.
+                // The menu window is AlwaysAutoResize, so its width is the width of
+                // its widest row -- appending this field to the MFG row made
+                // picking Custom... widen every other row in the menu with it.
+                ImGui::PushItemWidth(60.0f * menuResScale);
+
+                if (ImGui::InputInt("Multiplier##mfgCustom", &customMultiplier, 1, 0))
+                {
+                    if (customMultiplier < firstCustomMultiplier)
+                        customMultiplier = firstCustomMultiplier;
+                    else if (customMultiplier > maxMultiplier)
+                        customMultiplier = maxMultiplier;
+
+                    LOG_INFO("MFG menu: custom multiplier set to {}X (interpolation count {})", customMultiplier,
+                             customMultiplier - 1);
+                    state.fgChanged = true;
+                    config->FGXeFGInterpolationCount = customMultiplier - 1;
+                }
+
+                ImGui::PopItemWidth();
+
+                // Above 4X the burst arrives faster than the display refreshes, and
+                // nothing inside the provider can pull that back - it needs the
+                // present rate capped from the outside. Only reachable through this
+                // slot: the named entries stop at 4X.
+                if (customMultiplier > highestNamedMultiplier)
+                {
+                    ImGui::SameLine(0.0f, 8.0f);
+                    ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)), "! Enable VSync");
+                }
+            }
+
+            // The upper bound is spelled out from the live value rather than as a
+            // fixed number, so narrowing XeFG\MaxInterpolatedFrames does not leave
+            // the tooltip promising a multiplier the slot will refuse.
+            char mfgTip[512];
+            std::snprintf(mfgTip, sizeof(mfgTip),
+                          "Set XeFG interpolation count\n\n"
+                          "Auto (the default) follows the multiplier of the game's own\n"
+                          "frame generation setting, and is what an unset value means.\n\n"
+                          "2X-4X work on their own.\n\n"
+                          "Above 4X the generated frames are presented faster than\n"
+                          "the display refreshes, so VSync (or a frame rate cap) is\n"
+                          "required - without it the extra frames tear and judder.\n\n"
+                          "Use Custom... for anything above 4X, up to %dX.",
+                          maxMultiplier);
+
+            ShowHelpMarker(mfgTip);
         }
 
         ImGui::SameLine(0.0f, 16.0f);
@@ -6102,6 +6228,19 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
                        "Fixes artifacting transparent HUD/UI");
         ImGui::EndDisabled();
 
+        // Takes effect once, at XeFG init: the pacing hook rewrites the present
+        // thunk, so this cannot be toggled while the game is running.
+        ImGui::SameLine(0.0f, 16.0f);
+        bool fgExtraPacing = config->FGXeFGExtraPacing.value_or_default();
+        if (ImGui::Checkbox("Extra Pacing", &fgExtraPacing))
+            config->FGXeFGExtraPacing = fgExtraPacing;
+
+        ShowHelpMarker("Pace every generated frame above 2X\n\n"
+                       "Without it the provider hands the whole burst of generated\n"
+                       "frames over at once and only spaces out the last one, which\n"
+                       "reads as judder at 4X and above\n\n"
+                       "NEEDS GAME RESTART TO BE ACTIVE!");
+
         bool fgDV = config->FGXeFGDebugView.value_or_default();
         if (ImGui::Checkbox("Debug View##2", &fgDV))
         {
@@ -6114,6 +6253,10 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             }
         }
         ShowHelpMarker("Enable XeFG Debug view");
+
+        ImGui::SameLine(0.0f, 16.0f);
+        ImGui::Checkbox("Only FG", &state.fgOnlyGenerated);
+        ShowHelpMarker("Enable XeFG Debug Feature Only FG");
 
         ImGui::EndDisabled();
 
