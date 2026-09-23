@@ -400,6 +400,10 @@ version in use comes from `AmdBridge::RuntimeName()`.
 
 ## 7. Known issues and open items
 
+- **The clang-format check on tag `v0.1.0-amd-nr` stays red.** The tag points at `531c221a`,
+  which predates the formatting commit `a12c4a9f`; the branch and its pull request pass. The
+  formatting changed no code, so the released DLL is unaffected. It was left alone because moving
+  the tag would change what a published release points at. The next release tag will pass.
 - **`[FSR-RR] TaggedNormalRoughness` has never been observed to fire.** It was written
   for a title whose normals binding looked like it carried no roughness; the real cause
   turned out to be an external mod zeroing the ray-tracing buffers. It is left in reach,
