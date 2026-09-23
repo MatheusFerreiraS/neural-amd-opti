@@ -13,15 +13,25 @@ struct SubmissionState
     std::uint64_t recordedAt = 0;
     std::uint64_t submittedAt = 0;
 
-    void Record(std::uint64_t now) { *this = {}; recorded = true; recordedAt = now; }
-    void Submit(std::uint64_t now) { submitted = true; submittedAt = now; stallReported = false; }
+    void Record(std::uint64_t now)
+    {
+        *this = {};
+        recorded = true;
+        recordedAt = now;
+    }
+    void Submit(std::uint64_t now)
+    {
+        submitted = true;
+        submittedAt = now;
+        stallReported = false;
+    }
     // The original runtime exposes one pending list/job per instance, even with several jobs still running.
     bool BlocksRecord() const { return recorded && !submitted; }
     bool CanRetire(bool nativeDone, std::uint64_t completed, std::uint64_t target) const
     {
         // D3D12 reports UINT64_MAX on device removal, not successful completion.
-        return recorded && submitted && target != 0 && nativeDone && completed != (std::numeric_limits<std::uint64_t>::max)() &&
-               completed >= target;
+        return recorded && submitted && target != 0 && nativeDone &&
+               completed != (std::numeric_limits<std::uint64_t>::max)() && completed >= target;
     }
     bool ReportStall(std::uint64_t now)
     {
@@ -34,4 +44,4 @@ struct SubmissionState
     // A timeout does not cancel a command list. Keep it owned and match a late
     // submission; recovering a truly discarded list requires generation/cancel evidence.
 };
-}
+} // namespace AmdPreSr

@@ -42,39 +42,42 @@ inline std::mutex installMutex;
 // Every patched address has its own forwarding function and trampoline.
 // The callbacks never allocate, log, lock, or change the command arguments.
 template <std::size_t Index>
-__declspec(noinline) inline void WINAPI Draw(ID3D12GraphicsCommandList* list, UINT vertices,
-                                            UINT instances, UINT firstVertex, UINT firstInstance)
+__declspec(noinline) inline void WINAPI Draw(ID3D12GraphicsCommandList* list, UINT vertices, UINT instances,
+                                             UINT firstVertex, UINT firstInstance)
 {
-    ObserveNativeDraw(reinterpret_cast<std::uintptr_t>(list),
-                      reinterpret_cast<std::uintptr_t>(_ReturnAddress()));
+    ObserveNativeDraw(reinterpret_cast<std::uintptr_t>(list), reinterpret_cast<std::uintptr_t>(_ReturnAddress()));
     drawSlots[Index].original(list, vertices, instances, firstVertex, firstInstance);
 }
 
 template <std::size_t Index>
 __declspec(noinline) inline void WINAPI Dispatch(ID3D12GraphicsCommandList* list, UINT x, UINT y, UINT z)
 {
-    ObserveNativeDispatch(reinterpret_cast<std::uintptr_t>(list),
-                          reinterpret_cast<std::uintptr_t>(_ReturnAddress()));
+    ObserveNativeDispatch(reinterpret_cast<std::uintptr_t>(list), reinterpret_cast<std::uintptr_t>(_ReturnAddress()));
     dispatchSlots[Index].original(list, x, y, z);
 }
 
-inline constexpr std::array<DrawFn, Capacity> drawHooks {
-    Draw<0>, Draw<1>, Draw<2>, Draw<3>, Draw<4>, Draw<5>, Draw<6>, Draw<7>
-};
-inline constexpr std::array<DispatchFn, Capacity> dispatchHooks {
-    Dispatch<0>, Dispatch<1>, Dispatch<2>, Dispatch<3>,
-    Dispatch<4>, Dispatch<5>, Dispatch<6>, Dispatch<7>
-};
+inline constexpr std::array<DrawFn, Capacity> drawHooks { Draw<0>, Draw<1>, Draw<2>, Draw<3>,
+                                                          Draw<4>, Draw<5>, Draw<6>, Draw<7> };
+inline constexpr std::array<DispatchFn, Capacity> dispatchHooks { Dispatch<0>, Dispatch<1>, Dispatch<2>, Dispatch<3>,
+                                                                  Dispatch<4>, Dispatch<5>, Dispatch<6>, Dispatch<7> };
 
 struct Handle
 {
     HANDLE value;
-    ~Handle() { if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value); }
+    ~Handle()
+    {
+        if (value && value != INVALID_HANDLE_VALUE)
+            CloseHandle(value);
+    }
 };
 struct ThreadHandles
 {
     std::vector<HANDLE> values;
-    ~ThreadHandles() { for (auto value : values) CloseHandle(value); }
+    ~ThreadHandles()
+    {
+        for (auto value : values)
+            CloseHandle(value);
+    }
 };
 
 // Finish enumeration and allocation before Detours suspends other threads.
@@ -92,8 +95,9 @@ inline LONG CollectThreads(ThreadHandles& threads)
     {
         if (item.th32OwnerProcessID != process || item.th32ThreadID == current)
             continue;
-        HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
-                                   THREAD_QUERY_INFORMATION, FALSE, item.th32ThreadID);
+        HANDLE thread =
+            OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION,
+                       FALSE, item.th32ThreadID);
         if (!thread)
         {
             const auto error = GetLastError();
@@ -101,8 +105,15 @@ inline LONG CollectThreads(ThreadHandles& threads)
                 continue;
             return static_cast<LONG>(error);
         }
-        try { threads.values.push_back(thread); }
-        catch (...) { CloseHandle(thread); throw; }
+        try
+        {
+            threads.values.push_back(thread);
+        }
+        catch (...)
+        {
+            CloseHandle(thread);
+            throw;
+        }
     } while (Thread32Next(snapshot.value, &item));
     const auto error = GetLastError();
     return error == ERROR_NO_MORE_FILES ? NO_ERROR : static_cast<LONG>(error);
@@ -111,7 +122,11 @@ inline LONG CollectThreads(ThreadHandles& threads)
 struct Transaction
 {
     bool owned = false;
-    ~Transaction() { if (owned) DetourTransactionAbort(); }
+    ~Transaction()
+    {
+        if (owned)
+            DetourTransactionAbort();
+    }
 };
 
 template <typename Fn> inline LONG Install(Slot<Fn>& slot, Fn hook)
@@ -120,7 +135,7 @@ template <typename Fn> inline LONG Install(Slot<Fn>& slot, Fn hook)
     // must outlive every command list that can call the forwarding function.
     HMODULE owner = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-                           reinterpret_cast<LPCWSTR>(hook), &owner))
+                            reinterpret_cast<LPCWSTR>(hook), &owner))
         return static_cast<LONG>(GetLastError());
 
     ThreadHandles threads;
@@ -148,11 +163,15 @@ template <typename Fn> inline LONG Install(Slot<Fn>& slot, Fn hook)
     return error;
 }
 
-struct Status { LONG error; bool covered; };
+struct Status
+{
+    LONG error;
+    bool covered;
+};
 
 template <typename Fn>
-inline Status EnsureTarget(std::array<Slot<Fn>, Capacity>& slots,
-                           const std::array<Fn, Capacity>& hooks, std::uintptr_t target) noexcept
+inline Status EnsureTarget(std::array<Slot<Fn>, Capacity>& slots, const std::array<Fn, Capacity>& hooks,
+                           std::uintptr_t target) noexcept
 {
     if (!target)
         return { ERROR_INVALID_ADDRESS, false };
@@ -166,9 +185,18 @@ inline Status EnsureTarget(std::array<Slot<Fn>, Capacity>& slots,
             continue;
         slot.target = target; // Cache failures too; never retry every frame.
         slot.original = reinterpret_cast<Fn>(target);
-        try { slot.error = Install(slot, hooks[index]); }
-        catch (const std::bad_alloc&) { slot.error = ERROR_NOT_ENOUGH_MEMORY; }
-        catch (...) { slot.error = ERROR_GEN_FAILURE; }
+        try
+        {
+            slot.error = Install(slot, hooks[index]);
+        }
+        catch (const std::bad_alloc&)
+        {
+            slot.error = ERROR_NOT_ENOUGH_MEMORY;
+        }
+        catch (...)
+        {
+            slot.error = ERROR_GEN_FAILURE;
+        }
         slot.covered = slot.error == NO_ERROR;
         return { slot.error, slot.covered };
     }
@@ -204,15 +232,16 @@ inline Coverage Ensure(ID3D12GraphicsCommandList* list, std::uintptr_t verifiedE
             result.drawError = draw.error;
             result.drawCovered = draw.covered;
         }
-        const auto dispatch = Detail::EnsureTarget(Detail::dispatchSlots, Detail::dispatchHooks,
-                                                   result.dispatchTarget);
+        const auto dispatch = Detail::EnsureTarget(Detail::dispatchSlots, Detail::dispatchHooks, result.dispatchTarget);
         result.dispatchError = dispatch.error;
         result.dispatchCovered = dispatch.covered;
     }
     catch (...)
     {
-        if (!result.drawCovered) result.drawError = ERROR_GEN_FAILURE;
-        if (!result.dispatchCovered) result.dispatchError = ERROR_GEN_FAILURE;
+        if (!result.drawCovered)
+            result.drawError = ERROR_GEN_FAILURE;
+        if (!result.dispatchCovered)
+            result.dispatchError = ERROR_GEN_FAILURE;
     }
     return result;
 }

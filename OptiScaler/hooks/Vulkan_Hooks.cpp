@@ -404,8 +404,8 @@ static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateI
                     break;
                 }
 
-                LOG_INFO("DLSS-NR: swapchain colour space {} -- {} ({}), format {}",
-                         (int) pCreateInfo->imageColorSpace, name, meaning, (int) pCreateInfo->imageFormat);
+                LOG_INFO("DLSS-NR: swapchain colour space {} -- {} ({}), format {}", (int) pCreateInfo->imageColorSpace,
+                         name, meaning, (int) pCreateInfo->imageFormat);
             }
         }
 

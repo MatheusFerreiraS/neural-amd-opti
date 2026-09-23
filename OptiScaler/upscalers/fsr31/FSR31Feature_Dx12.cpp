@@ -71,7 +71,7 @@ static bool TryGetLoggedResource(const NVSDK_NGX_Parameter& ngxParams, const cha
 }
 
 static void SetFfxUpscaleKeyValue(ffxContext* ctx, float& currentValue, const CustomOptional<float>& newValue,
-                                        uint64_t key, const char* featureName)
+                                  uint64_t key, const char* featureName)
 {
     const float val = newValue.value_or_default();
 
@@ -99,10 +99,7 @@ NVSDK_NGX_Parameter* FSR31FeatureDx12::SetParameters(NVSDK_NGX_Parameter* InPara
 
 FSR31FeatureDx12::FSR31FeatureDx12(unsigned int InHandleId, NVSDK_NGX_Parameter* InParameters)
     : FSR31Feature(InHandleId, InParameters), IFeature_Dx12(InHandleId, InParameters),
-      IFeature(InHandleId, SetParameters(InParameters)), 
-      _isInReset(false), 
-      _inputBuffers({}), 
-      _upscalerOutput(nullptr)
+      IFeature(InHandleId, SetParameters(InParameters)), _isInReset(false), _inputBuffers({}), _upscalerOutput(nullptr)
 {
     InParameters->Set("OptiScaler.SupportsUpscaleSize", true);
 
@@ -168,17 +165,14 @@ bool FSR31FeatureDx12::InitFSR3(const NVSDK_NGX_Parameter* InParameters)
     return true;
 }
 
-bool FSR31FeatureDx12::CreateUpscalerContext(const NVSDK_NGX_Parameter& ngxParams) 
+bool FSR31FeatureDx12::CreateUpscalerContext(const NVSDK_NGX_Parameter& ngxParams)
 {
     // Get available versions for overrides
     if (!QueryUpscalerVersions())
         return false;
-    
-    ffxOverrideVersion vidOverride = 
-    {
-        .header = { .type = FFX_API_DESC_TYPE_OVERRIDE_VERSION },
-        .versionId = GetUpscalerOverrideID()
-    };      
+
+    ffxOverrideVersion vidOverride = { .header = { .type = FFX_API_DESC_TYPE_OVERRIDE_VERSION },
+                                       .versionId = GetUpscalerOverrideID() };
     // Backend desc
     ffxCreateBackendDX12Desc backendDesc = 
     { 
@@ -189,24 +183,13 @@ bool FSR31FeatureDx12::CreateUpscalerContext(const NVSDK_NGX_Parameter& ngxParam
         },
         .device = Device
     };
-    ffxCreateContextDescUpscaleVersion contextVersion = 
-    {
-        .header = 
-        { 
-            .type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION,
-            .pNext = &backendDesc.header
-        },
+    ffxCreateContextDescUpscaleVersion contextVersion = {
+        .header = { .type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION, .pNext = &backendDesc.header },
         .version = FFX_UPSCALER_VERSION
     };
     // Chain: Context -> Version -> Backend -> Override
-    _upscaleCtxDesc = 
-    {
-        .header = 
-        {
-            .type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE,
-            .pNext = &contextVersion.header 
-        }
-    };
+    _upscaleCtxDesc = { .header = { .type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE,
+                                    .pNext = &contextVersion.header } };
 
     // Context description
     ConfigureUpscalerContext(ngxParams);
@@ -275,7 +258,7 @@ void FSR31FeatureDx12::ConfigureUpscalerContext(const NVSDK_NGX_Parameter& ngxPa
     SetResolutionConfig();
 }
 
-void FSR31FeatureDx12::SetResolutionConfig() 
+void FSR31FeatureDx12::SetResolutionConfig()
 {
     auto& cfg = *Config::Instance();
 
@@ -488,7 +471,8 @@ bool FSR31FeatureDx12::PrepareUpscalerInput(ID3D12GraphicsCommandList* InCommand
     _hasMV = upscalerDesc.motionVectors.resource != nullptr;
     _hasExposure = upscalerDesc.exposure.resource != nullptr;
     _hasTM = upscalerDesc.transparencyAndComposition.resource != nullptr;
-    _accessToReactiveMask = _inputBuffers.ReactiveMask != nullptr; // Keep original logic tracking if "native" mask existed
+    _accessToReactiveMask =
+        _inputBuffers.ReactiveMask != nullptr; // Keep original logic tracking if "native" mask existed
     _hasOutput = upscalerDesc.output.resource != nullptr;
 
     // FSR 4 Format Fixes
@@ -500,7 +484,7 @@ bool FSR31FeatureDx12::PrepareUpscalerInput(ID3D12GraphicsCommandList* InCommand
         ffxResolveTypelessFormat(upscalerDesc.exposure.description.format);
         ffxResolveTypelessFormat(upscalerDesc.transparencyAndComposition.description.format);
         ffxResolveTypelessFormat(upscalerDesc.output.description.format);
-    }    
+    }
 
     return true;
 }
@@ -797,7 +781,8 @@ void FSR31FeatureDx12::SetConfigurableBarriers(ID3D12GraphicsCommandList* InComm
                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     // Transition output to UAV for writing
-    TryResourceBarrier(InCommandList, _upscalerOutput, cfg.OutputResourceBarrier, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    TryResourceBarrier(InCommandList, _upscalerOutput, cfg.OutputResourceBarrier,
+                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 }
 
 void FSR31FeatureDx12::ResetConfigurableBarriers(ID3D12GraphicsCommandList* InCommandList)
@@ -811,7 +796,8 @@ void FSR31FeatureDx12::ResetConfigurableBarriers(ID3D12GraphicsCommandList* InCo
                        cfg.MVResourceBarrier);
     TryResourceBarrier(InCommandList, _inputBuffers.Depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                        cfg.DepthResourceBarrier);
-    TryResourceBarrier(InCommandList, _upscalerOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, cfg.OutputResourceBarrier);
+    TryResourceBarrier(InCommandList, _upscalerOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                       cfg.OutputResourceBarrier);
 
     if (_inputBuffers.ExposureMap && !AutoExposure())
         TryResourceBarrier(InCommandList, _inputBuffers.ExposureMap, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
@@ -823,5 +809,5 @@ void FSR31FeatureDx12::ResetConfigurableBarriers(ID3D12GraphicsCommandList* InCo
     // invent a reverse transition that had no matching forward transition.
     if (_inputBuffers.DlssBiasMaskFallback)
         TryResourceBarrier(InCommandList, _inputBuffers.DlssBiasMaskFallback,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, cfg.MaskResourceBarrier);
+                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, cfg.MaskResourceBarrier);
 }

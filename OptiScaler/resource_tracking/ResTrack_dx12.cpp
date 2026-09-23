@@ -38,15 +38,15 @@ typedef void(STDMETHODCALLTYPE* PFN_CreateUnorderedAccessView)(ID3D12Device* Thi
                                                                ID3D12Resource* pCounterResource,
                                                                D3D12_UNORDERED_ACCESS_VIEW_DESC* pDesc,
                                                                D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
-typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateGraphicsPipelineState)(
-    ID3D12Device* This, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc, REFIID riid,
-    void** ppPipelineState);
-typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateComputePipelineState)(
-    ID3D12Device* This, const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc, REFIID riid,
-    void** ppPipelineState);
-typedef HRESULT(STDMETHODCALLTYPE* PFN_CreatePipelineState)(
-    ID3D12Device2* This, const D3D12_PIPELINE_STATE_STREAM_DESC* pDesc, REFIID riid,
-    void** ppPipelineState);
+typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateGraphicsPipelineState)(ID3D12Device* This,
+                                                                    const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc,
+                                                                    REFIID riid, void** ppPipelineState);
+typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateComputePipelineState)(ID3D12Device* This,
+                                                                   const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc,
+                                                                   REFIID riid, void** ppPipelineState);
+typedef HRESULT(STDMETHODCALLTYPE* PFN_CreatePipelineState)(ID3D12Device2* This,
+                                                            const D3D12_PIPELINE_STATE_STREAM_DESC* pDesc, REFIID riid,
+                                                            void** ppPipelineState);
 typedef void(STDMETHODCALLTYPE* PFN_CreateDepthStencilView)(ID3D12Device* This, ID3D12Resource* pResource,
                                                             const D3D12_DEPTH_STENCIL_VIEW_DESC* pDesc,
                                                             D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
@@ -98,13 +98,12 @@ typedef void(STDMETHODCALLTYPE* PFN_ResourceBarrier)(ID3D12GraphicsCommandList* 
                                                      const D3D12_RESOURCE_BARRIER* pBarriers);
 typedef void(STDMETHODCALLTYPE* PFN_SetPipelineState)(ID3D12GraphicsCommandList* This,
                                                       ID3D12PipelineState* pPipelineState);
-typedef HRESULT(STDMETHODCALLTYPE* PFN_Reset)(ID3D12GraphicsCommandList* This,
-                                              ID3D12CommandAllocator* pAllocator,
+typedef HRESULT(STDMETHODCALLTYPE* PFN_Reset)(ID3D12GraphicsCommandList* This, ID3D12CommandAllocator* pAllocator,
                                               ID3D12PipelineState* pInitialState);
 typedef void(STDMETHODCALLTYPE* PFN_SetMarker)(ID3D12GraphicsCommandList* This, UINT Metadata, const void* pData,
-                                              UINT Size);
-typedef void(STDMETHODCALLTYPE* PFN_BeginEvent)(ID3D12GraphicsCommandList* This, UINT Metadata, const void* pData,
                                                UINT Size);
+typedef void(STDMETHODCALLTYPE* PFN_BeginEvent)(ID3D12GraphicsCommandList* This, UINT Metadata, const void* pData,
+                                                UINT Size);
 typedef void(STDMETHODCALLTYPE* PFN_EndEvent)(ID3D12GraphicsCommandList* This);
 typedef HRESULT(STDMETHODCALLTYPE* PFN_Close)(ID3D12GraphicsCommandList* This);
 
@@ -270,8 +269,7 @@ static std::atomic<uint64_t> gRRNextPsoId { 1 };
 static std::mutex gRRPsoMutex;
 static std::unordered_map<ID3D12PipelineState*, RRPsoMetadata> gRRPsoMetadata;
 static std::unordered_map<ID3D12GraphicsCommandList*, RRCommandListPsoState> gRRCommandListPsoStates;
-static std::unordered_map<ID3D12Resource*,
-                          std::unordered_map<ID3D12PipelineState*, RRPsoProducerStats>>
+static std::unordered_map<ID3D12Resource*, std::unordered_map<ID3D12PipelineState*, RRPsoProducerStats>>
     gRRResourcePsoProducers;
 
 static uint64_t HashRRBytes(const void* data, size_t size, uint64_t hash = 1469598103934665603ull)
@@ -377,9 +375,8 @@ static void EnsurePsoReleaseHook(ID3D12PipelineState* pipelineState)
     }
 }
 
-static RRPsoMetadata& EnsureRRPsoMetadata(ID3D12PipelineState* pipelineState,
-                                         RRPsoKind kind = RRPsoKind::Unknown,
-                                         uint64_t hash = 0)
+static RRPsoMetadata& EnsureRRPsoMetadata(ID3D12PipelineState* pipelineState, RRPsoKind kind = RRPsoKind::Unknown,
+                                          uint64_t hash = 0)
 {
     EnsurePsoReleaseHook(pipelineState);
 
@@ -393,8 +390,7 @@ static RRPsoMetadata& EnsureRRPsoMetadata(ID3D12PipelineState* pipelineState,
     return metadata;
 }
 
-static void RecordRRPsoProducer(ID3D12Resource* resource, ID3D12PipelineState* pipelineState,
-                                bool ambiguous)
+static void RecordRRPsoProducer(ID3D12Resource* resource, ID3D12PipelineState* pipelineState, bool ambiguous)
 {
     if (resource == nullptr || pipelineState == nullptr)
         return;
@@ -423,8 +419,7 @@ static void RecordRRGraphicsOutputs(ID3D12GraphicsCommandList* commandList)
         metadata.kind = RRPsoKind::Graphics;
 
     const uint64_t frame = gRRResourceInspectorFrame.load(std::memory_order_relaxed);
-    if (state.lastGraphicsPso == state.currentPso &&
-        state.lastGraphicsGeneration == state.renderTargetGeneration &&
+    if (state.lastGraphicsPso == state.currentPso && state.lastGraphicsGeneration == state.renderTargetGeneration &&
         state.lastGraphicsFrame == frame)
     {
         return;
@@ -455,8 +450,7 @@ static void RecordRRComputeOutput(ID3D12GraphicsCommandList* commandList, ID3D12
     RRPsoMetadata& metadata = EnsureRRPsoMetadata(state.lastComputePso);
     if (metadata.kind == RRPsoKind::Unknown || metadata.kind == RRPsoKind::Stream)
         metadata.kind = RRPsoKind::Compute;
-    RecordRRPsoProducer(resource, state.lastComputePso,
-                        state.dispatchesSinceBarrier > 1);
+    RecordRRPsoProducer(resource, state.lastComputePso, state.dispatchesSinceBarrier > 1);
     state.dispatchesSinceBarrier = 0;
 }
 
@@ -502,8 +496,7 @@ static std::string DecodeRRMarkerName(const void* data, UINT size)
     {
         for (size_t begin = alignment; begin + 1 < byteCount;)
         {
-            while (begin + 1 < byteCount &&
-                   !(printable(bytes[begin]) && bytes[begin + 1] == 0))
+            while (begin + 1 < byteCount && !(printable(bytes[begin]) && bytes[begin + 1] == 0))
             {
                 begin += 2;
             }
@@ -529,10 +522,8 @@ static std::string DecodeRRMarkerName(const void* data, UINT size)
 
 static bool IsRREmissiveMarker(std::string_view name)
 {
-    return std::search(name.begin(), name.end(), "emiss", "emiss" + 5,
-                       [](char left, char right) {
-                           return std::tolower(static_cast<unsigned char>(left)) == right;
-                       }) != name.end();
+    return std::search(name.begin(), name.end(), "emiss", "emiss" + 5, [](char left, char right)
+                       { return std::tolower(static_cast<unsigned char>(left)) == right; }) != name.end();
 }
 
 static void ObserveRRMarker(const std::string& name)
@@ -541,8 +532,7 @@ static void ObserveRRMarker(const std::string& name)
         return;
 
     constexpr size_t kMaxMarkerInventory = 2048;
-    if (!gRRMarkerInventory.contains(name) &&
-        gRRMarkerInventory.size() >= kMaxMarkerInventory)
+    if (!gRRMarkerInventory.contains(name) && gRRMarkerInventory.size() >= kMaxMarkerInventory)
     {
         return;
     }
@@ -624,10 +614,7 @@ static uint32_t GetRRFormatChannelCount(DXGI_FORMAT format)
 // to keep candidate views alive even when HUD tracking is disabled. "Scalar"
 // now also includes packed normalized/float formats so specular occlusion can
 // be discovered in any component.
-static bool IsRRScalarCandidateFormat(DXGI_FORMAT format)
-{
-    return GetRRFormatChannelCount(format) > 0;
-}
+static bool IsRRScalarCandidateFormat(DXGI_FORMAT format) { return GetRRFormatChannelCount(format) > 0; }
 
 static bool IsRRScalarCandidateResource(ID3D12Resource* resource, DXGI_FORMAT viewFormat)
 {
@@ -635,11 +622,9 @@ static bool IsRRScalarCandidateResource(ID3D12Resource* resource, DXGI_FORMAT vi
         return false;
 
     const D3D12_RESOURCE_DESC desc = resource->GetDesc();
-    const DXGI_FORMAT effectiveFormat =
-        viewFormat == DXGI_FORMAT_UNKNOWN ? desc.Format : viewFormat;
-    return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-           desc.SampleDesc.Count == 1 && desc.Width >= 256 && desc.Height >= 256 &&
-           !(desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) &&
+    const DXGI_FORMAT effectiveFormat = viewFormat == DXGI_FORMAT_UNKNOWN ? desc.Format : viewFormat;
+    return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.SampleDesc.Count == 1 && desc.Width >= 256 &&
+           desc.Height >= 256 && !(desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) &&
            IsRRScalarCandidateFormat(effectiveFormat);
 }
 
@@ -675,27 +660,23 @@ static void TrackRRResourceView(ID3D12Resource* resource, DXGI_FORMAT viewFormat
 // read state is reported as non-readable and left alone.
 static bool IsRRResourceComputeReadable(D3D12_RESOURCE_STATES state)
 {
-    constexpr D3D12_RESOURCE_STATES kComputeRead =
-        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    constexpr D3D12_RESOURCE_STATES kComputeRead = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     constexpr D3D12_RESOURCE_STATES kWritable =
-        D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
-        D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_COPY_DEST |
-        D3D12_RESOURCE_STATE_RESOLVE_DEST;
+        D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS | D3D12_RESOURCE_STATE_DEPTH_WRITE |
+        D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_RESOLVE_DEST;
     return (state & kComputeRead) != 0 && (state & kWritable) == 0;
 }
 
 static bool IsRRResourceWritable(D3D12_RESOURCE_STATES state)
 {
     constexpr D3D12_RESOURCE_STATES kWritable =
-        D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
-        D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_COPY_DEST |
-        D3D12_RESOURCE_STATE_RESOLVE_DEST;
+        D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS | D3D12_RESOURCE_STATE_DEPTH_WRITE |
+        D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_RESOLVE_DEST;
     return (state & kWritable) != 0;
 }
 
 // Called while gRRResourceStateMutex is held.
-static void RecordRRResourceWrite(ID3D12Resource* resource, const std::string& passName,
-                                  bool emissivePassMatch)
+static void RecordRRResourceWrite(ID3D12Resource* resource, const std::string& passName, bool emissivePassMatch)
 {
     if (resource == nullptr)
         return;
@@ -786,44 +767,32 @@ void ResTrack_Dx12::SetRRResourceCandidateIndex(int index)
         return;
     }
 
-    const int selected =
-        std::clamp(index, 0, static_cast<int>(gRRResourceCandidates.size()) - 1);
+    const int selected = std::clamp(index, 0, static_cast<int>(gRRResourceCandidates.size()) - 1);
     gRRResourceCandidateIndex.store(selected, std::memory_order_release);
-    gRRResourceCandidateAddress.store(
-        reinterpret_cast<uintptr_t>(gRRResourceCandidates[selected].resourceAddress),
-        std::memory_order_release);
+    gRRResourceCandidateAddress.store(reinterpret_cast<uintptr_t>(gRRResourceCandidates[selected].resourceAddress),
+                                      std::memory_order_release);
 }
 
-int ResTrack_Dx12::GetRRResourceCandidateIndex()
-{
-    return gRRResourceCandidateIndex.load(std::memory_order_acquire);
-}
+int ResTrack_Dx12::GetRRResourceCandidateIndex() { return gRRResourceCandidateIndex.load(std::memory_order_acquire); }
 
 void ResTrack_Dx12::SetRRResourceChannel(uint32_t channel)
 {
     gRRResourceChannel.store(std::min(channel, 3u), std::memory_order_release);
 }
 
-uint32_t ResTrack_Dx12::GetRRResourceChannel()
-{
-    return gRRResourceChannel.load(std::memory_order_acquire);
-}
+uint32_t ResTrack_Dx12::GetRRResourceChannel() { return gRRResourceChannel.load(std::memory_order_acquire); }
 
 void ResTrack_Dx12::SetRRResourceViewScale(float scale)
 {
     gRRResourceViewScale.store(std::clamp(scale, 0.01f, 100.0f), std::memory_order_release);
 }
 
-float ResTrack_Dx12::GetRRResourceViewScale()
-{
-    return gRRResourceViewScale.load(std::memory_order_acquire);
-}
+float ResTrack_Dx12::GetRRResourceViewScale() { return gRRResourceViewScale.load(std::memory_order_acquire); }
 
 void ResTrack_Dx12::RefreshRRResourceCandidates(uint32_t renderWidth, uint32_t renderHeight)
 {
     std::vector<RRResourceCandidate> candidates;
-    const uint64_t currentFrame =
-        gRRResourceInspectorFrame.load(std::memory_order_acquire);
+    const uint64_t currentFrame = gRRResourceInspectorFrame.load(std::memory_order_acquire);
     {
         // This registry is populated directly by CreateSRV/CreateUAV/CreateRTV.
         // It intentionally does not depend on the HUD descriptor cache, whose
@@ -835,9 +804,8 @@ void ResTrack_Dx12::RefreshRRResourceCandidates(uint32_t renderWidth, uint32_t r
                 continue;
 
             const D3D12_RESOURCE_DESC desc = resource->GetDesc();
-            if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
-                desc.SampleDesc.Count != 1 || desc.Width != renderWidth ||
-                desc.Height != renderHeight ||
+            if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count != 1 ||
+                desc.Width != renderWidth || desc.Height != renderHeight ||
                 (desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE))
             {
                 continue;
@@ -847,8 +815,7 @@ void ResTrack_Dx12::RefreshRRResourceCandidates(uint32_t renderWidth, uint32_t r
             candidate.resourceAddress = resource;
             char debugName[256] {};
             UINT debugNameSize = sizeof(debugName);
-            if (SUCCEEDED(resource->GetPrivateData(
-                    WKPDID_D3DDebugObjectName, &debugNameSize, debugName)) &&
+            if (SUCCEEDED(resource->GetPrivateData(WKPDID_D3DDebugObjectName, &debugNameSize, debugName)) &&
                 debugNameSize > 0)
             {
                 debugName[std::size(debugName) - 1] = '\0';
@@ -896,18 +863,14 @@ void ResTrack_Dx12::RefreshRRResourceCandidates(uint32_t renderWidth, uint32_t r
                 candidate.lastWritePass = observed.lastWritePass;
                 candidate.emissivePassMatch = observed.emissivePassMatch;
                 candidate.writeAgeFrames =
-                    currentFrame >= observed.lastWriteFrame
-                        ? currentFrame - observed.lastWriteFrame
-                        : 0;
+                    currentFrame >= observed.lastWriteFrame ? currentFrame - observed.lastWriteFrame : 0;
                 candidate.lastWriteInterval =
-                    observed.previousWriteFrame > 0 &&
-                            observed.lastWriteFrame >= observed.previousWriteFrame
+                    observed.previousWriteFrame > 0 && observed.lastWriteFrame >= observed.previousWriteFrame
                         ? observed.lastWriteFrame - observed.previousWriteFrame
                         : 0;
                 candidate.active = candidate.writeAgeFrames <= 4;
                 candidate.alternating =
-                    candidate.active && candidate.lastWriteInterval >= 2 &&
-                    candidate.lastWriteInterval <= 4;
+                    candidate.active && candidate.lastWriteInterval >= 2 && candidate.lastWriteInterval <= 4;
             }
         }
     }
@@ -926,8 +889,7 @@ void ResTrack_Dx12::RefreshRRResourceCandidates(uint32_t renderWidth, uint32_t r
             for (const auto& [pipelineState, stats] : producers->second)
             {
                 if (topProducer == nullptr || stats.hits > topProducer->hits ||
-                    (stats.hits == topProducer->hits &&
-                     stats.lastFrame > topProducer->lastFrame))
+                    (stats.hits == topProducer->hits && stats.lastFrame > topProducer->lastFrame))
                 {
                     topProducer = &stats;
                 }
@@ -944,14 +906,15 @@ void ResTrack_Dx12::RefreshRRResourceCandidates(uint32_t renderWidth, uint32_t r
         }
     }
 
-    std::sort(candidates.begin(), candidates.end(), [](const RRResourceCandidate& left,
-                                                       const RRResourceCandidate& right) {
-        if (left.channelCount != right.channelCount)
-            return left.channelCount < right.channelCount;
-        if (left.format != right.format)
-            return left.format < right.format;
-        return left.resourceAddress < right.resourceAddress;
-    });
+    std::sort(candidates.begin(), candidates.end(),
+              [](const RRResourceCandidate& left, const RRResourceCandidate& right)
+              {
+                  if (left.channelCount != right.channelCount)
+                      return left.channelCount < right.channelCount;
+                  if (left.format != right.format)
+                      return left.format < right.format;
+                  return left.resourceAddress < right.resourceAddress;
+              });
 
     {
         std::scoped_lock candidateLock(gRRResourceCandidateMutex);
@@ -962,30 +925,24 @@ void ResTrack_Dx12::RefreshRRResourceCandidates(uint32_t renderWidth, uint32_t r
             return;
         }
 
-        const uintptr_t selectedAddress =
-            gRRResourceCandidateAddress.load(std::memory_order_acquire);
+        const uintptr_t selectedAddress = gRRResourceCandidateAddress.load(std::memory_order_acquire);
         int selected = -1;
         if (selectedAddress != 0)
         {
-            const auto found = std::find_if(
-                gRRResourceCandidates.begin(), gRRResourceCandidates.end(),
-                [selectedAddress](const RRResourceCandidate& candidate) {
-                    return reinterpret_cast<uintptr_t>(candidate.resourceAddress) ==
-                           selectedAddress;
-                });
+            const auto found =
+                std::find_if(gRRResourceCandidates.begin(), gRRResourceCandidates.end(),
+                             [selectedAddress](const RRResourceCandidate& candidate)
+                             { return reinterpret_cast<uintptr_t>(candidate.resourceAddress) == selectedAddress; });
             if (found != gRRResourceCandidates.end())
-                selected = static_cast<int>(
-                    std::distance(gRRResourceCandidates.begin(), found));
+                selected = static_cast<int>(std::distance(gRRResourceCandidates.begin(), found));
         }
 
         if (selected < 0)
         {
-            selected = std::clamp(
-                gRRResourceCandidateIndex.load(std::memory_order_acquire), 0,
-                static_cast<int>(gRRResourceCandidates.size()) - 1);
+            selected = std::clamp(gRRResourceCandidateIndex.load(std::memory_order_acquire), 0,
+                                  static_cast<int>(gRRResourceCandidates.size()) - 1);
             gRRResourceCandidateAddress.store(
-                reinterpret_cast<uintptr_t>(
-                    gRRResourceCandidates[selected].resourceAddress),
+                reinterpret_cast<uintptr_t>(gRRResourceCandidates[selected].resourceAddress),
                 std::memory_order_release);
         }
         gRRResourceCandidateIndex.store(selected, std::memory_order_release);
@@ -1006,13 +963,10 @@ ID3D12Resource* ResTrack_Dx12::AcquireRRResourceCandidate()
     void* selectedAddress = nullptr;
     {
         std::scoped_lock candidateLock(gRRResourceCandidateMutex);
-        const uintptr_t selected =
-            gRRResourceCandidateAddress.load(std::memory_order_acquire);
-        const auto candidate = std::find_if(
-            gRRResourceCandidates.begin(), gRRResourceCandidates.end(),
-            [selected](const RRResourceCandidate& value) {
-                return reinterpret_cast<uintptr_t>(value.resourceAddress) == selected;
-            });
+        const uintptr_t selected = gRRResourceCandidateAddress.load(std::memory_order_acquire);
+        const auto candidate = std::find_if(gRRResourceCandidates.begin(), gRRResourceCandidates.end(),
+                                            [selected](const RRResourceCandidate& value)
+                                            { return reinterpret_cast<uintptr_t>(value.resourceAddress) == selected; });
         if (candidate == gRRResourceCandidates.end())
             return nullptr;
 
@@ -1042,34 +996,29 @@ void ResTrack_Dx12::LogRRScalarResourceCandidates(uint32_t renderWidth, uint32_t
     RefreshRRResourceCandidates(renderWidth, renderHeight);
     const std::vector<RRResourceCandidate> candidates = GetRRResourceCandidates();
 
-    LOG_INFO("[RR_RESOURCE_CANDIDATE] snapshot: render={}x{}, previewableResources={}",
-             renderWidth, renderHeight, candidates.size());
+    LOG_INFO("[RR_RESOURCE_CANDIDATE] snapshot: render={}x{}, previewableResources={}", renderWidth, renderHeight,
+             candidates.size());
     for (size_t index = 0; index < candidates.size(); ++index)
     {
         const RRResourceCandidate& candidate = candidates[index];
         const auto formatName = magic_enum::enum_name(candidate.format);
-        LOG_INFO(
-            "[RR_RESOURCE_CANDIDATE] candidate[{}]: ptr={:X}, size={}x{}, format={}({}), "
-            "flags={:#x}, channels={}, views=[SRV:{}, UAV:{}, RTV:{}], writable={}, "
-            "stateKnown={}, state={:#x}, computeReadable={}, name='{}', writeObserved={}, "
-            "active={}, alternating={}, writeAge={}, interval={}, writtenFrames={}, transitions={}, "
-            "passWrites={}, emissivePassMatch={}, lastWritePass='{}', producer=[id:{}, hash:{:016X}, "
-            "kind:{}, hits:{}, count:{}, ambiguous:{}]",
-            index, reinterpret_cast<uintptr_t>(candidate.resourceAddress),
-            candidate.width, candidate.height,
-            formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(candidate.format),
-            static_cast<uint32_t>(candidate.flags), candidate.channelCount,
-            candidate.srvViews, candidate.uavViews, candidate.rtvViews,
-            !!(candidate.flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
-            candidate.stateKnown, static_cast<uint32_t>(candidate.state), candidate.computeReadable,
-            candidate.debugName, candidate.writeObserved, candidate.active, candidate.alternating,
-            candidate.writeObserved ? std::to_string(candidate.writeAgeFrames) : "never",
-            candidate.lastWriteInterval, candidate.writtenFrameCount,
-            candidate.writeTransitionCount, candidate.passWriteCount,
-            candidate.emissivePassMatch, candidate.lastWritePass,
-            candidate.producerPsoId, candidate.producerPsoHash,
-            candidate.producerKind, candidate.producerHitCount,
-            candidate.producerCount, candidate.producerAmbiguous);
+        LOG_INFO("[RR_RESOURCE_CANDIDATE] candidate[{}]: ptr={:X}, size={}x{}, format={}({}), "
+                 "flags={:#x}, channels={}, views=[SRV:{}, UAV:{}, RTV:{}], writable={}, "
+                 "stateKnown={}, state={:#x}, computeReadable={}, name='{}', writeObserved={}, "
+                 "active={}, alternating={}, writeAge={}, interval={}, writtenFrames={}, transitions={}, "
+                 "passWrites={}, emissivePassMatch={}, lastWritePass='{}', producer=[id:{}, hash:{:016X}, "
+                 "kind:{}, hits:{}, count:{}, ambiguous:{}]",
+                 index, reinterpret_cast<uintptr_t>(candidate.resourceAddress), candidate.width, candidate.height,
+                 formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(candidate.format),
+                 static_cast<uint32_t>(candidate.flags), candidate.channelCount, candidate.srvViews, candidate.uavViews,
+                 candidate.rtvViews, !!(candidate.flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+                 candidate.stateKnown, static_cast<uint32_t>(candidate.state), candidate.computeReadable,
+                 candidate.debugName, candidate.writeObserved, candidate.active, candidate.alternating,
+                 candidate.writeObserved ? std::to_string(candidate.writeAgeFrames) : "never",
+                 candidate.lastWriteInterval, candidate.writtenFrameCount, candidate.writeTransitionCount,
+                 candidate.passWriteCount, candidate.emissivePassMatch, candidate.lastWritePass,
+                 candidate.producerPsoId, candidate.producerPsoHash, candidate.producerKind, candidate.producerHitCount,
+                 candidate.producerCount, candidate.producerAmbiguous);
     }
 
     if (candidates.empty())
@@ -1099,35 +1048,29 @@ void ResTrack_Dx12::LogRRScalarResourceCandidates(uint32_t renderWidth, uint32_t
                 item.resource = resource;
                 item.desc = desc;
                 item.views = views;
-                item.sizeDelta =
-                    static_cast<uint64_t>(std::abs(static_cast<int64_t>(desc.Width) - renderWidth)) +
-                    static_cast<uint64_t>(std::abs(static_cast<int64_t>(desc.Height) - renderHeight));
+                item.sizeDelta = static_cast<uint64_t>(std::abs(static_cast<int64_t>(desc.Width) - renderWidth)) +
+                                 static_cast<uint64_t>(std::abs(static_cast<int64_t>(desc.Height) - renderHeight));
                 inventory.push_back(item);
             }
         }
 
-        std::sort(inventory.begin(), inventory.end(), [](const InventoryItem& left, const InventoryItem& right) {
-            return left.sizeDelta < right.sizeDelta;
-        });
+        std::sort(inventory.begin(), inventory.end(), [](const InventoryItem& left, const InventoryItem& right)
+                  { return left.sizeDelta < right.sizeDelta; });
 
         constexpr size_t kInventoryLogLimit = 64;
-        LOG_INFO(
-            "[RR_RESOURCE_INVENTORY] no exact preview candidates; trackedTexture2DResources={}, "
-            "logging closest {}",
-            inventory.size(), std::min(inventory.size(), kInventoryLogLimit));
+        LOG_INFO("[RR_RESOURCE_INVENTORY] no exact preview candidates; trackedTexture2DResources={}, "
+                 "logging closest {}",
+                 inventory.size(), std::min(inventory.size(), kInventoryLogLimit));
         for (size_t index = 0; index < std::min(inventory.size(), kInventoryLogLimit); ++index)
         {
             const InventoryItem& item = inventory[index];
             const auto formatName = magic_enum::enum_name(item.desc.Format);
-            LOG_INFO(
-                "[RR_RESOURCE_INVENTORY] resource[{}]: ptr={:X}, size={}x{}, format={}({}), "
-                "flags={:#x}, mips={}, arrays={}, views=[SRV:{}, UAV:{}, RTV:{}], sizeDelta={}",
-                index, reinterpret_cast<uintptr_t>(item.resource),
-                item.desc.Width, item.desc.Height,
-                formatName.empty() ? "UNKNOWN" : formatName,
-                static_cast<uint32_t>(item.desc.Format), static_cast<uint32_t>(item.desc.Flags),
-                item.desc.MipLevels, item.desc.DepthOrArraySize,
-                item.views.srvViews, item.views.uavViews, item.views.rtvViews, item.sizeDelta);
+            LOG_INFO("[RR_RESOURCE_INVENTORY] resource[{}]: ptr={:X}, size={}x{}, format={}({}), "
+                     "flags={:#x}, mips={}, arrays={}, views=[SRV:{}, UAV:{}, RTV:{}], sizeDelta={}",
+                     index, reinterpret_cast<uintptr_t>(item.resource), item.desc.Width, item.desc.Height,
+                     formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(item.desc.Format),
+                     static_cast<uint32_t>(item.desc.Flags), item.desc.MipLevels, item.desc.DepthOrArraySize,
+                     item.views.srvViews, item.views.uavViews, item.views.rtvViews, item.sizeDelta);
         }
     }
 }
@@ -1144,39 +1087,38 @@ void ResTrack_Dx12::LogRREmissivePassSnapshot(uint32_t renderWidth, uint32_t ren
         for (const auto& marker : gRRMarkerInventory)
             markers.push_back(marker);
     }
-    std::sort(markers.begin(), markers.end(), [](const auto& left, const auto& right) {
-        const bool leftEmissive = IsRREmissiveMarker(left.first);
-        const bool rightEmissive = IsRREmissiveMarker(right.first);
-        if (leftEmissive != rightEmissive)
-            return leftEmissive > rightEmissive;
-        if (left.second.lastFrame != right.second.lastFrame)
-            return left.second.lastFrame > right.second.lastFrame;
-        return left.second.count > right.second.count;
-    });
+    std::sort(markers.begin(), markers.end(),
+              [](const auto& left, const auto& right)
+              {
+                  const bool leftEmissive = IsRREmissiveMarker(left.first);
+                  const bool rightEmissive = IsRREmissiveMarker(right.first);
+                  if (leftEmissive != rightEmissive)
+                      return leftEmissive > rightEmissive;
+                  if (left.second.lastFrame != right.second.lastFrame)
+                      return left.second.lastFrame > right.second.lastFrame;
+                  return left.second.count > right.second.count;
+              });
 
     const size_t emissiveMarkerCount = static_cast<size_t>(std::count_if(
-        markers.begin(), markers.end(),
-        [](const auto& marker) { return IsRREmissiveMarker(marker.first); }));
-    const size_t associatedResourceCount = static_cast<size_t>(std::count_if(
-        candidates.begin(), candidates.end(),
-        [](const RRResourceCandidate& candidate) { return !candidate.lastWritePass.empty(); }));
-    const size_t emissiveResourceCount = static_cast<size_t>(std::count_if(
-        candidates.begin(), candidates.end(),
-        [](const RRResourceCandidate& candidate) { return candidate.emissivePassMatch; }));
+        markers.begin(), markers.end(), [](const auto& marker) { return IsRREmissiveMarker(marker.first); }));
+    const size_t associatedResourceCount =
+        static_cast<size_t>(std::count_if(candidates.begin(), candidates.end(), [](const RRResourceCandidate& candidate)
+                                          { return !candidate.lastWritePass.empty(); }));
+    const size_t emissiveResourceCount =
+        static_cast<size_t>(std::count_if(candidates.begin(), candidates.end(), [](const RRResourceCandidate& candidate)
+                                          { return candidate.emissivePassMatch; }));
 
-    LOG_INFO(
-        "[RR_EMISSIVE_PASS] snapshot: render={}x{}, markerNames={}, emissiveMarkerNames={}, "
-        "passAssociatedResources={}, emissivePassResources={}",
-        renderWidth, renderHeight, markers.size(), emissiveMarkerCount,
-        associatedResourceCount, emissiveResourceCount);
+    LOG_INFO("[RR_EMISSIVE_PASS] snapshot: render={}x{}, markerNames={}, emissiveMarkerNames={}, "
+             "passAssociatedResources={}, emissivePassResources={}",
+             renderWidth, renderHeight, markers.size(), emissiveMarkerCount, associatedResourceCount,
+             emissiveResourceCount);
 
     constexpr size_t kMarkerLogLimit = 128;
     for (size_t index = 0; index < std::min(markers.size(), kMarkerLogLimit); ++index)
     {
         const auto& [name, item] = markers[index];
-        LOG_INFO(
-            "[RR_EMISSIVE_PASS] marker[{}]: emissiveMatch={}, count={}, lastFrame={}, name='{}'",
-            index, IsRREmissiveMarker(name), item.count, item.lastFrame, name);
+        LOG_INFO("[RR_EMISSIVE_PASS] marker[{}]: emissiveMatch={}, count={}, lastFrame={}, name='{}'", index,
+                 IsRREmissiveMarker(name), item.count, item.lastFrame, name);
     }
 
     for (size_t index = 0; index < candidates.size(); ++index)
@@ -1185,17 +1127,13 @@ void ResTrack_Dx12::LogRREmissivePassSnapshot(uint32_t renderWidth, uint32_t ren
         if (candidate.lastWritePass.empty())
             continue;
         const auto formatName = magic_enum::enum_name(candidate.format);
-        LOG_INFO(
-            "[RR_EMISSIVE_PASS] resource[{}]: ptr={:X}, size={}x{}, format={}({}), "
-            "emissiveMatch={}, passWrites={}, writeAge={}, views=[SRV:{}, UAV:{}, RTV:{}], pass='{}'",
-            index, reinterpret_cast<uintptr_t>(candidate.resourceAddress),
-            candidate.width, candidate.height,
-            formatName.empty() ? "UNKNOWN" : formatName,
-            static_cast<uint32_t>(candidate.format), candidate.emissivePassMatch,
-            candidate.passWriteCount,
-            candidate.writeObserved ? std::to_string(candidate.writeAgeFrames) : "never",
-            candidate.srvViews, candidate.uavViews, candidate.rtvViews,
-            candidate.lastWritePass);
+        LOG_INFO("[RR_EMISSIVE_PASS] resource[{}]: ptr={:X}, size={}x{}, format={}({}), "
+                 "emissiveMatch={}, passWrites={}, writeAge={}, views=[SRV:{}, UAV:{}, RTV:{}], pass='{}'",
+                 index, reinterpret_cast<uintptr_t>(candidate.resourceAddress), candidate.width, candidate.height,
+                 formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(candidate.format),
+                 candidate.emissivePassMatch, candidate.passWriteCount,
+                 candidate.writeObserved ? std::to_string(candidate.writeAgeFrames) : "never", candidate.srvViews,
+                 candidate.uavViews, candidate.rtvViews, candidate.lastWritePass);
     }
 }
 
@@ -1203,16 +1141,15 @@ void ResTrack_Dx12::LogRRPsoProducerSnapshot(uint32_t renderWidth, uint32_t rend
 {
     RefreshRRResourceCandidates(renderWidth, renderHeight);
     const std::vector<RRResourceCandidate> candidates = GetRRResourceCandidates();
-    const size_t associated = static_cast<size_t>(std::count_if(
-        candidates.begin(), candidates.end(),
-        [](const RRResourceCandidate& candidate) { return candidate.producerPsoId != 0; }));
-    const size_t ambiguous = static_cast<size_t>(std::count_if(
-        candidates.begin(), candidates.end(),
-        [](const RRResourceCandidate& candidate) { return candidate.producerAmbiguous; }));
+    const size_t associated =
+        static_cast<size_t>(std::count_if(candidates.begin(), candidates.end(), [](const RRResourceCandidate& candidate)
+                                          { return candidate.producerPsoId != 0; }));
+    const size_t ambiguous =
+        static_cast<size_t>(std::count_if(candidates.begin(), candidates.end(), [](const RRResourceCandidate& candidate)
+                                          { return candidate.producerAmbiguous; }));
 
-    LOG_INFO(
-        "[RR_PSO_PRODUCER] snapshot: render={}x{}, resources={}, associated={}, ambiguous={}",
-        renderWidth, renderHeight, candidates.size(), associated, ambiguous);
+    LOG_INFO("[RR_PSO_PRODUCER] snapshot: render={}x{}, resources={}, associated={}, ambiguous={}", renderWidth,
+             renderHeight, candidates.size(), associated, ambiguous);
     for (size_t index = 0; index < candidates.size(); ++index)
     {
         const RRResourceCandidate& candidate = candidates[index];
@@ -1220,18 +1157,15 @@ void ResTrack_Dx12::LogRRPsoProducerSnapshot(uint32_t renderWidth, uint32_t rend
             continue;
 
         const auto formatName = magic_enum::enum_name(candidate.format);
-        LOG_INFO(
-            "[RR_PSO_PRODUCER] resource[{}]: ptr={:X}, format={}({}), producerId={}, "
-            "producerHash={:016X}, kind={}, hits={}, producerCount={}, ambiguous={}, "
-            "writeAge={}, views=[SRV:{}, UAV:{}, RTV:{}]",
-            index, reinterpret_cast<uintptr_t>(candidate.resourceAddress),
-            formatName.empty() ? "UNKNOWN" : formatName,
-            static_cast<uint32_t>(candidate.format), candidate.producerPsoId,
-            candidate.producerPsoHash, GetRRPsoKindName(candidate.producerKind),
-            candidate.producerHitCount, candidate.producerCount,
-            candidate.producerAmbiguous,
-            candidate.writeObserved ? std::to_string(candidate.writeAgeFrames) : "never",
-            candidate.srvViews, candidate.uavViews, candidate.rtvViews);
+        LOG_INFO("[RR_PSO_PRODUCER] resource[{}]: ptr={:X}, format={}({}), producerId={}, "
+                 "producerHash={:016X}, kind={}, hits={}, producerCount={}, ambiguous={}, "
+                 "writeAge={}, views=[SRV:{}, UAV:{}, RTV:{}]",
+                 index, reinterpret_cast<uintptr_t>(candidate.resourceAddress),
+                 formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(candidate.format),
+                 candidate.producerPsoId, candidate.producerPsoHash, GetRRPsoKindName(candidate.producerKind),
+                 candidate.producerHitCount, candidate.producerCount, candidate.producerAmbiguous,
+                 candidate.writeObserved ? std::to_string(candidate.writeAgeFrames) : "never", candidate.srvViews,
+                 candidate.uavViews, candidate.rtvViews);
     }
 }
 
@@ -1577,8 +1511,7 @@ void ResTrack_Dx12::hkCreateRenderTargetView(ID3D12Device* This, ID3D12Resource*
     o_CreateRenderTargetView(This, pResource, pDesc, DestDescriptor);
 
     const DXGI_FORMAT viewFormat = pDesc == nullptr ? DXGI_FORMAT_UNKNOWN : pDesc->Format;
-    const bool isTexture2D =
-        pDesc == nullptr || pDesc->ViewDimension == D3D12_RTV_DIMENSION_TEXTURE2D;
+    const bool isTexture2D = pDesc == nullptr || pDesc->ViewDimension == D3D12_RTV_DIMENSION_TEXTURE2D;
     if (isTexture2D)
         TrackRRResourceView(pResource, viewFormat, RTV);
 
@@ -1586,14 +1519,12 @@ void ResTrack_Dx12::hkCreateRenderTargetView(ID3D12Device* This, ID3D12Resource*
         return;
 
     const bool isHudResource = pResource != nullptr && pDesc != nullptr &&
-                               pDesc->ViewDimension == D3D12_RTV_DIMENSION_TEXTURE2D &&
-                               CheckResource(pResource);
+                               pDesc->ViewDimension == D3D12_RTV_DIMENSION_TEXTURE2D && CheckResource(pResource);
     // Retaining a candidate in the HUD descriptor cache is only useful while the
     // inspector is running, and RefreshRRResourceCandidates does not read that cache
     // anyway - its registry is fed directly by these hooks. Leaving this ungated
     // widens OptiFG's hudless candidate set for every user.
-    const bool isRRCandidate = isTexture2D &&
-                               gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
+    const bool isRRCandidate = isTexture2D && gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
                                IsRRScalarCandidateResource(pResource, viewFormat);
 
     if (!isHudResource && !isRRCandidate)
@@ -1650,8 +1581,7 @@ void ResTrack_Dx12::hkCreateShaderResourceView(ID3D12Device* This, ID3D12Resourc
     o_CreateShaderResourceView(This, pResource, pDesc, DestDescriptor);
 
     const DXGI_FORMAT viewFormat = pDesc == nullptr ? DXGI_FORMAT_UNKNOWN : pDesc->Format;
-    const bool isTexture2D =
-        pDesc == nullptr || pDesc->ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D;
+    const bool isTexture2D = pDesc == nullptr || pDesc->ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D;
     if (isTexture2D)
         TrackRRResourceView(pResource, viewFormat, SRV);
 
@@ -1659,14 +1589,12 @@ void ResTrack_Dx12::hkCreateShaderResourceView(ID3D12Device* This, ID3D12Resourc
         return;
 
     const bool isHudResource = pResource != nullptr && pDesc != nullptr &&
-                               pDesc->ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D &&
-                               CheckResource(pResource);
+                               pDesc->ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D && CheckResource(pResource);
     // Retaining a candidate in the HUD descriptor cache is only useful while the
     // inspector is running, and RefreshRRResourceCandidates does not read that cache
     // anyway - its registry is fed directly by these hooks. Leaving this ungated
     // widens OptiFG's hudless candidate set for every user.
-    const bool isRRCandidate = isTexture2D &&
-                               gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
+    const bool isRRCandidate = isTexture2D && gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
                                IsRRScalarCandidateResource(pResource, viewFormat);
 
     if (!isHudResource && !isRRCandidate)
@@ -1728,8 +1656,7 @@ void ResTrack_Dx12::hkCreateUnorderedAccessView(ID3D12Device* This, ID3D12Resour
     o_CreateUnorderedAccessView(This, pResource, pCounterResource, pDesc, DestDescriptor);
 
     const DXGI_FORMAT viewFormat = pDesc == nullptr ? DXGI_FORMAT_UNKNOWN : pDesc->Format;
-    const bool isTexture2D =
-        pDesc == nullptr || pDesc->ViewDimension == D3D12_UAV_DIMENSION_TEXTURE2D;
+    const bool isTexture2D = pDesc == nullptr || pDesc->ViewDimension == D3D12_UAV_DIMENSION_TEXTURE2D;
     if (isTexture2D)
         TrackRRResourceView(pResource, viewFormat, UAV);
 
@@ -1737,14 +1664,12 @@ void ResTrack_Dx12::hkCreateUnorderedAccessView(ID3D12Device* This, ID3D12Resour
         return;
 
     const bool isHudResource = pResource != nullptr && pDesc != nullptr &&
-                               pDesc->ViewDimension == D3D12_UAV_DIMENSION_TEXTURE2D &&
-                               CheckResource(pResource);
+                               pDesc->ViewDimension == D3D12_UAV_DIMENSION_TEXTURE2D && CheckResource(pResource);
     // Retaining a candidate in the HUD descriptor cache is only useful while the
     // inspector is running, and RefreshRRResourceCandidates does not read that cache
     // anyway - its registry is fed directly by these hooks. Leaving this ungated
     // widens OptiFG's hudless candidate set for every user.
-    const bool isRRCandidate = isTexture2D &&
-                               gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
+    const bool isRRCandidate = isTexture2D && gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
                                IsRRScalarCandidateResource(pResource, viewFormat);
 
     if (!isHudResource && !isRRCandidate)
@@ -2049,52 +1974,45 @@ ULONG hkPsoRelease(ID3D12PipelineState* This)
     return o_PsoRelease(This);
 }
 
-HRESULT ResTrack_Dx12::hkCreateGraphicsPipelineState(
-    ID3D12Device* This, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc,
-    REFIID riid, void** ppPipelineState)
+HRESULT ResTrack_Dx12::hkCreateGraphicsPipelineState(ID3D12Device* This,
+                                                     const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc, REFIID riid,
+                                                     void** ppPipelineState)
 {
     const HRESULT result = o_CreateGraphicsPipelineState(This, pDesc, riid, ppPipelineState);
-    if (SUCCEEDED(result) && pDesc != nullptr && ppPipelineState != nullptr &&
-        *ppPipelineState != nullptr &&
+    if (SUCCEEDED(result) && pDesc != nullptr && ppPipelineState != nullptr && *ppPipelineState != nullptr &&
         gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
     {
         std::scoped_lock psoLock(gRRPsoMutex);
-        EnsureRRPsoMetadata(static_cast<ID3D12PipelineState*>(*ppPipelineState),
-                            RRPsoKind::Graphics, HashRRGraphicsPipeline(*pDesc));
+        EnsureRRPsoMetadata(static_cast<ID3D12PipelineState*>(*ppPipelineState), RRPsoKind::Graphics,
+                            HashRRGraphicsPipeline(*pDesc));
     }
     return result;
 }
 
-HRESULT ResTrack_Dx12::hkCreateComputePipelineState(
-    ID3D12Device* This, const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc,
-    REFIID riid, void** ppPipelineState)
+HRESULT ResTrack_Dx12::hkCreateComputePipelineState(ID3D12Device* This, const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc,
+                                                    REFIID riid, void** ppPipelineState)
 {
     const HRESULT result = o_CreateComputePipelineState(This, pDesc, riid, ppPipelineState);
-    if (SUCCEEDED(result) && pDesc != nullptr && ppPipelineState != nullptr &&
-        *ppPipelineState != nullptr &&
+    if (SUCCEEDED(result) && pDesc != nullptr && ppPipelineState != nullptr && *ppPipelineState != nullptr &&
         gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
     {
         std::scoped_lock psoLock(gRRPsoMutex);
-        EnsureRRPsoMetadata(static_cast<ID3D12PipelineState*>(*ppPipelineState),
-                            RRPsoKind::Compute, HashRRComputePipeline(*pDesc));
+        EnsureRRPsoMetadata(static_cast<ID3D12PipelineState*>(*ppPipelineState), RRPsoKind::Compute,
+                            HashRRComputePipeline(*pDesc));
     }
     return result;
 }
 
-HRESULT ResTrack_Dx12::hkCreatePipelineState(
-    ID3D12Device2* This, const D3D12_PIPELINE_STATE_STREAM_DESC* pDesc,
-    REFIID riid, void** ppPipelineState)
+HRESULT ResTrack_Dx12::hkCreatePipelineState(ID3D12Device2* This, const D3D12_PIPELINE_STATE_STREAM_DESC* pDesc,
+                                             REFIID riid, void** ppPipelineState)
 {
     const HRESULT result = o_CreatePipelineState(This, pDesc, riid, ppPipelineState);
-    if (SUCCEEDED(result) && pDesc != nullptr && ppPipelineState != nullptr &&
-        *ppPipelineState != nullptr &&
+    if (SUCCEEDED(result) && pDesc != nullptr && ppPipelineState != nullptr && *ppPipelineState != nullptr &&
         gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
     {
-        const uint64_t hash = HashRRBytes(
-            pDesc->pPipelineStateSubobjectStream, pDesc->SizeInBytes);
+        const uint64_t hash = HashRRBytes(pDesc->pPipelineStateSubobjectStream, pDesc->SizeInBytes);
         std::scoped_lock psoLock(gRRPsoMutex);
-        EnsureRRPsoMetadata(static_cast<ID3D12PipelineState*>(*ppPipelineState),
-                            RRPsoKind::Stream, hash);
+        EnsureRRPsoMetadata(static_cast<ID3D12PipelineState*>(*ppPipelineState), RRPsoKind::Stream, hash);
     }
     return result;
 }
@@ -2133,20 +2051,17 @@ void ResTrack_Dx12::hkResourceBarrier(ID3D12GraphicsCommandList* This, UINT NumB
                 continue;
             }
 
-            if (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION ||
-                barrier.Transition.pResource == nullptr)
+            if (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || barrier.Transition.pResource == nullptr)
             {
                 continue;
             }
 
             ID3D12Resource* resource = barrier.Transition.pResource;
             const D3D12_RESOURCE_DESC desc = resource->GetDesc();
-            const bool wholeResource =
-                barrier.Transition.Subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ||
-                (desc.MipLevels == 1 && desc.DepthOrArraySize == 1);
+            const bool wholeResource = barrier.Transition.Subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ||
+                                       (desc.MipLevels == 1 && desc.DepthOrArraySize == 1);
 
-            if (!wholeResource ||
-                (barrier.Flags & D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY) != 0)
+            if (!wholeResource || (barrier.Flags & D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY) != 0)
             {
                 gRRResourceStates.erase(resource);
                 continue;
@@ -2157,8 +2072,7 @@ void ResTrack_Dx12::hkResourceBarrier(ID3D12GraphicsCommandList* This, UINT NumB
                 !IsRRResourceWritable(barrier.Transition.StateAfter))
             {
                 RecordRRResourceWrite(resource, passName, emissivePassMatch);
-                if ((barrier.Transition.StateBefore &
-                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS) != 0)
+                if ((barrier.Transition.StateBefore & D3D12_RESOURCE_STATE_UNORDERED_ACCESS) != 0)
                 {
                     computeWrites.push_back(resource);
                 }
@@ -2172,11 +2086,9 @@ void ResTrack_Dx12::hkResourceBarrier(ID3D12GraphicsCommandList* This, UINT NumB
     o_ResourceBarrier(This, NumBarriers, pBarriers);
 }
 
-void ResTrack_Dx12::hkSetPipelineState(ID3D12GraphicsCommandList* This,
-                                       ID3D12PipelineState* pPipelineState)
+void ResTrack_Dx12::hkSetPipelineState(ID3D12GraphicsCommandList* This, ID3D12PipelineState* pPipelineState)
 {
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
-        This != MenuOverlayDx::MenuCommandList())
+    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) && This != MenuOverlayDx::MenuCommandList())
     {
         std::scoped_lock psoLock(gRRPsoMutex);
         RRCommandListPsoState& state = gRRCommandListPsoStates[This];
@@ -2187,13 +2099,11 @@ void ResTrack_Dx12::hkSetPipelineState(ID3D12GraphicsCommandList* This,
     o_SetPipelineState(This, pPipelineState);
 }
 
-HRESULT ResTrack_Dx12::hkReset(ID3D12GraphicsCommandList* This,
-                               ID3D12CommandAllocator* pAllocator,
+HRESULT ResTrack_Dx12::hkReset(ID3D12GraphicsCommandList* This, ID3D12CommandAllocator* pAllocator,
                                ID3D12PipelineState* pInitialState)
 {
     const HRESULT result = o_Reset(This, pAllocator, pInitialState);
-    if (SUCCEEDED(result) &&
-        gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
+    if (SUCCEEDED(result) && gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
     {
         std::scoped_lock psoLock(gRRPsoMutex);
         RRCommandListPsoState& state = gRRCommandListPsoStates[This];
@@ -2272,38 +2182,39 @@ void ResTrack_Dx12::hkCopyDescriptors(ID3D12Device* This, UINT NumDestDescriptor
     if (!Config::Instance()->FGAlwaysTrackHeaps.value_or_default() && !IsHudFixActive())
     {
         const auto rangeContainsScalarCandidate =
-            [inc](UINT rangeCount, const D3D12_CPU_DESCRIPTOR_HANDLE* starts, const UINT* sizes) {
-                if (rangeCount == 0 || starts == nullptr)
-                    return false;
+            [inc](UINT rangeCount, const D3D12_CPU_DESCRIPTOR_HANDLE* starts, const UINT* sizes)
+        {
+            if (rangeCount == 0 || starts == nullptr)
+                return false;
 
-                for (UINT range = 0; range < rangeCount; ++range)
+            for (UINT range = 0; range < rangeCount; ++range)
+            {
+                const UINT descriptorCount = sizes == nullptr ? 1u : sizes[range];
+                auto heap = GetHeapByCpuHandle(starts[range].ptr);
+                if (heap == nullptr)
+                    continue;
+
+                for (UINT descriptor = 0; descriptor < descriptorCount; ++descriptor)
                 {
-                    const UINT descriptorCount = sizes == nullptr ? 1u : sizes[range];
-                    auto heap = GetHeapByCpuHandle(starts[range].ptr);
-                    if (heap == nullptr)
-                        continue;
-
-                    for (UINT descriptor = 0; descriptor < descriptorCount; ++descriptor)
+                    const SIZE_T handle = starts[range].ptr + static_cast<SIZE_T>(descriptor) * inc;
+                    ResourceInfo info {};
+                    if (heap->GetByCpuHandle(handle, info) && info.buffer != nullptr &&
+                        IsRRScalarCandidateFormat(info.format))
                     {
-                        const SIZE_T handle = starts[range].ptr + static_cast<SIZE_T>(descriptor) * inc;
-                        ResourceInfo info {};
-                        if (heap->GetByCpuHandle(handle, info) && info.buffer != nullptr &&
-                            IsRRScalarCandidateFormat(info.format))
-                        {
-                            return true;
-                        }
+                        return true;
                     }
                 }
+            }
 
-                return false;
-            };
+            return false;
+        };
 
         // Process a copy only when it propagates a scalar candidate or
         // overwrites a destination slot that previously contained one.
-        if (!rangeContainsScalarCandidate(
-                NumSrcDescriptorRanges, pSrcDescriptorRangeStarts, pSrcDescriptorRangeSizes) &&
-            !rangeContainsScalarCandidate(
-                NumDestDescriptorRanges, pDestDescriptorRangeStarts, pDestDescriptorRangeSizes))
+        if (!rangeContainsScalarCandidate(NumSrcDescriptorRanges, pSrcDescriptorRangeStarts,
+                                          pSrcDescriptorRangeSizes) &&
+            !rangeContainsScalarCandidate(NumDestDescriptorRanges, pDestDescriptorRangeStarts,
+                                          pDestDescriptorRangeSizes))
         {
             return;
         }
@@ -2559,8 +2470,7 @@ void ResTrack_Dx12::hkOMSetRenderTargets(ID3D12GraphicsCommandList* This, UINT N
                                          BOOL RTsSingleHandleToDescriptorRange,
                                          D3D12_CPU_DESCRIPTOR_HANDLE* pDepthStencilDescriptor)
 {
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
-        This != MenuOverlayDx::MenuCommandList())
+    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) && This != MenuOverlayDx::MenuCommandList())
     {
         std::vector<ID3D12Resource*> renderTargets;
         if (NumRenderTargetDescriptors > 0 && pRenderTargetDescriptors != nullptr)
@@ -2575,8 +2485,7 @@ void ResTrack_Dx12::hkOMSetRenderTargets(ID3D12GraphicsCommandList* This, UINT N
                     heap = GetHeapByCpuHandleRTV(pRenderTargetDescriptors[0].ptr);
                     if (heap != nullptr)
                     {
-                        handle = pRenderTargetDescriptors[0].ptr +
-                                 static_cast<SIZE_T>(index) * heap->increment;
+                        handle = pRenderTargetDescriptors[0].ptr + static_cast<SIZE_T>(index) * heap->increment;
                     }
                 }
                 else
@@ -2810,8 +2719,7 @@ void ResTrack_Dx12::hkDrawInstanced(ID3D12GraphicsCommandList* This, UINT Vertex
 {
     o_DrawInstanced(This, VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
 
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
-        This != MenuOverlayDx::MenuCommandList())
+    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) && This != MenuOverlayDx::MenuCommandList())
     {
         std::scoped_lock psoLock(gRRPsoMutex);
         RecordRRGraphicsOutputs(This);
@@ -2929,8 +2837,7 @@ void ResTrack_Dx12::hkDrawIndexedInstanced(ID3D12GraphicsCommandList* This, UINT
     o_DrawIndexedInstanced(This, IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation,
                            StartInstanceLocation);
 
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
-        This != MenuOverlayDx::MenuCommandList())
+    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) && This != MenuOverlayDx::MenuCommandList())
     {
         std::scoped_lock psoLock(gRRPsoMutex);
         RecordRRGraphicsOutputs(This);
@@ -3131,8 +3038,7 @@ void ResTrack_Dx12::hkDispatch(ID3D12GraphicsCommandList* This, UINT ThreadGroup
 {
     o_Dispatch(This, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
 
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
-        This != MenuOverlayDx::MenuCommandList())
+    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) && This != MenuOverlayDx::MenuCommandList())
     {
         std::scoped_lock psoLock(gRRPsoMutex);
         RRCommandListPsoState& state = gRRCommandListPsoStates[This];

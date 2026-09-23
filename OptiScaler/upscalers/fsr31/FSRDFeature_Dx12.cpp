@@ -43,26 +43,22 @@ static bool UseIndirectSignal(const CustomOptional<int>& setting)
     return std::clamp(setting.value_or_default(), 0, 1) == 1;
 }
 
-static ffxStructType_t GetDiffuseSignalDescType(
-    const Config& cfg, ffxStructType_t automaticSignalType)
+static ffxStructType_t GetDiffuseSignalDescType(const Config& cfg, ffxStructType_t automaticSignalType)
 {
     if (!cfg.FfxDenoiserDiffuseSignalType.has_value())
         return automaticSignalType;
 
-    return UseIndirectSignal(cfg.FfxDenoiserDiffuseSignalType)
-        ? FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_DIFFUSE
-        : FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_DIFFUSE;
+    return UseIndirectSignal(cfg.FfxDenoiserDiffuseSignalType) ? FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_DIFFUSE
+                                                               : FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_DIFFUSE;
 }
 
-static ffxStructType_t GetSpecularSignalDescType(
-    const Config& cfg, ffxStructType_t automaticSignalType)
+static ffxStructType_t GetSpecularSignalDescType(const Config& cfg, ffxStructType_t automaticSignalType)
 {
     if (!cfg.FfxDenoiserSpecularSignalType.has_value())
         return automaticSignalType;
 
-    return UseIndirectSignal(cfg.FfxDenoiserSpecularSignalType)
-        ? FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_SPECULAR
-        : FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_SPECULAR;
+    return UseIndirectSignal(cfg.FfxDenoiserSpecularSignalType) ? FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_SPECULAR
+                                                                : FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_SPECULAR;
 }
 
 static uint32_t GetSignalFlag(ffxStructType_t descriptorType)
@@ -110,10 +106,9 @@ static const char* GetSignalTypeName(ffxStructType_t descriptorType)
 class DenoiserOutputStateGuard
 {
   public:
-    DenoiserOutputStateGuard(
-        const std::unique_ptr<FSRDPreprocessor_Dx12>& preprocessor,
-        ID3D12GraphicsCommandList* commandList) :
-        _preprocessor(&preprocessor), _commandList(commandList)
+    DenoiserOutputStateGuard(const std::unique_ptr<FSRDPreprocessor_Dx12>& preprocessor,
+                             ID3D12GraphicsCommandList* commandList)
+        : _preprocessor(&preprocessor), _commandList(commandList)
     {
     }
 
@@ -139,10 +134,9 @@ class DenoiserOutputStateGuard
 class TitleInputStateGuard
 {
   public:
-    TitleInputStateGuard(
-        const std::unique_ptr<FSRDPreprocessor_Dx12>& preprocessor,
-        ID3D12GraphicsCommandList* commandList) :
-        _preprocessor(&preprocessor), _commandList(commandList)
+    TitleInputStateGuard(const std::unique_ptr<FSRDPreprocessor_Dx12>& preprocessor,
+                         ID3D12GraphicsCommandList* commandList)
+        : _preprocessor(&preprocessor), _commandList(commandList)
     {
     }
 
@@ -209,8 +203,7 @@ static bool TryGetLoggedResource(const NVSDK_NGX_Parameter& ngxParams, const cha
     return success;
 }
 
-static XMUINT2 GetSubrectBase(const NVSDK_NGX_Parameter& ngxParams,
-                              const char* xKey, const char* yKey)
+static XMUINT2 GetSubrectBase(const NVSDK_NGX_Parameter& ngxParams, const char* xKey, const char* yKey)
 {
     unsigned int x = 0;
     unsigned int y = 0;
@@ -219,24 +212,22 @@ static XMUINT2 GetSubrectBase(const NVSDK_NGX_Parameter& ngxParams,
     return { x, y };
 }
 
-static bool ValidateSourceExtent(const char* name, ID3D12Resource* resource,
-                                 const XMUINT2& base, uint32_t width, uint32_t height)
+static bool ValidateSourceExtent(const char* name, ID3D12Resource* resource, const XMUINT2& base, uint32_t width,
+                                 uint32_t height)
 {
     if (!resource)
         return false;
 
     const D3D12_RESOURCE_DESC desc = resource->GetDesc();
-    const bool valid = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-        desc.SampleDesc.Count == 1 && desc.DepthOrArraySize == 1 &&
-        uint64_t(base.x) + uint64_t(width) <= desc.Width &&
-        uint64_t(base.y) + uint64_t(height) <= desc.Height;
+    const bool valid = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.SampleDesc.Count == 1 &&
+                       desc.DepthOrArraySize == 1 && uint64_t(base.x) + uint64_t(width) <= desc.Width &&
+                       uint64_t(base.y) + uint64_t(height) <= desc.Height;
     if (!valid)
     {
-        LOG_ERROR(
-            "[RR_INPUT] {} does not cover requested Texture2D subrect: resource={}x{}, base=({}, {}), extent={}x{}, dimension={}, arrays={}, samples={}",
-            name, desc.Width, desc.Height, base.x, base.y, width, height,
-            static_cast<uint32_t>(desc.Dimension), desc.DepthOrArraySize,
-            desc.SampleDesc.Count);
+        LOG_ERROR("[RR_INPUT] {} does not cover requested Texture2D subrect: resource={}x{}, base=({}, {}), "
+                  "extent={}x{}, dimension={}, arrays={}, samples={}",
+                  name, desc.Width, desc.Height, base.x, base.y, width, height, static_cast<uint32_t>(desc.Dimension),
+                  desc.DepthOrArraySize, desc.SampleDesc.Count);
     }
 
     return valid;
@@ -284,8 +275,7 @@ static DepthResourceKind ClassifyDepthResource(ID3D12Resource* depth)
         break;
     }
 
-    if ((desc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
-                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)) != 0)
+    if ((desc.Flags & (D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)) != 0)
     {
         return DepthResourceKind::GameWritten;
     }
@@ -396,9 +386,8 @@ static void StoreHlslColumnVectorMatrix(XMFLOAT4X4& destination, const XMMATRIX&
  * @brief Creates an unjittered perspective projection in the interop layer's
  * column-vector convention. A zero far distance is treated as an infinite far plane.
  */
-static XMMATRIX CreateColumnVectorPerspectiveProjection(float verticalFov, float aspectRatio,
-                                                        float nearPlane, float farPlane,
-                                                        bool isRightHanded, bool isDepthInverted)
+static XMMATRIX CreateColumnVectorPerspectiveProjection(float verticalFov, float aspectRatio, float nearPlane,
+                                                        float farPlane, bool isRightHanded, bool isDepthInverted)
 {
     XMMATRIX rowVectorProjection = {};
 
@@ -410,11 +399,8 @@ static XMMATRIX CreateColumnVectorPerspectiveProjection(float verticalFov, float
         const float A = isDepthInverted ? 0.0f : W;
         const float B = isDepthInverted ? nearPlane : -nearPlane;
 
-        rowVectorProjection = XMMatrixSet(
-            xScale, 0.0f,   0.0f, 0.0f,
-            0.0f,   yScale, 0.0f, 0.0f,
-            0.0f,   0.0f,   A,    W,
-            0.0f,   0.0f,   B,    0.0f);
+        rowVectorProjection =
+            XMMatrixSet(xScale, 0.0f, 0.0f, 0.0f, 0.0f, yScale, 0.0f, 0.0f, 0.0f, 0.0f, A, W, 0.0f, 0.0f, B, 0.0f);
     }
     else
     {
@@ -422,9 +408,8 @@ static XMMATRIX CreateColumnVectorPerspectiveProjection(float verticalFov, float
         const float matrixNear = isDepthInverted ? farPlane : nearPlane;
         const float matrixFar = isDepthInverted ? nearPlane : farPlane;
 
-        rowVectorProjection = isRightHanded
-            ? XMMatrixPerspectiveFovRH(verticalFov, aspectRatio, matrixNear, matrixFar)
-            : XMMatrixPerspectiveFovLH(verticalFov, aspectRatio, matrixNear, matrixFar);
+        rowVectorProjection = isRightHanded ? XMMatrixPerspectiveFovRH(verticalFov, aspectRatio, matrixNear, matrixFar)
+                                            : XMMatrixPerspectiveFovLH(verticalFov, aspectRatio, matrixNear, matrixFar);
     }
 
     return XMMatrixTranspose(rowVectorProjection);
@@ -444,11 +429,10 @@ struct RequiredRRResource
 
 using RequiredRRResources = std::vector<RequiredRRResource>;
 
-static RequiredRRResources GetRequiredRRResources(
-    const ffxDispatchDescDenoiser& dispatchDesc,
-    const ffxDispatchDescDenoiserDirectDiffuse& directDiffuse,
-    const ffxDispatchDescDenoiserIndirectSpecular& indirectSpecular,
-    const ffxDispatchDescDenoiserAmbientOcclusion* ambientOcclusion)
+static RequiredRRResources GetRequiredRRResources(const ffxDispatchDescDenoiser& dispatchDesc,
+                                                  const ffxDispatchDescDenoiserDirectDiffuse& directDiffuse,
+                                                  const ffxDispatchDescDenoiserIndirectSpecular& indirectSpecular,
+                                                  const ffxDispatchDescDenoiserAmbientOcclusion* ambientOcclusion)
 {
     RequiredRRResources resources {
         { "LinearDepth", dispatchDesc.linearDepth, DXGI_FORMAT_R32_FLOAT },
@@ -464,10 +448,8 @@ static RequiredRRResources GetRequiredRRResources(
 
     if (ambientOcclusion)
     {
-        resources.push_back(
-            { "AmbientOcclusion.Input", ambientOcclusion->signal.input, DXGI_FORMAT_R8_UNORM });
-        resources.push_back(
-            { "AmbientOcclusion.Output", ambientOcclusion->signal.output, DXGI_FORMAT_R8_UNORM });
+        resources.push_back({ "AmbientOcclusion.Input", ambientOcclusion->signal.input, DXGI_FORMAT_R8_UNORM });
+        resources.push_back({ "AmbientOcclusion.Output", ambientOcclusion->signal.output, DXGI_FORMAT_R8_UNORM });
     }
 
     return resources;
@@ -496,15 +478,15 @@ static bool ValidateRequiredRRResources(const ffxDispatchDescDenoiser& dispatchD
 
         const D3D12_RESOURCE_DESC desc = resource->GetDesc();
 
-        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
-            desc.SampleDesc.Count != 1 || desc.DepthOrArraySize != 1 ||
-            desc.Width < dispatchDesc.renderSize.width ||
+        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count != 1 ||
+            desc.DepthOrArraySize != 1 || desc.Width < dispatchDesc.renderSize.width ||
             desc.Height < dispatchDesc.renderSize.height)
         {
-            LOG_ERROR("Required RR 1.2 resource {} has unsupported layout or insufficient coverage: dimension={}, arraySize={}, samples={}, size={}x{}; required coverage={}x{}",
-                      requirement.name, magic_enum::enum_name(desc.Dimension),
-                      desc.DepthOrArraySize, desc.SampleDesc.Count, desc.Width, desc.Height,
-                      dispatchDesc.renderSize.width, dispatchDesc.renderSize.height);
+            LOG_ERROR("Required RR 1.2 resource {} has unsupported layout or insufficient coverage: dimension={}, "
+                      "arraySize={}, samples={}, size={}x{}; required coverage={}x{}",
+                      requirement.name, magic_enum::enum_name(desc.Dimension), desc.DepthOrArraySize,
+                      desc.SampleDesc.Count, desc.Width, desc.Height, dispatchDesc.renderSize.width,
+                      dispatchDesc.renderSize.height);
             valid = false;
         }
 
@@ -512,9 +494,8 @@ static bool ValidateRequiredRRResources(const ffxDispatchDescDenoiser& dispatchD
 
         if (viewFormat != requirement.format)
         {
-            LOG_ERROR("Required RR 1.2 resource {} has incompatible format {}; expected {}",
-                      requirement.name, magic_enum::enum_name(viewFormat),
-                      magic_enum::enum_name(requirement.format));
+            LOG_ERROR("Required RR 1.2 resource {} has incompatible format {}; expected {}", requirement.name,
+                      magic_enum::enum_name(viewFormat), magic_enum::enum_name(requirement.format));
             valid = false;
         }
     }
@@ -527,29 +508,22 @@ static void LogRRDispatchSnapshot(const ffxDispatchDescDenoiser& dispatchDesc,
                                   const ffxDispatchDescDenoiserIndirectSpecular& indirectSpecular,
                                   const ffxDispatchDescDenoiserAmbientOcclusion* ambientOcclusion)
 {
-    ID3D12GraphicsCommandList* commandList =
-        static_cast<ID3D12GraphicsCommandList*>(dispatchDesc.commandList);
-    const D3D12_COMMAND_LIST_TYPE commandListType =
-        commandList ? commandList->GetType() : D3D12_COMMAND_LIST_TYPE(-1);
+    ID3D12GraphicsCommandList* commandList = static_cast<ID3D12GraphicsCommandList*>(dispatchDesc.commandList);
+    const D3D12_COMMAND_LIST_TYPE commandListType = commandList ? commandList->GetType() : D3D12_COMMAND_LIST_TYPE(-1);
 
-    LOG_INFO(
-        "[RR_DIAG] dispatch snapshot: frame={}, reset={}, render={}x{}, commandList={:X}, commandListType={}, "
-        "depthBounds=[{:.6f}, {:.6f}], mvScale=[{:.6f}, {:.6f}, {:.6f}], jitterPixels=[{:.6f}, {:.6f}], "
-        "cameraDelta=[{:.6f}, {:.6f}, {:.6f}], flags={:#x}",
-        dispatchDesc.frameIndex,
-        !!(dispatchDesc.flags & FFX_DENOISER_DISPATCH_RESET),
-        dispatchDesc.renderSize.width, dispatchDesc.renderSize.height,
-        reinterpret_cast<uintptr_t>(dispatchDesc.commandList),
-        magic_enum::enum_name(commandListType),
-        dispatchDesc.linearDepthBounds.min, dispatchDesc.linearDepthBounds.max,
-        dispatchDesc.motionVectorScale.x, dispatchDesc.motionVectorScale.y, dispatchDesc.motionVectorScale.z,
-        dispatchDesc.jitterOffsets.x, dispatchDesc.jitterOffsets.y,
-        dispatchDesc.cameraPositionDelta.x, dispatchDesc.cameraPositionDelta.y,
-        dispatchDesc.cameraPositionDelta.z, dispatchDesc.flags);
+    LOG_INFO("[RR_DIAG] dispatch snapshot: frame={}, reset={}, render={}x{}, commandList={:X}, commandListType={}, "
+             "depthBounds=[{:.6f}, {:.6f}], mvScale=[{:.6f}, {:.6f}, {:.6f}], jitterPixels=[{:.6f}, {:.6f}], "
+             "cameraDelta=[{:.6f}, {:.6f}, {:.6f}], flags={:#x}",
+             dispatchDesc.frameIndex, !!(dispatchDesc.flags & FFX_DENOISER_DISPATCH_RESET),
+             dispatchDesc.renderSize.width, dispatchDesc.renderSize.height,
+             reinterpret_cast<uintptr_t>(dispatchDesc.commandList), magic_enum::enum_name(commandListType),
+             dispatchDesc.linearDepthBounds.min, dispatchDesc.linearDepthBounds.max, dispatchDesc.motionVectorScale.x,
+             dispatchDesc.motionVectorScale.y, dispatchDesc.motionVectorScale.z, dispatchDesc.jitterOffsets.x,
+             dispatchDesc.jitterOffsets.y, dispatchDesc.cameraPositionDelta.x, dispatchDesc.cameraPositionDelta.y,
+             dispatchDesc.cameraPositionDelta.z, dispatchDesc.flags);
 
     std::string chain = std::format("head={:#x}", dispatchDesc.header.type);
-    for (const ffxDispatchDescHeader* signal = dispatchDesc.header.pNext;
-         signal != nullptr; signal = signal->pNext)
+    for (const ffxDispatchDescHeader* signal = dispatchDesc.header.pNext; signal != nullptr; signal = signal->pNext)
     {
         chain += std::format(" -> {}={:#x}", GetSignalTypeName(signal->type), signal->type);
     }
@@ -568,13 +542,11 @@ static void LogRRDispatchSnapshot(const ffxDispatchDescDenoiser& dispatchDesc,
         }
 
         const D3D12_RESOURCE_DESC desc = resource->GetDesc();
-        LOG_INFO(
-            "[RR_DIAG] resource {}: ptr={:X}, size={}x{}, format={}, dimension={}, mips={}, samples={}, "
-            "resourceFlags={:#x}, declaredFfxState={:#x}",
-            requirement.name, reinterpret_cast<uintptr_t>(resource),
-            desc.Width, desc.Height, magic_enum::enum_name(FSRD::GetViewFormat(desc.Format)),
-            magic_enum::enum_name(desc.Dimension), desc.MipLevels, desc.SampleDesc.Count,
-            static_cast<uint32_t>(desc.Flags), requirement.resource.state);
+        LOG_INFO("[RR_DIAG] resource {}: ptr={:X}, size={}x{}, format={}, dimension={}, mips={}, samples={}, "
+                 "resourceFlags={:#x}, declaredFfxState={:#x}",
+                 requirement.name, reinterpret_cast<uintptr_t>(resource), desc.Width, desc.Height,
+                 magic_enum::enum_name(FSRD::GetViewFormat(desc.Format)), magic_enum::enum_name(desc.Dimension),
+                 desc.MipLevels, desc.SampleDesc.Count, static_cast<uint32_t>(desc.Flags), requirement.resource.state);
     }
 }
 
@@ -602,29 +574,24 @@ static bool IsResponsivityMaskFormat(DXGI_FORMAT format)
 
 static bool IsDiffuseRayDirectionHitDistanceFormat(DXGI_FORMAT format)
 {
-    return format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
-           format == DXGI_FORMAT_R32G32B32A32_FLOAT;
+    return format == DXGI_FORMAT_R16G16B16A16_FLOAT || format == DXGI_FORMAT_R32G32B32A32_FLOAT;
 }
 
-static bool CoversSourceExtent(ID3D12Resource* resource, const XMUINT2& base,
-                               uint32_t width, uint32_t height)
+static bool CoversSourceExtent(ID3D12Resource* resource, const XMUINT2& base, uint32_t width, uint32_t height)
 {
     if (!resource)
         return false;
 
     const D3D12_RESOURCE_DESC desc = resource->GetDesc();
-    return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-        desc.SampleDesc.Count == 1 &&
-        uint64_t(base.x) + uint64_t(width) <= desc.Width &&
-        uint64_t(base.y) + uint64_t(height) <= desc.Height;
+    return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.SampleDesc.Count == 1 &&
+           uint64_t(base.x) + uint64_t(width) <= desc.Width && uint64_t(base.y) + uint64_t(height) <= desc.Height;
 }
 
 using SourceFormatValidator = bool (*)(DXGI_FORMAT);
 
-static bool ValidateReprojectionGuideSource(
-    const char* name, ID3D12Resource* resource, const XMUINT2& base,
-    uint32_t width, uint32_t height, SourceFormatValidator validateFormat,
-    const char* expectedFormat)
+static bool ValidateReprojectionGuideSource(const char* name, ID3D12Resource* resource, const XMUINT2& base,
+                                            uint32_t width, uint32_t height, SourceFormatValidator validateFormat,
+                                            const char* expectedFormat)
 {
     if (!resource)
         return false;
@@ -632,8 +599,8 @@ static bool ValidateReprojectionGuideSource(
     const DXGI_FORMAT viewFormat = FSRD::GetViewFormat(resource->GetDesc().Format);
     if (!validateFormat(viewFormat))
     {
-        LOG_ERROR("[RR_INPUT] {} has incompatible format {}; expected {}",
-                  name, magic_enum::enum_name(viewFormat), expectedFormat);
+        LOG_ERROR("[RR_INPUT] {} has incompatible format {}; expected {}", name, magic_enum::enum_name(viewFormat),
+                  expectedFormat);
         return false;
     }
 
@@ -646,8 +613,7 @@ static bool IsEmissiveProbeCompatible(ID3D12Resource* resource)
         return false;
 
     const D3D12_RESOURCE_DESC desc = resource->GetDesc();
-    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
-        desc.Width == 0 || desc.Height == 0 ||
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Height == 0 ||
         desc.SampleDesc.Count != 1 || desc.DepthOrArraySize != 1)
     {
         return false;
@@ -670,10 +636,7 @@ static bool IsEmissiveProbeCompatible(ID3D12Resource* resource)
     }
 }
 
-static void LogRREmissiveProbe(ID3D12Resource* resource,
-                               bool compatible,
-                               bool fromStreamline,
-                               uint32_t renderWidth,
+static void LogRREmissiveProbe(ID3D12Resource* resource, bool compatible, bool fromStreamline, uint32_t renderWidth,
                                uint32_t renderHeight)
 {
     if (!resource)
@@ -685,24 +648,18 @@ static void LogRREmissiveProbe(ID3D12Resource* resource,
 
     const D3D12_RESOURCE_DESC desc = resource->GetDesc();
     const DXGI_FORMAT viewFormat = FSRD::GetViewFormat(desc.Format);
-    LOG_INFO(
-        "[RR_DIAG] emissive probe: present, source={}, ptr={:X}, size={}x{}, format={}, dimension={}, mips={}, samples={}, "
-        "resourceFlags={:#x}, renderSize={}x{}, exactRenderSize={}, previewCompatible={}",
-        fromStreamline ? "Streamline.Emissive" : NVSDK_NGX_Parameter_GBuffer_Emissive,
-        reinterpret_cast<uintptr_t>(resource),
-        desc.Width, desc.Height, magic_enum::enum_name(viewFormat),
-        magic_enum::enum_name(desc.Dimension), desc.MipLevels, desc.SampleDesc.Count,
-        static_cast<uint32_t>(desc.Flags), renderWidth, renderHeight,
-        desc.Width == renderWidth && desc.Height == renderHeight,
-        compatible);
+    LOG_INFO("[RR_DIAG] emissive probe: present, source={}, ptr={:X}, size={}x{}, format={}, dimension={}, mips={}, "
+             "samples={}, "
+             "resourceFlags={:#x}, renderSize={}x{}, exactRenderSize={}, previewCompatible={}",
+             fromStreamline ? "Streamline.Emissive" : NVSDK_NGX_Parameter_GBuffer_Emissive,
+             reinterpret_cast<uintptr_t>(resource), desc.Width, desc.Height, magic_enum::enum_name(viewFormat),
+             magic_enum::enum_name(desc.Dimension), desc.MipLevels, desc.SampleDesc.Count,
+             static_cast<uint32_t>(desc.Flags), renderWidth, renderHeight,
+             desc.Width == renderWidth && desc.Height == renderHeight, compatible);
 }
 
-static void LogRRDiffuseHitDistanceProbe(const char* parameterName,
-                                         ID3D12Resource* resource,
-                                         uint32_t subrectBaseX,
-                                         uint32_t subrectBaseY,
-                                         uint32_t renderWidth,
-                                         uint32_t renderHeight,
+static void LogRRDiffuseHitDistanceProbe(const char* parameterName, ID3D12Resource* resource, uint32_t subrectBaseX,
+                                         uint32_t subrectBaseY, uint32_t renderWidth, uint32_t renderHeight,
                                          bool combinedDirectionAndDistance)
 {
     if (!resource)
@@ -713,30 +670,23 @@ static void LogRRDiffuseHitDistanceProbe(const char* parameterName,
 
     const D3D12_RESOURCE_DESC desc = resource->GetDesc();
     const DXGI_FORMAT viewFormat = FSRD::GetViewFormat(desc.Format);
-    const bool compatibleFormat = combinedDirectionAndDistance
-        ? IsDiffuseRayDirectionHitDistanceFormat(viewFormat)
-        : IsDiffuseHitDistanceFormat(viewFormat);
+    const bool compatibleFormat = combinedDirectionAndDistance ? IsDiffuseRayDirectionHitDistanceFormat(viewFormat)
+                                                               : IsDiffuseHitDistanceFormat(viewFormat);
     const uint64_t requiredWidth = static_cast<uint64_t>(subrectBaseX) + renderWidth;
     const uint64_t requiredHeight = static_cast<uint64_t>(subrectBaseY) + renderHeight;
-    const bool coversRenderArea =
-        desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-        desc.Width >= requiredWidth && desc.Height >= requiredHeight;
+    const bool coversRenderArea = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.Width >= requiredWidth &&
+                                  desc.Height >= requiredHeight;
 
-    LOG_INFO(
-        "[RR_DIAG] NGX probe {}: present, ptr={:X}, size={}x{}, format={}, dimension={}, mips={}, samples={}, "
-        "resourceFlags={:#x}, subrectBase=[{}, {}], expected={}, compatibleFormat={}, coversRenderArea={}",
-        parameterName, reinterpret_cast<uintptr_t>(resource),
-        desc.Width, desc.Height, magic_enum::enum_name(viewFormat),
-        magic_enum::enum_name(desc.Dimension), desc.MipLevels, desc.SampleDesc.Count,
-        static_cast<uint32_t>(desc.Flags), subrectBaseX, subrectBaseY,
-        combinedDirectionAndDistance ? "RGBA16_FLOAT/RGBA32_FLOAT (distance in A)"
-                                     : "R16_FLOAT/R32_FLOAT",
-        compatibleFormat, coversRenderArea);
+    LOG_INFO("[RR_DIAG] NGX probe {}: present, ptr={:X}, size={}x{}, format={}, dimension={}, mips={}, samples={}, "
+             "resourceFlags={:#x}, subrectBase=[{}, {}], expected={}, compatibleFormat={}, coversRenderArea={}",
+             parameterName, reinterpret_cast<uintptr_t>(resource), desc.Width, desc.Height,
+             magic_enum::enum_name(viewFormat), magic_enum::enum_name(desc.Dimension), desc.MipLevels,
+             desc.SampleDesc.Count, static_cast<uint32_t>(desc.Flags), subrectBaseX, subrectBaseY,
+             combinedDirectionAndDistance ? "RGBA16_FLOAT/RGBA32_FLOAT (distance in A)" : "R16_FLOAT/R32_FLOAT",
+             compatibleFormat, coversRenderArea);
 }
 
-static void LogRRGBufferIdentityProbe(const char* parameterName,
-                                      ID3D12Resource* resource,
-                                      uint32_t renderWidth,
+static void LogRRGBufferIdentityProbe(const char* parameterName, ID3D12Resource* resource, uint32_t renderWidth,
                                       uint32_t renderHeight)
 {
     if (!resource)
@@ -747,21 +697,19 @@ static void LogRRGBufferIdentityProbe(const char* parameterName,
 
     const D3D12_RESOURCE_DESC desc = resource->GetDesc();
     const DXGI_FORMAT viewFormat = FSRD::GetViewFormat(desc.Format);
-    const bool exactRenderSize =
-        desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-        desc.Width == renderWidth && desc.Height == renderHeight;
+    const bool exactRenderSize = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.Width == renderWidth &&
+                                 desc.Height == renderHeight;
 
     LOG_INFO(
         "[RR_DIAG] NGX identity probe {}: present, ptr={:X}, size={}x{}, format={}, dimension={}, mips={}, samples={}, "
-        "resourceFlags={:#x}, exactRenderSize={}; diagnostic-only, value encoding and temporal stability are unverified",
-        parameterName, reinterpret_cast<uintptr_t>(resource),
-        desc.Width, desc.Height, magic_enum::enum_name(viewFormat),
-        magic_enum::enum_name(desc.Dimension), desc.MipLevels, desc.SampleDesc.Count,
+        "resourceFlags={:#x}, exactRenderSize={}; diagnostic-only, value encoding and temporal stability are "
+        "unverified",
+        parameterName, reinterpret_cast<uintptr_t>(resource), desc.Width, desc.Height,
+        magic_enum::enum_name(viewFormat), magic_enum::enum_name(desc.Dimension), desc.MipLevels, desc.SampleDesc.Count,
         static_cast<uint32_t>(desc.Flags), exactRenderSize);
 }
 
-static void LogRRD3D12Messages(ID3D12InfoQueue* infoQueue, uint64_t firstMessage,
-                               std::string_view scope)
+static void LogRRD3D12Messages(ID3D12InfoQueue* infoQueue, uint64_t firstMessage, std::string_view scope)
 {
     if (!infoQueue)
         return;
@@ -792,10 +740,9 @@ static void LogRRD3D12Messages(ID3D12InfoQueue* infoQueue, uint64_t firstMessage
             continue;
 
         ++loggedMessages;
-        LOG_WARN("[RR_DIAG][D3D12][{}] severity={}, category={}, id={} ({}) - {}",
-                 scope, magic_enum::enum_name(message->Severity),
-                 magic_enum::enum_name(message->Category), static_cast<uint32_t>(message->ID),
-                 magic_enum::enum_name(message->ID), message->pDescription);
+        LOG_WARN("[RR_DIAG][D3D12][{}] severity={}, category={}, id={} ({}) - {}", scope,
+                 magic_enum::enum_name(message->Severity), magic_enum::enum_name(message->Category),
+                 static_cast<uint32_t>(message->ID), magic_enum::enum_name(message->ID), message->pDescription);
     }
 
     if (matchingMessages == 0)
@@ -804,8 +751,7 @@ static void LogRRD3D12Messages(ID3D12InfoQueue* infoQueue, uint64_t firstMessage
     }
     else if (matchingMessages > loggedMessages)
     {
-        LOG_WARN("[RR_DIAG][D3D12][{}] {} additional messages were omitted",
-                 scope, matchingMessages - loggedMessages);
+        LOG_WARN("[RR_DIAG][D3D12][{}] {} additional messages were omitted", scope, matchingMessages - loggedMessages);
     }
 }
 
@@ -862,9 +808,7 @@ static ViewPlanes GetViewPlanes(const DirectX::XMMATRIX& projection, bool isInve
         planes.nearPlane = std::abs(-B / A);
 
         // 1 = A/W + B/(f*W) -> f = B / (W - A)
-        planes.farPlane = planes.isInfinite
-            ? kInfiniteHorizon
-            : std::abs(B / (W - A));
+        planes.farPlane = planes.isInfinite ? kInfiniteHorizon : std::abs(B / (W - A));
     }
 
     // A finite branch that survived the ratio test can still be wildly off if the
@@ -888,8 +832,7 @@ static ViewPlanes GetViewPlanes(const DirectX::XMMATRIX& projection, bool isInve
     }
     else
     {
-        planes.farPlane = std::clamp(
-            planes.farPlane, planes.nearPlane * 2.0f, kInfiniteHorizon);
+        planes.farPlane = std::clamp(planes.farPlane, planes.nearPlane * 2.0f, kInfiniteHorizon);
     }
 
     return planes;
@@ -964,9 +907,9 @@ enum class DebugModes : uint64_t
 
     CompositionDebugOffset = 16u,
     CompositionDebug = (uint64_t) FSRDCompFlags::Debug << CompositionDebugOffset,
-    CompositionDebugMask = (uint64_t)FSRDCompFlags::DebugModeMask,
+    CompositionDebugMask = (uint64_t) FSRDCompFlags::DebugModeMask,
 
-    Correlation = (uint64_t)FSRDCompFlags::DebugCorrelation << CompositionDebugOffset,
+    Correlation = (uint64_t) FSRDCompFlags::DebugCorrelation << CompositionDebugOffset,
     SkipSignal = (uint64_t) FSRDCompFlags::DebugSkipSignal << CompositionDebugOffset,
     DenoiserOutput = (uint64_t) FSRDCompFlags::DebugDenoiserOutput << CompositionDebugOffset,
     DirectSpecular = (uint64_t) FSRDCompFlags::DebugDirectSpecular << CompositionDebugOffset,
@@ -980,15 +923,15 @@ enum class DebugModes : uint64_t
     HandoverWeight = (uint64_t) FSRDCompFlags::DebugHandoverWeight << CompositionDebugOffset,
 };
 
-static FSRDConvFlags GetConvDebugFlags(DebugModes mode) 
-{ 
+static FSRDConvFlags GetConvDebugFlags(DebugModes mode)
+{
     uint32_t flags = uint32_t(mode);
     flags &= uint32_t(DebugModes::ConversionDebugMask);
     return FSRDConvFlags(flags);
 }
 
-static FSRDCompFlags GetCompDebugFlags(DebugModes mode) 
-{ 
+static FSRDCompFlags GetCompDebugFlags(DebugModes mode)
+{
     uint64_t flags = uint64_t(mode);
     flags >>= uint64_t(DebugModes::CompositionDebugOffset);
     flags &= uint64_t(DebugModes::CompositionDebugMask);
@@ -996,8 +939,7 @@ static FSRDCompFlags GetCompDebugFlags(DebugModes mode)
 }
 
 using ModeNamePair = std::pair<const char*, uint64_t>;
-constexpr auto kDebugModes = std::to_array<ModeNamePair>(
-{
+constexpr auto kDebugModes = std::to_array<ModeNamePair>({
     { "None", (uint64_t) DebugModes::None },
     { "DebugOverview", (uint64_t) DebugModes::FfxDebug },
 
@@ -1064,7 +1006,7 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>(
     { "HandoverEffectiveWeight", (uint64_t) DebugModes::HandoverWeight },
 
     { "FloorColor", (uint64_t) DebugModes::FloorColor },
-    
+
     { "RawSpecularSignal", (uint64_t) DebugModes::RawIndirectSpecular },
     { "DenoisedDirectSpecSignal", (uint64_t) DebugModes::DirectSpecular },
     { "DenoisedIndirectSpecSignal", (uint64_t) DebugModes::IndirectSpecular },
@@ -1073,13 +1015,9 @@ constexpr auto kDebugModes = std::to_array<ModeNamePair>(
     { "DenoisedIndirectDiffuseSignal", (uint64_t) DebugModes::IndirectDiffuse },
 });
 
-FSRDFeatureDx12::FSRDFeatureDx12(uint32_t InHandleId, NVSDK_NGX_Parameter* InParameters) : 
-    FSR31FeatureDx12(InHandleId, InParameters),
-    IFeature(InHandleId, SetParameters(InParameters)),  
-    _pDenoiserCtx(nullptr), 
-    _denoiserCtxDesc({}),
-    _denoiserSettings({}), 
-    _convDesc({})
+FSRDFeatureDx12::FSRDFeatureDx12(uint32_t InHandleId, NVSDK_NGX_Parameter* InParameters)
+    : FSR31FeatureDx12(InHandleId, InParameters), IFeature(InHandleId, SetParameters(InParameters)),
+      _pDenoiserCtx(nullptr), _denoiserCtxDesc({}), _denoiserSettings({}), _convDesc({})
 {
     _moduleLoaded = FfxApiProxy::IsDenoiserApiImplementedDx12();
 
@@ -1103,11 +1041,10 @@ FSRDFeatureDx12::~FSRDFeatureDx12()
     DestroyDenoiserContext();
 }
 
-bool FSRDFeatureDx12::AcquireSLTaggedResource(
-    const RRD3D12SignalTagSnapshot& snapshot, RRTaggedSignal signal,
-    const char* sourceName, TagStatePolicy statePolicy,
-    Microsoft::WRL::ComPtr<ID3D12Resource>& resource,
-    RRTaggedResourceDiagnostic& diagnostic)
+bool FSRDFeatureDx12::AcquireSLTaggedResource(const RRD3D12SignalTagSnapshot& snapshot, RRTaggedSignal signal,
+                                              const char* sourceName, TagStatePolicy statePolicy,
+                                              Microsoft::WRL::ComPtr<ID3D12Resource>& resource,
+                                              RRTaggedResourceDiagnostic& diagnostic)
 {
     resource.Reset();
     diagnostic = {};
@@ -1124,9 +1061,9 @@ bool FSRDFeatureDx12::AcquireSLTaggedResource(
     if (diagnostic.lifecycle == sl::ResourceLifecycle::eOnlyValidNow &&
         diagnostic.source != RRTagSource::EvaluateFeature)
     {
-        LOG_DEBUG(
-            "[RR_INPUT] {} uses Streamline eOnlyValidNow outside the active EvaluateFeature call; refusing a cached binding",
-            sourceName);
+        LOG_DEBUG("[RR_INPUT] {} uses Streamline eOnlyValidNow outside the active EvaluateFeature call; refusing a "
+                  "cached binding",
+                  sourceName);
         return false;
     }
 
@@ -1134,9 +1071,7 @@ bool FSRDFeatureDx12::AcquireSLTaggedResource(
     const uint32_t activeViewport = snapshot.activeEvaluationViewport;
     if (activeFrame == UINT32_MAX || activeViewport == UINT32_MAX)
     {
-        LOG_DEBUG(
-            "[RR_INPUT] {} has no active Streamline frame/viewport; refusing an uncorrelated tag",
-            sourceName);
+        LOG_DEBUG("[RR_INPUT] {} has no active Streamline frame/viewport; refusing an uncorrelated tag", sourceName);
         return false;
     }
 
@@ -1154,9 +1089,8 @@ bool FSRDFeatureDx12::AcquireSLTaggedResource(
     {
         if (diagnostic.frameIndex != activeFrame)
         {
-            LOG_DEBUG(
-                "[RR_INPUT] {} belongs to Streamline frame {}, active frame is {}; rejecting stale tag",
-                sourceName, diagnostic.frameIndex, activeFrame);
+            LOG_DEBUG("[RR_INPUT] {} belongs to Streamline frame {}, active frame is {}; rejecting stale tag",
+                      sourceName, diagnostic.frameIndex, activeFrame);
             return false;
         }
     }
@@ -1167,21 +1101,19 @@ bool FSRDFeatureDx12::AcquireSLTaggedResource(
         // a later frame after its Present/Evaluate lifetime may have expired.
         const uint64_t lastUpdate = _lastConsumedSLTagUpdates[index];
         const uint32_t lastFrame = _lastConsumedSLTagFrames[index];
-        if (diagnostic.updateCount < lastUpdate ||
-            (diagnostic.updateCount == lastUpdate && lastFrame != activeFrame))
+        if (diagnostic.updateCount < lastUpdate || (diagnostic.updateCount == lastUpdate && lastFrame != activeFrame))
         {
-            LOG_DEBUG(
-                "[RR_INPUT] {} legacy tag update {} was already consumed in frame {}; rejecting stale reuse in frame {}",
-                sourceName, diagnostic.updateCount, lastFrame, activeFrame);
+            LOG_DEBUG("[RR_INPUT] {} legacy tag update {} was already consumed in frame {}; rejecting stale reuse in "
+                      "frame {}",
+                      sourceName, diagnostic.updateCount, lastFrame, activeFrame);
             return false;
         }
     }
 
     if (!entry.resource || entry.resource.Get() != diagnostic.resourceAddress)
     {
-        LOG_WARN(
-            "[RR_INPUT] {} atomic tag snapshot has no matching retained D3D12 resource (generation={})",
-            sourceName, snapshot.generation);
+        LOG_WARN("[RR_INPUT] {} atomic tag snapshot has no matching retained D3D12 resource (generation={})",
+                 sourceName, snapshot.generation);
         return false;
     }
 
@@ -1191,33 +1123,26 @@ bool FSRDFeatureDx12::AcquireSLTaggedResource(
         return false;
     }
 
-    const D3D12_RESOURCE_STATES declaredState =
-        static_cast<D3D12_RESOURCE_STATES>(diagnostic.state);
-    const bool declaredShaderReadable =
-        (declaredState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) != 0;
+    const D3D12_RESOURCE_STATES declaredState = static_cast<D3D12_RESOURCE_STATES>(diagnostic.state);
+    const bool declaredShaderReadable = (declaredState & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) != 0;
     const bool declaredStateAcceptable =
         statePolicy == TagStatePolicy::AnyDeclaredState || declaredShaderReadable ||
         (statePolicy == TagStatePolicy::AllowCommonTransition && diagnostic.state == 0u);
     if (!declaredStateAcceptable)
     {
-        LOG_WARN(
-            "[RR_INPUT] {} is not declared NON_PIXEL_SHADER_RESOURCE (state={:#x}); refusing an untracked external-state transition",
-            sourceName, diagnostic.state);
+        LOG_WARN("[RR_INPUT] {} is not declared NON_PIXEL_SHADER_RESOURCE (state={:#x}); refusing an untracked "
+                 "external-state transition",
+                 sourceName, diagnostic.state);
         return false;
     }
 
     const D3D12_RESOURCE_DESC desc = entry.resource->GetDesc();
-    if (desc.Width != diagnostic.nativeWidth ||
-        desc.Height != diagnostic.nativeHeight ||
-        desc.Format != diagnostic.format ||
-        desc.Dimension != diagnostic.dimension ||
-        desc.DepthOrArraySize != diagnostic.arraySize ||
-        desc.MipLevels != diagnostic.mipLevels ||
+    if (desc.Width != diagnostic.nativeWidth || desc.Height != diagnostic.nativeHeight ||
+        desc.Format != diagnostic.format || desc.Dimension != diagnostic.dimension ||
+        desc.DepthOrArraySize != diagnostic.arraySize || desc.MipLevels != diagnostic.mipLevels ||
         desc.SampleDesc.Count != diagnostic.sampleCount)
     {
-        LOG_WARN(
-            "[RR_INPUT] {} resource description no longer matches its atomic tag metadata",
-            sourceName);
+        LOG_WARN("[RR_INPUT] {} resource description no longer matches its atomic tag metadata", sourceName);
         return false;
     }
 
@@ -1240,45 +1165,38 @@ bool FSRDFeatureDx12::AcquireTaggedAmbientOcclusionResources(bool logFailure)
     _ambientOcclusionNoisy.Reset();
     _ambientOcclusionDenoised.Reset();
 
-    const RRD3D12SignalTagSnapshot snapshot =
-        StreamlineHooks::getRRD3D12SignalTagSnapshot();
+    const RRD3D12SignalTagSnapshot snapshot = StreamlineHooks::getRRD3D12SignalTagSnapshot();
     RRTaggedResourceDiagnostic noisy {};
     RRTaggedResourceDiagnostic denoised {};
     Microsoft::WRL::ComPtr<ID3D12Resource> noisyResource;
     Microsoft::WRL::ComPtr<ID3D12Resource> denoisedResource;
-    const bool acquiredNoisy = AcquireSLTaggedResource(
-        snapshot, RRTaggedSignal::AmbientOcclusionNoisy,
-        "Streamline.AmbientOcclusionNoisy", TagStatePolicy::RequireShaderRead,
-        noisyResource, noisy);
-    const bool acquiredDenoised = AcquireSLTaggedResource(
-        snapshot, RRTaggedSignal::AmbientOcclusionDenoised,
-        "Streamline.AmbientOcclusionDenoised", TagStatePolicy::AnyDeclaredState,
-        denoisedResource, denoised);
+    const bool acquiredNoisy =
+        AcquireSLTaggedResource(snapshot, RRTaggedSignal::AmbientOcclusionNoisy, "Streamline.AmbientOcclusionNoisy",
+                                TagStatePolicy::RequireShaderRead, noisyResource, noisy);
+    const bool acquiredDenoised = AcquireSLTaggedResource(snapshot, RRTaggedSignal::AmbientOcclusionDenoised,
+                                                          "Streamline.AmbientOcclusionDenoised",
+                                                          TagStatePolicy::AnyDeclaredState, denoisedResource, denoised);
 
-    const auto validMetadata = [this](const RRTaggedResourceDiagnostic& resource) {
-        return resource.observed && resource.present &&
-            resource.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-            resource.format == DXGI_FORMAT_R8_UNORM &&
-            resource.nativeWidth >= RenderWidth() && resource.nativeHeight >= RenderHeight() &&
-            resource.effectiveWidth == RenderWidth() && resource.effectiveHeight == RenderHeight() &&
-            resource.extentLeft == 0 && resource.extentTop == 0 &&
-            resource.mipLevels == 1 && resource.arraySize == 1 && resource.sampleCount == 1 &&
-            resource.state != UINT32_MAX;
+    const auto validMetadata = [this](const RRTaggedResourceDiagnostic& resource)
+    {
+        return resource.observed && resource.present && resource.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+               resource.format == DXGI_FORMAT_R8_UNORM && resource.nativeWidth >= RenderWidth() &&
+               resource.nativeHeight >= RenderHeight() && resource.effectiveWidth == RenderWidth() &&
+               resource.effectiveHeight == RenderHeight() && resource.extentLeft == 0 && resource.extentTop == 0 &&
+               resource.mipLevels == 1 && resource.arraySize == 1 && resource.sampleCount == 1 &&
+               resource.state != UINT32_MAX;
     };
 
-    if (!acquiredNoisy || !acquiredDenoised ||
-        !validMetadata(noisy) || !validMetadata(denoised))
+    if (!acquiredNoisy || !acquiredDenoised || !validMetadata(noisy) || !validMetadata(denoised))
     {
         if (logFailure)
         {
-            LOG_WARN(
-                "[RR_AO] tagged AO requested but the noisy/denoised pair is not dispatch-safe. "
-                "noisyPresent={}, denoisedPresent={}, noisy={}x{} {}, denoised={}x{} {}, noisyState={:#x}. "
-                "Required: full-resolution R8_UNORM Texture2D resources and a shader-readable noisy input.",
-                noisy.present, denoised.present,
-                noisy.effectiveWidth, noisy.effectiveHeight, magic_enum::enum_name(noisy.format),
-                denoised.effectiveWidth, denoised.effectiveHeight, magic_enum::enum_name(denoised.format),
-                noisy.state);
+            LOG_WARN("[RR_AO] tagged AO requested but the noisy/denoised pair is not dispatch-safe. "
+                     "noisyPresent={}, denoisedPresent={}, noisy={}x{} {}, denoised={}x{} {}, noisyState={:#x}. "
+                     "Required: full-resolution R8_UNORM Texture2D resources and a shader-readable noisy input.",
+                     noisy.present, denoised.present, noisy.effectiveWidth, noisy.effectiveHeight,
+                     magic_enum::enum_name(noisy.format), denoised.effectiveWidth, denoised.effectiveHeight,
+                     magic_enum::enum_name(denoised.format), noisy.state);
         }
         return false;
     }
@@ -1302,9 +1220,8 @@ bool FSRDFeatureDx12::PublishAmbientOcclusionOutput(ID3D12GraphicsCommandList* c
         return false;
     }
 
-    return FSRDConvShader->CopyAmbientOcclusionOutput(
-        commandList, _ambientOcclusionDenoised.Get(), _ambientOcclusionDenoisedState,
-        RenderWidth(), RenderHeight());
+    return FSRDConvShader->CopyAmbientOcclusionOutput(commandList, _ambientOcclusionDenoised.Get(),
+                                                      _ambientOcclusionDenoisedState, RenderWidth(), RenderHeight());
 }
 
 bool FSRDFeatureDx12::s_ngxDepthTypeSeen = false;
@@ -1341,8 +1258,7 @@ bool FSRDFeatureDx12::InitFSR3(const NVSDK_NGX_Parameter* InParameters)
             _ngxReportedHWDepth = s_ngxReportedHWDepth;
             LOG_INFO("[RR_INPUT] {} absent on this creation; reusing the {} type this "
                      "title declared earlier",
-                     NVSDK_NGX_Parameter_Use_HW_Depth,
-                     s_ngxReportedHWDepth ? "hardware" : "linear");
+                     NVSDK_NGX_Parameter_Use_HW_Depth, s_ngxReportedHWDepth ? "hardware" : "linear");
         }
         else
         {
@@ -1354,12 +1270,11 @@ bool FSRDFeatureDx12::InitFSR3(const NVSDK_NGX_Parameter* InParameters)
             // depth debug view goes black. Warn loudly and name the override.
             _hasNGXDepthType = false;
             _ngxReportedHWDepth = false;
-            LOG_WARN(
-                "[RR_INPUT] title did not publish {}; the depth type will be inferred from the "
-                "depth resource, falling back to LINEAR if its format is ambiguous. If the "
-                "linear-depth debug view is black or geometry-dependent behaviour looks wrong, "
-                "set [FSR-RR] HardwareDepth=true in OptiScaler.ini or use Depth Input in the menu.",
-                NVSDK_NGX_Parameter_Use_HW_Depth);
+            LOG_WARN("[RR_INPUT] title did not publish {}; the depth type will be inferred from the "
+                     "depth resource, falling back to LINEAR if its format is ambiguous. If the "
+                     "linear-depth debug view is black or geometry-dependent behaviour looks wrong, "
+                     "set [FSR-RR] HardwareDepth=true in OptiScaler.ini or use Depth Input in the menu.",
+                     NVSDK_NGX_Parameter_Use_HW_Depth);
         }
         _isHWDepth = _ngxReportedHWDepth;
 
@@ -1373,12 +1288,12 @@ bool FSRDFeatureDx12::InitFSR3(const NVSDK_NGX_Parameter* InParameters)
                 LOG_WARN("Unknown DLSSD roughness mode {}; deferring source selection", value);
         }
 
-        const char* roughnessSource = _roughnessSource == RoughnessSource::Packed
-            ? "packed"
-            : (_roughnessSource == RoughnessSource::Separate ? "separate" : "undetermined");
+        const char* roughnessSource =
+            _roughnessSource == RoughnessSource::Packed
+                ? "packed"
+                : (_roughnessSource == RoughnessSource::Separate ? "separate" : "undetermined");
         LOG_INFO("DLSSD Flags HWDepth: {} (NGX reported: {}) - RoughnessSource: {}", _isHWDepth,
-                 _hasNGXDepthType ? (_ngxReportedHWDepth ? "hardware" : "linear") : "absent",
-                 roughnessSource);
+                 _hasNGXDepthType ? (_ngxReportedHWDepth ? "hardware" : "linear") : "absent", roughnessSource);
 
         _autoSpecularSignalDescType = FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_SPECULAR;
         _autoSpecularSignalResolved = false;
@@ -1393,11 +1308,11 @@ bool FSRDFeatureDx12::InitFSR3(const NVSDK_NGX_Parameter* InParameters)
         SetInit(true);
         return true;
     }
- 
+
     return false;
 }
 
-bool FSRDFeatureDx12::CreateDenoiserContext() 
+bool FSRDFeatureDx12::CreateDenoiserContext()
 {
     ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
     auto& state = State::Instance();
@@ -1409,28 +1324,25 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
     InvalidateDenoiserHistory();
 
     const int requestedDenoiserIndex = cfg.FfxDenoiserIndex.value_or_default();
-    const size_t denoiserIndex = std::clamp<size_t>(
-        requestedDenoiserIndex < 0 ? 0u : static_cast<size_t>(requestedDenoiserIndex),
-        0u, state.ffxDenoiserVersionIds.size() - 1u);
+    const size_t denoiserIndex =
+        std::clamp<size_t>(requestedDenoiserIndex < 0 ? 0u : static_cast<size_t>(requestedDenoiserIndex), 0u,
+                           state.ffxDenoiserVersionIds.size() - 1u);
 
     if (denoiserIndex != static_cast<size_t>(std::max(requestedDenoiserIndex, 0)))
     {
-        LOG_WARN("Configured RR provider index {} is unavailable; using provider index {}",
-                 requestedDenoiserIndex, denoiserIndex);
+        LOG_WARN("Configured RR provider index {} is unavailable; using provider index {}", requestedDenoiserIndex,
+                 denoiserIndex);
     }
 
-    const char* providerName = state.ffxDenoiserVersionNames[denoiserIndex]
-        ? state.ffxDenoiserVersionNames[denoiserIndex]
-        : "<unnamed>";
+    const char* providerName =
+        state.ffxDenoiserVersionNames[denoiserIndex] ? state.ffxDenoiserVersionNames[denoiserIndex] : "<unnamed>";
 
     // Parse the denoiser provider version into this instance's own field; the
     // SR upscaler version reported by Version() must stay untouched.
     _denoiserVersion.parse_version(providerName);
 
-    _diffuseSignalDescType = GetDiffuseSignalDescType(
-        cfg, _autoDiffuseSignalDescType);
-    _specularSignalDescType = GetSpecularSignalDescType(
-        cfg, _autoSpecularSignalDescType);
+    _diffuseSignalDescType = GetDiffuseSignalDescType(cfg, _autoDiffuseSignalDescType);
+    _specularSignalDescType = GetSpecularSignalDescType(cfg, _autoSpecularSignalDescType);
     // Single-signal mode: a disabled signal is neither dispatched nor declared at
     // context creation. Both disabled is a configuration error - fall back to both.
     _denoiseDiffuse = cfg.FfxDenoiserDenoiseDiffuse.value_or_default();
@@ -1443,8 +1355,7 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
         _denoiseSpecular = true;
     }
     _ambientOcclusionEnabled =
-        cfg.FfxDenoiserTaggedAmbientOcclusion.value_or_default() &&
-        AcquireTaggedAmbientOcclusionResources(true);
+        cfg.FfxDenoiserTaggedAmbientOcclusion.value_or_default() && AcquireTaggedAmbientOcclusionResources(true);
     // RR 1.2 supports specular occlusion, and the preprocessor reserves an R8 output for it,
     // but Streamline exposes no semantic SO tag. Keep it source-gated until a real input exists.
     _specularOcclusionEnabled = false;
@@ -1459,11 +1370,8 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
     if (_ambientOcclusionEnabled)
         selectedSignalFlags |= FFX_DENOISER_SIGNAL_AMBIENT_OCCLUSION;
 
-    ffxOverrideVersion vidOverride = 
-    {
-        .header = { .type = FFX_API_DESC_TYPE_OVERRIDE_VERSION },
-        .versionId = state.ffxDenoiserVersionIds[denoiserIndex]
-    };
+    ffxOverrideVersion vidOverride = { .header = { .type = FFX_API_DESC_TYPE_OVERRIDE_VERSION },
+                                       .versionId = state.ffxDenoiserVersionIds[denoiserIndex] };
     // Create context
     // Backend desc
     ffxCreateBackendDX12Desc backendDesc = 
@@ -1474,7 +1382,7 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
             .pNext = &vidOverride.header // Chain override into backend desc
         },
         .device = Device
-    };    
+    };
     // Chain: ContextDesc -> BackendDesc -> OverrideVersion.
     // DLSS-RR exposes generic diffuse/specular lighting, while RR 1.2 requires
     // direct/indirect classification. The selected approximation is configurable.
@@ -1490,24 +1398,16 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
     const auto ceilingFor = [](uint32_t extent)
     { return (extent + kRenderCeilingAlignment - 1) / kRenderCeilingAlignment * kRenderCeilingAlignment; };
 
-    const uint32_t maxRenderWidth = std::max(
-        _denoiserCtxDesc.maxRenderSize.width, ceilingFor(RenderWidth()));
-    const uint32_t maxRenderHeight = std::max(
-        _denoiserCtxDesc.maxRenderSize.height, ceilingFor(RenderHeight()));
-    _denoiserCtxDesc = 
-    {
-        .header = 
-        { 
-            .type = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER,
-            // Chain backend desc into context desc
-            .pNext = &backendDesc.header
-        },
-        .version = FFX_DENOISER_VERSION,
-        .maxRenderSize = { maxRenderWidth, maxRenderHeight },
-        .signalFlags = selectedSignalFlags,
-        .checkerboardSignalFlags = FFX_DENOISER_SIGNAL_NONE,
-        .flags = 0
-    };
+    const uint32_t maxRenderWidth = std::max(_denoiserCtxDesc.maxRenderSize.width, ceilingFor(RenderWidth()));
+    const uint32_t maxRenderHeight = std::max(_denoiserCtxDesc.maxRenderSize.height, ceilingFor(RenderHeight()));
+    _denoiserCtxDesc = { .header = { .type = FFX_API_CREATE_CONTEXT_DESC_TYPE_DENOISER,
+                                     // Chain backend desc into context desc
+                                     .pNext = &backendDesc.header },
+                         .version = FFX_DENOISER_VERSION,
+                         .maxRenderSize = { maxRenderWidth, maxRenderHeight },
+                         .signalFlags = selectedSignalFlags,
+                         .checkerboardSignalFlags = FFX_DENOISER_SIGNAL_NONE,
+                         .flags = 0 };
 
     if (cfg.FfxDenoiserInternalDebugViews.value_or_default())
     {
@@ -1520,24 +1420,20 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
     _denoiserCtxDesc.flags |= FFX_DENOISER_ENABLE_DEBUGGING | FFX_DENOISER_ENABLE_VALIDATION;
 #endif
 
-    LOG_INFO(
-        "[RR_DIAG] creating context: providerIndex={}, providerName='{}' ({}.{}.{}), providerId={:#x}, "
-        "api={}.{}.{}, maxRenderSize={}x{}, signalFlags={:#x}, checkerboardFlags={:#x}, createFlags={:#x}",
-        denoiserIndex, providerName, _denoiserVersion.major, _denoiserVersion.minor,
-        _denoiserVersion.patch, state.ffxDenoiserVersionIds[denoiserIndex],
-        FFX_DENOISER_VERSION_MAJOR, FFX_DENOISER_VERSION_MINOR, FFX_DENOISER_VERSION_PATCH,
-        _denoiserCtxDesc.maxRenderSize.width, _denoiserCtxDesc.maxRenderSize.height,
-        _denoiserCtxDesc.signalFlags, _denoiserCtxDesc.checkerboardSignalFlags,
-        _denoiserCtxDesc.flags);
+    LOG_INFO("[RR_DIAG] creating context: providerIndex={}, providerName='{}' ({}.{}.{}), providerId={:#x}, "
+             "api={}.{}.{}, maxRenderSize={}x{}, signalFlags={:#x}, checkerboardFlags={:#x}, createFlags={:#x}",
+             denoiserIndex, providerName, _denoiserVersion.major, _denoiserVersion.minor, _denoiserVersion.patch,
+             state.ffxDenoiserVersionIds[denoiserIndex], FFX_DENOISER_VERSION_MAJOR, FFX_DENOISER_VERSION_MINOR,
+             FFX_DENOISER_VERSION_PATCH, _denoiserCtxDesc.maxRenderSize.width, _denoiserCtxDesc.maxRenderSize.height,
+             _denoiserCtxDesc.signalFlags, _denoiserCtxDesc.checkerboardSignalFlags, _denoiserCtxDesc.flags);
     LOG_INFO("[RR_DIAG] signal classification: diffuse={}, specular={}, ambientOcclusion={}, "
              "specularOcclusion={} (no semantic source)",
              GetSignalTypeName(_diffuseSignalDescType), GetSignalTypeName(_specularSignalDescType),
              _ambientOcclusionEnabled, _specularOcclusionEnabled);
-    spdlog::info(L"" __FUNCTIONW__ L" [RR_DIAG] denoiser module: {}",
-                 FfxApiProxy::Dx12Module_Denoiser_Path());
+    spdlog::info(L"" __FUNCTIONW__ L" [RR_DIAG] denoiser module: {}", FfxApiProxy::Dx12Module_Denoiser_Path());
 
     // Create the denoiser context
-    {   
+    {
         ScopedSkipHeapCapture skipHeapCapture {};
         auto ret = FfxApiProxy::D3D12_CreateContext(&_pDenoiserCtx, &_denoiserCtxDesc.header, NULL);
 
@@ -1547,8 +1443,7 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
             return false;
         }
 
-        LOG_INFO("[RR_DIAG] context creation succeeded: context={:X}",
-                 reinterpret_cast<uintptr_t>(_pDenoiserCtx));
+        LOG_INFO("[RR_DIAG] context creation succeeded: context={:X}", reinterpret_cast<uintptr_t>(_pDenoiserCtx));
     }
 
     // Query default settings
@@ -1579,8 +1474,7 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
              _denoiserSettings.m_GaussianKernelRelaxation, cfg.FfxDenoiserGaussKernRelax.value_or_default());
 
     // Create DLSS-RR to FSR-RR input converter
-    auto newConverter =
-        std::make_unique<FSRDPreprocessor_Dx12>("FSRD Converter", Device);
+    auto newConverter = std::make_unique<FSRDPreprocessor_Dx12>("FSRD Converter", Device);
 
     if (!newConverter->IsInit())
     {
@@ -1589,9 +1483,7 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
         return false;
     }
 
-    if (!newConverter->SetMaxRenderSize(
-            _denoiserCtxDesc.maxRenderSize.width,
-            _denoiserCtxDesc.maxRenderSize.height))
+    if (!newConverter->SetMaxRenderSize(_denoiserCtxDesc.maxRenderSize.width, _denoiserCtxDesc.maxRenderSize.height))
     {
         LOG_ERROR("Failed to allocate the FSR-RR input converter");
         DestroyDenoiserContext();
@@ -1608,26 +1500,22 @@ bool FSRDFeatureDx12::CreateDenoiserContext()
     return true;
 }
 
-bool FSRDFeatureDx12::QueryDenoiserVersions() 
+bool FSRDFeatureDx12::QueryDenoiserVersions()
 {
     ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
     auto& state = State::Instance();
 
     // Get version count
     uint64_t versionCount = 0;
-    ffxQueryDescGetVersions queryVersionsDesc = 
-    { 
-        .header = { .type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS },
-        .createDescType = FFX_API_EFFECT_ID_DENOISER,
-        .device = Device,
-        .outputCount = &versionCount
-    };
+    ffxQueryDescGetVersions queryVersionsDesc = { .header = { .type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS },
+                                                  .createDescType = FFX_API_EFFECT_ID_DENOISER,
+                                                  .device = Device,
+                                                  .outputCount = &versionCount };
     const ffxReturnCode_t countResult = FfxApiProxy::D3D12_Query(nullptr, &queryVersionsDesc.header);
 
     if (countResult != FFX_API_RETURN_OK)
     {
-        LOG_ERROR("Failed to query RR provider count: {}",
-                  FfxApiProxy::ReturnCodeToString(countResult));
+        LOG_ERROR("Failed to query RR provider count: {}", FfxApiProxy::ReturnCodeToString(countResult));
         return false;
     }
 
@@ -1659,8 +1547,7 @@ bool FSRDFeatureDx12::QueryDenoiserVersions()
     const ffxReturnCode_t versionsResult = FfxApiProxy::D3D12_Query(nullptr, &queryVersionsDesc.header);
     if (versionsResult != FFX_API_RETURN_OK)
     {
-        LOG_ERROR("Failed to query RR providers: {}",
-                  FfxApiProxy::ReturnCodeToString(versionsResult));
+        LOG_ERROR("Failed to query RR providers: {}", FfxApiProxy::ReturnCodeToString(versionsResult));
         return false;
     }
 
@@ -1674,7 +1561,7 @@ bool FSRDFeatureDx12::QueryDenoiserVersions()
     return true;
 }
 
-void FSRDFeatureDx12::DestroyDenoiserContext() 
+void FSRDFeatureDx12::DestroyDenoiserContext()
 {
     if (_pDenoiserCtx != nullptr)
     {
@@ -1687,8 +1574,8 @@ void FSRDFeatureDx12::DestroyDenoiserContext()
         }
         else
         {
-            LOG_ERROR("[RR_DIAG] context destruction failed: context={:X}, result={}",
-                      contextAddress, FfxApiProxy::ReturnCodeToString(result));
+            LOG_ERROR("[RR_DIAG] context destruction failed: context={:X}, result={}", contextAddress,
+                      FfxApiProxy::ReturnCodeToString(result));
         }
     }
 
@@ -1712,22 +1599,20 @@ bool FSRDFeatureDx12::UpdateSize()
     // earlier submitted command lists may still reference them.
     if (renderWidth > maxWidth || renderHeight > maxHeight)
     {
-        LOG_ERROR(
-            "[RR_DIAG] render size {}x{} exceeds the FSR-RR creation ceiling {}x{}; requesting feature recreation instead of releasing in-flight resources",
-            renderWidth, renderHeight, maxWidth, maxHeight);
+        LOG_ERROR("[RR_DIAG] render size {}x{} exceeds the FSR-RR creation ceiling {}x{}; requesting feature "
+                  "recreation instead of releasing in-flight resources",
+                  renderWidth, renderHeight, maxWidth, maxHeight);
         InvalidateDenoiserHistory();
         State::Instance().changeBackend[Handle()->Id] = true;
         return false;
     }
 
     if (_lastDenoiserRenderWidth != 0 &&
-        (_lastDenoiserRenderWidth != renderWidth ||
-         _lastDenoiserRenderHeight != renderHeight))
+        (_lastDenoiserRenderWidth != renderWidth || _lastDenoiserRenderHeight != renderHeight))
     {
-        LOG_INFO(
-            "[RR_DIAG] logical render size changed within the allocation ceiling: {}x{} -> {}x{}; resetting temporal history without recreating resources",
-            _lastDenoiserRenderWidth, _lastDenoiserRenderHeight,
-            renderWidth, renderHeight);
+        LOG_INFO("[RR_DIAG] logical render size changed within the allocation ceiling: {}x{} -> {}x{}; resetting "
+                 "temporal history without recreating resources",
+                 _lastDenoiserRenderWidth, _lastDenoiserRenderHeight, renderWidth, renderHeight);
         InvalidateDenoiserHistory();
     }
 
@@ -1737,7 +1622,7 @@ bool FSRDFeatureDx12::UpdateSize()
     return true;
 }
 
-bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) 
+bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
 {
     LOG_FUNC();
 
@@ -1778,19 +1663,17 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     TitleInputStateGuard titleInputStateGuard(FSRDConvShader, InCommandList);
 
     const auto dbgMode = static_cast<DebugModes>(cfg.FfxDenoiserDebugMode.value_or_default());
-    const bool isDebugVis = (uint32_t)dbgMode & (uint32_t) DebugModes::ConversionDebug;
-    const bool isDebugComp = ((uint64_t)dbgMode & (uint64_t)DebugModes::CompositionDebug);
+    const bool isDebugVis = (uint32_t) dbgMode & (uint32_t) DebugModes::ConversionDebug;
+    const bool isDebugComp = ((uint64_t) dbgMode & (uint64_t) DebugModes::CompositionDebug);
     const bool isFfxDebug = dbgMode == DebugModes::FfxDebug;
     const bool isAmbientOcclusionDebug =
-        dbgMode == DebugModes::AmbientOcclusionInput ||
-        dbgMode == DebugModes::AmbientOcclusionOutput;
+        dbgMode == DebugModes::AmbientOcclusionInput || dbgMode == DebugModes::AmbientOcclusionOutput;
     const bool hasAnyDebug = (dbgMode != DebugModes::None);
     _convDesc.FrameIndex = static_cast<uint64_t>(_frameCount);
 
     // Denoise is bypassed if we are debugging something OTHER than the final outputs
-    const bool isDenoiseBypassed = !isFfxDebug && !isDebugComp &&
-        hasAnyDebug && !isAmbientOcclusionDebug &&
-        dbgMode != DebugModes::DenoiserOutput && dbgMode != DebugModes::UpscalerBypass;
+    const bool isDenoiseBypassed = !isFfxDebug && !isDebugComp && hasAnyDebug && !isAmbientOcclusionDebug &&
+                                   dbgMode != DebugModes::DenoiserOutput && dbgMode != DebugModes::UpscalerBypass;
 
     // Upscale is bypassed if we are in a debug mode that isn't the DenoiserBypass (final raw)
     const bool isUpscaleBypassed = hasAnyDebug && dbgMode != DebugModes::DenoiserBypass;
@@ -1824,10 +1707,10 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     ffxDispatchDescDenoiser denoiserDesc = {};
     bool isDenoiserReady = false;
 
-    // Pull configuration and input buffers for DLSS-RR from the param table, convert and 
+    // Pull configuration and input buffers for DLSS-RR from the param table, convert and
     // repack input buffers into intermediate FSR-RR input buffers, and configure descriptors.
-    if (!PrepareDenoiserInput(InCommandList, *InParameters, denoiserDesc, ambientOcclusion,
-                              directDiffuse, indirectSpecular))
+    if (!PrepareDenoiserInput(InCommandList, *InParameters, denoiserDesc, ambientOcclusion, directDiffuse,
+                              indirectSpecular))
     {
         InvalidateDenoiserHistory();
         return false;
@@ -1847,8 +1730,8 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
                 return false;
             }
 
-            ID3D12Resource* debugOutput = FSRDConvShader->PrepareDebugViewOutput(
-                InCommandList, TargetWidth(), TargetHeight());
+            ID3D12Resource* debugOutput =
+                FSRDConvShader->PrepareDebugViewOutput(InCommandList, TargetWidth(), TargetHeight());
             if (!debugOutput)
             {
                 InvalidateDenoiserHistory();
@@ -1858,38 +1741,30 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
             const D3D12_RESOURCE_DESC debugOutputDesc = debugOutput->GetDesc();
             const bool isCompatibleDebugOutput =
                 debugOutputDesc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-                debugOutputDesc.Width == TargetWidth() &&
-                debugOutputDesc.Height == TargetHeight() &&
-                debugOutputDesc.DepthOrArraySize == 1 &&
-                debugOutputDesc.MipLevels == 1 &&
-                debugOutputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT &&
-                debugOutputDesc.SampleDesc.Count == 1 &&
+                debugOutputDesc.Width == TargetWidth() && debugOutputDesc.Height == TargetHeight() &&
+                debugOutputDesc.DepthOrArraySize == 1 && debugOutputDesc.MipLevels == 1 &&
+                debugOutputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT && debugOutputDesc.SampleDesc.Count == 1 &&
                 (debugOutputDesc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0;
             if (!isCompatibleDebugOutput)
             {
-                LOG_ERROR(
-                    "[RR_DIAG] dedicated AMD debug-view target is incompatible: size={}x{}, "
-                    "format={}, dimension={}, arraySize={}, mips={}, samples={}, flags={:#x}",
-                    debugOutputDesc.Width, debugOutputDesc.Height,
-                    static_cast<uint32_t>(debugOutputDesc.Format),
-                    static_cast<uint32_t>(debugOutputDesc.Dimension),
-                    debugOutputDesc.DepthOrArraySize, debugOutputDesc.MipLevels,
-                    debugOutputDesc.SampleDesc.Count, static_cast<uint32_t>(debugOutputDesc.Flags));
+                LOG_ERROR("[RR_DIAG] dedicated AMD debug-view target is incompatible: size={}x{}, "
+                          "format={}, dimension={}, arraySize={}, mips={}, samples={}, flags={:#x}",
+                          debugOutputDesc.Width, debugOutputDesc.Height, static_cast<uint32_t>(debugOutputDesc.Format),
+                          static_cast<uint32_t>(debugOutputDesc.Dimension), debugOutputDesc.DepthOrArraySize,
+                          debugOutputDesc.MipLevels, debugOutputDesc.SampleDesc.Count,
+                          static_cast<uint32_t>(debugOutputDesc.Flags));
                 InvalidateDenoiserHistory();
                 return false;
             }
 
-            const int debugViewport =
-                std::clamp(cfg.FfxDenoiserDebugViewport.value_or_default(), -1,
-                           FFX_API_DENOISER_DEBUG_VIEW_MAX_VIEWPORTS - 1);
-            dispatchDebugView = 
-            { 
+            const int debugViewport = std::clamp(cfg.FfxDenoiserDebugViewport.value_or_default(), -1,
+                                                 FFX_API_DENOISER_DEBUG_VIEW_MAX_VIEWPORTS - 1);
+            dispatchDebugView = {
                 .header = { .type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_DEBUG_VIEW },
                 .output = ffxApiGetResourceDX12(debugOutput, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS),
                 .outputSize = { static_cast<uint32_t>(debugOutputDesc.Width), debugOutputDesc.Height },
-                .mode = static_cast<uint32_t>(debugViewport < 0
-                    ? FFX_API_DENOISER_DEBUG_VIEW_MODE_OVERVIEW
-                    : FFX_API_DENOISER_DEBUG_VIEW_MODE_FULLSCREEN_VIEWPORT),
+                .mode = static_cast<uint32_t>(debugViewport < 0 ? FFX_API_DENOISER_DEBUG_VIEW_MODE_OVERVIEW
+                                                                : FFX_API_DENOISER_DEBUG_VIEW_MODE_FULLSCREEN_VIEWPORT),
                 .viewportIndex = static_cast<uint32_t>(std::max(debugViewport, 0))
             };
 
@@ -1928,9 +1803,9 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         CommitDenoiserHistory();
 
         // Compose denoised signals
-        uint32_t compositionFlags = (uint32_t)GetCompDebugFlags(dbgMode);
+        uint32_t compositionFlags = (uint32_t) GetCompDebugFlags(dbgMode);
         if (_diffuseSignalDescType == FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_DIFFUSE)
-            compositionFlags |= (uint32_t)FSRDCompFlags::DiffuseSignalIndirect;
+            compositionFlags |= (uint32_t) FSRDCompFlags::DiffuseSignalIndirect;
         if (_specularSignalDescType == FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_SPECULAR)
             compositionFlags |= (uint32_t) FSRDCompFlags::SpecularSignalIndirect;
         // A signal left out of the denoiser chain has no output this frame, and the
@@ -1938,12 +1813,11 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         // targets. Flag it so composition reads the raw signal rather than the floor
         // image that buffer still holds.
         if (!_denoiseDiffuse)
-            compositionFlags |= (uint32_t)FSRDCompFlags::DiffuseSignalDisabled;
+            compositionFlags |= (uint32_t) FSRDCompFlags::DiffuseSignalDisabled;
         if (!_denoiseSpecular)
-            compositionFlags |= (uint32_t)FSRDCompFlags::SpecularSignalDisabled;
+            compositionFlags |= (uint32_t) FSRDCompFlags::SpecularSignalDisabled;
 
-        FSRDCompDesc compDesc =
-        { 
+        FSRDCompDesc compDesc = {
             .DstTexSize = _convDesc.RenderSize,
             .CorrelationBias = std::clamp(cfg.FfxDenoiserCorrelationBias.value_or_default(), 0.0f, 1.0f),
             .Flags = compositionFlags,
@@ -1953,17 +1827,12 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
                 std::clamp(cfg.FfxDenoiserFloorHandoverCorrelationMix.value_or_default(), 0.0f, 1.0f)
         };
 
-        const XMUINT2 rawColorBase = GetSubrectBase(
-            inParams, NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X,
-            NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y);
-        compDesc.SourceBase = {
-            rawColorBase.x, rawColorBase.y,
-            0, 0
-        };
+        const XMUINT2 rawColorBase = GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X,
+                                                    NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y);
+        compDesc.SourceBase = { rawColorBase.x, rawColorBase.y, 0, 0 };
 
         if (!TryGetLoggedResource(inParams, NVSDK_NGX_Parameter_Color, compDesc.InRawColor) ||
-            !ValidateSourceExtent("CompositionColor", compDesc.InRawColor, rawColorBase,
-                                  RenderWidth(), RenderHeight()))
+            !ValidateSourceExtent("CompositionColor", compDesc.InRawColor, rawColorBase, RenderWidth(), RenderHeight()))
         {
             InvalidateDenoiserHistory();
             return false;
@@ -1998,9 +1867,8 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         // argument is COMPUTE_READ alone, which would leave the resource in a
         // narrower state than the preprocessor expects on the next frame.
         if (isDenoiserReady)
-            upscalerDesc.color = ffxApiGetResourceDX12(
-                FSRDConvShader->GetCompositionOutput(),
-                FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
+            upscalerDesc.color = ffxApiGetResourceDX12(FSRDConvShader->GetCompositionOutput(),
+                                                       FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ);
 
         isUpscalerReady = DispatchUpscaler(InCommandList, upscalerDesc);
 
@@ -2010,51 +1878,42 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     {
         ID3D12Resource* srcTex = nullptr;
         XMUINT2 debugSourceBase {};
-        XMFLOAT2 debugSourceLogicalSize {
-            static_cast<float>(RenderWidth()), static_cast<float>(RenderHeight())
-        };
+        XMFLOAT2 debugSourceLogicalSize { static_cast<float>(RenderWidth()), static_cast<float>(RenderHeight()) };
 
         if (isFfxDebug)
         {
             srcTex = FSRDConvShader->GetDebugViewOutput();
-            debugSourceLogicalSize = {
-                static_cast<float>(TargetWidth()), static_cast<float>(TargetHeight())
-            };
+            debugSourceLogicalSize = { static_cast<float>(TargetWidth()), static_cast<float>(TargetHeight()) };
         }
         else if (dbgMode == DebugModes::DlssColorBeforeParticles)
         {
             TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles, srcTex);
-            debugSourceBase = GetSubrectBase(
-                inParams, NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles_Subrect_Base_X,
-                NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles_Subrect_Base_Y);
+            debugSourceBase = GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles_Subrect_Base_X,
+                                             NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles_Subrect_Base_Y);
         }
         else if (dbgMode == DebugModes::DlssColorBeforeTransparency)
         {
             TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency, srcTex);
-            debugSourceBase = GetSubrectBase(
-                inParams, NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency_Subrect_Base_X,
-                NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency_Subrect_Base_Y);
+            debugSourceBase = GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency_Subrect_Base_X,
+                                             NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency_Subrect_Base_Y);
         }
         else if (dbgMode == DebugModes::DlssTransparencyLayer)
         {
             TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSS_TransparencyLayer, srcTex);
-            debugSourceBase = GetSubrectBase(
-                inParams, NVSDK_NGX_Parameter_DLSS_TransparencyLayer_Subrect_Base_X,
-                NVSDK_NGX_Parameter_DLSS_TransparencyLayer_Subrect_Base_Y);
+            debugSourceBase = GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSS_TransparencyLayer_Subrect_Base_X,
+                                             NVSDK_NGX_Parameter_DLSS_TransparencyLayer_Subrect_Base_Y);
         }
         else if (dbgMode == DebugModes::DlssBias)
         {
             TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, srcTex);
-            debugSourceBase = GetSubrectBase(
-                inParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_SubrectBase_X,
-                NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_SubrectBase_Y);
+            debugSourceBase = GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_SubrectBase_X,
+                                             NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_SubrectBase_Y);
         }
         else if (dbgMode == DebugModes::RawColor)
         {
             TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_Color, srcTex);
-            debugSourceBase = GetSubrectBase(
-                inParams, NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X,
-                NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y);
+            debugSourceBase = GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X,
+                                             NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y);
         }
         else if (dbgMode == DebugModes::AmbientOcclusionInput)
             srcTex = _ambientOcclusionEnabled ? _ambientOcclusionNoisy.Get() : nullptr;
@@ -2070,10 +1929,8 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
         if (!srcTex || !TryGetLoggedResource(inParams, NVSDK_NGX_Parameter_Output, dstTex))
             return true;
 
-        FSRDConvShader->Blit(
-            InCommandList, srcTex, dstTex, {}, debugSourceLogicalSize,
-            { static_cast<float>(debugSourceBase.x),
-              static_cast<float>(debugSourceBase.y) });
+        FSRDConvShader->Blit(InCommandList, srcTex, dstTex, {}, debugSourceLogicalSize,
+                             { static_cast<float>(debugSourceBase.x), static_cast<float>(debugSourceBase.y) });
     }
 
     // A failed upscale dispatch leaves the frame half finished. Report it to the caller
@@ -2084,12 +1941,13 @@ bool FSRDFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList,
     return isDenoiserReady || isDenoiseBypassed;
 }
 
-bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandList, const NVSDK_NGX_Parameter& inParams,
-    ffxDispatchDescDenoiser& dispatchDesc, ffxDispatchDescDenoiserAmbientOcclusion& ambientOcclusion,
-    ffxDispatchDescDenoiserDirectDiffuse& directDiffuse,
-    ffxDispatchDescDenoiserIndirectSpecular& indirectSpecular)
+bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandList,
+                                           const NVSDK_NGX_Parameter& inParams, ffxDispatchDescDenoiser& dispatchDesc,
+                                           ffxDispatchDescDenoiserAmbientOcclusion& ambientOcclusion,
+                                           ffxDispatchDescDenoiserDirectDiffuse& directDiffuse,
+                                           ffxDispatchDescDenoiserIndirectSpecular& indirectSpecular)
 {
-    const auto& cfg = *Config::Instance(); 
+    const auto& cfg = *Config::Instance();
 
     if (_ambientOcclusionEnabled && !AcquireTaggedAmbientOcclusionResources(true))
     {
@@ -2099,7 +1957,7 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
 
     // Gather DLSS-RR input buffers for conversion and repacking for FSR-RR
     if (!PrepareDenoiseConvInput(inParams))
-        return false;   
+        return false;
 
     if (!ConvertDenoiserBuffers(InCommandList))
         return false;
@@ -2107,24 +1965,21 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
     // Camera matrix - translation and rotation, from viewMatrix^-1
     const XMFLOAT3 camPos = GetFloat3Column(_invViewMatrix, 3);
     const bool resetHistory = _isInReset || !_hasDenoiserHistory;
-    const XMFLOAT3 camDelta = resetHistory
-        ? XMFLOAT3 {}
-        : XMFLOAT3 { _lastCamPos.x - camPos.x, _lastCamPos.y - camPos.y, _lastCamPos.z - camPos.z };
+    const XMFLOAT3 camDelta =
+        resetHistory ? XMFLOAT3 {}
+                     : XMFLOAT3 { _lastCamPos.x - camPos.x, _lastCamPos.y - camPos.y, _lastCamPos.z - camPos.z };
 
     // Pack dispatch configuration
-    dispatchDesc = 
-    {
-        .commandList = InCommandList,
-        .motionVectorScale = { 1.0f, 1.0f, 1.0f },
-        // Camera movement since last frame (PreviousPosition - CurrentPosition)
-        .cameraPositionDelta = { camDelta.x, camDelta.y, camDelta.z },
-        .view = GetRRMatrix(_viewMatrix),
-        .projection = GetRRMatrix(_projMatrix),
-        .linearDepthBounds = { _convDesc.NearPlane, _convDesc.FarPlane },
-        .renderSize = { RenderWidth(), RenderHeight() }, 
-        .frameIndex = (uint32_t)_frameCount,
-        .flags = FFX_DENOISER_DISPATCH_NON_GAMMA_ALBEDO
-    };
+    dispatchDesc = { .commandList = InCommandList,
+                     .motionVectorScale = { 1.0f, 1.0f, 1.0f },
+                     // Camera movement since last frame (PreviousPosition - CurrentPosition)
+                     .cameraPositionDelta = { camDelta.x, camDelta.y, camDelta.z },
+                     .view = GetRRMatrix(_viewMatrix),
+                     .projection = GetRRMatrix(_projMatrix),
+                     .linearDepthBounds = { _convDesc.NearPlane, _convDesc.FarPlane },
+                     .renderSize = { RenderWidth(), RenderHeight() },
+                     .frameIndex = (uint32_t) _frameCount,
+                     .flags = FFX_DENOISER_DISPATCH_NON_GAMMA_ALBEDO };
 
     // Populate resources and link signal header
     FSRDConvShader->GetSignals(dispatchDesc, directDiffuse, indirectSpecular);
@@ -2143,19 +1998,12 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
                 ? FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ
                 : FFX_API_RESOURCE_STATE_COMPUTE_READ;
 
-        ambientOcclusion =
-        {
-            .header = { .type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_AMBIENT_OCCLUSION },
-            .signal =
-            {
-                .input = ffxApiGetResourceDX12(
-                    _ambientOcclusionNoisy.Get(), ambientOcclusionInputState),
-                .output = ffxApiGetResourceDX12(
-                    FSRDConvShader->GetAmbientOcclusionOutput(),
-                    FFX_API_RESOURCE_STATE_UNORDERED_ACCESS),
-                .checkerboardOrigin = 0
-            }
-        };
+        ambientOcclusion = { .header = { .type = FFX_API_DISPATCH_DESC_TYPE_DENOISER_AMBIENT_OCCLUSION },
+                             .signal = { .input = ffxApiGetResourceDX12(_ambientOcclusionNoisy.Get(),
+                                                                        ambientOcclusionInputState),
+                                         .output = ffxApiGetResourceDX12(FSRDConvShader->GetAmbientOcclusionOutput(),
+                                                                         FFX_API_RESOURCE_STATE_UNORDERED_ACCESS),
+                                         .checkerboardOrigin = 0 } };
         activeAmbientOcclusion = &ambientOcclusion;
     }
 
@@ -2173,18 +2021,16 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
         signals[signalCount++] = &ambientOcclusion.header;
 
     std::sort(signals.begin(), signals.begin() + signalCount,
-              [](const ffxDispatchDescHeader* left, const ffxDispatchDescHeader* right) {
-                  return left->type < right->type;
-              });
+              [](const ffxDispatchDescHeader* left, const ffxDispatchDescHeader* right)
+              { return left->type < right->type; });
 
     dispatchDesc.header.pNext = signalCount > 0 ? signals[0] : nullptr;
     for (size_t i = 0; i < signalCount; ++i)
         signals[i]->pNext = i + 1 < signalCount ? signals[i + 1] : nullptr;
 
-    if (!ValidateRequiredRRResources(
-            dispatchDesc, directDiffuse, indirectSpecular, activeAmbientOcclusion))
+    if (!ValidateRequiredRRResources(dispatchDesc, directDiffuse, indirectSpecular, activeAmbientOcclusion))
         return false;
-    
+
     if (resetHistory)
         dispatchDesc.flags |= FFX_DENOISER_DISPATCH_RESET;
 
@@ -2203,13 +2049,13 @@ bool FSRDFeatureDx12::PrepareDenoiserInput(ID3D12GraphicsCommandList* InCommandL
 //
 // Selection is deferred until every source origin and extent is known, so an
 // invalid high-priority candidate can never reach an SRV binding.
-void FSRDFeatureDx12::ResolveSpecularHitDistance(
-    const NVSDK_NGX_Parameter& inParams, const RRD3D12SignalTagSnapshot& rrTagSnapshot,
-    uint32_t renderWidth, uint32_t renderHeight, uint32_t motionWidth, uint32_t motionHeight,
-    ID3D12Resource* ngxSpecularHitDistance,
-    ID3D12Resource* ngxSpecularRayDirectionHitDistance,
-    const XMUINT2& ngxSpecularHitDistanceBase,
-    const XMUINT2& ngxSpecularRayDirectionHitDistanceBase)
+void FSRDFeatureDx12::ResolveSpecularHitDistance(const NVSDK_NGX_Parameter& inParams,
+                                                 const RRD3D12SignalTagSnapshot& rrTagSnapshot, uint32_t renderWidth,
+                                                 uint32_t renderHeight, uint32_t motionWidth, uint32_t motionHeight,
+                                                 ID3D12Resource* ngxSpecularHitDistance,
+                                                 ID3D12Resource* ngxSpecularRayDirectionHitDistance,
+                                                 const XMUINT2& ngxSpecularHitDistanceBase,
+                                                 const XMUINT2& ngxSpecularRayDirectionHitDistanceBase)
 {
     struct SpecularHitDistanceSelection
     {
@@ -2219,124 +2065,89 @@ void FSRDFeatureDx12::ResolveSpecularHitDistance(
         const char* SourceName = nullptr;
     } specularHitDistanceSelection;
 
-    auto tryNGXSpecularHitDistance = [&](const char* sourceName,
-                                         ID3D12Resource* resource,
-                                         const XMUINT2& base,
-                                         bool combinedAlpha) -> bool {
+    auto tryNGXSpecularHitDistance = [&](const char* sourceName, ID3D12Resource* resource, const XMUINT2& base,
+                                         bool combinedAlpha) -> bool
+    {
         if (!resource)
             return false;
 
-        const SourceFormatValidator formatValidator = combinedAlpha
-            ? IsDiffuseRayDirectionHitDistanceFormat
-            : IsDiffuseHitDistanceFormat;
-        const char* expectedFormat = combinedAlpha
-            ? "RGBA16F or RGBA32F (hit distance in alpha)"
-            : "R16F or R32F";
-        if (!ValidateReprojectionGuideSource(
-                sourceName, resource, base, renderWidth, renderHeight,
-                formatValidator, expectedFormat))
+        const SourceFormatValidator formatValidator =
+            combinedAlpha ? IsDiffuseRayDirectionHitDistanceFormat : IsDiffuseHitDistanceFormat;
+        const char* expectedFormat = combinedAlpha ? "RGBA16F or RGBA32F (hit distance in alpha)" : "R16F or R32F";
+        if (!ValidateReprojectionGuideSource(sourceName, resource, base, renderWidth, renderHeight, formatValidator,
+                                             expectedFormat))
         {
             return false;
         }
 
-        specularHitDistanceSelection = {
-            resource, base, combinedAlpha, sourceName
-        };
+        specularHitDistanceSelection = { resource, base, combinedAlpha, sourceName };
         return true;
     };
 
-    auto trySLSpecularHitDistance = [&](RRTaggedSignal signal,
-                                        const char* sourceName,
-                                        bool combinedAlpha) -> bool {
+    auto trySLSpecularHitDistance = [&](RRTaggedSignal signal, const char* sourceName, bool combinedAlpha) -> bool
+    {
         Microsoft::WRL::ComPtr<ID3D12Resource> taggedResource;
         RRTaggedResourceDiagnostic diagnostic {};
-        if (!AcquireSLTaggedResource(
-                rrTagSnapshot, signal, sourceName,
-                TagStatePolicy::RequireShaderRead,
-                taggedResource, diagnostic))
+        if (!AcquireSLTaggedResource(rrTagSnapshot, signal, sourceName, TagStatePolicy::RequireShaderRead,
+                                     taggedResource, diagnostic))
             return false;
 
-        const XMUINT2 base = diagnostic.usesExtent
-            ? XMUINT2 { diagnostic.extentLeft, diagnostic.extentTop }
-            : XMUINT2 {};
-        if (diagnostic.effectiveWidth != renderWidth ||
-            diagnostic.effectiveHeight != renderHeight)
+        const XMUINT2 base =
+            diagnostic.usesExtent ? XMUINT2 { diagnostic.extentLeft, diagnostic.extentTop } : XMUINT2 {};
+        if (diagnostic.effectiveWidth != renderWidth || diagnostic.effectiveHeight != renderHeight)
         {
-            LOG_ERROR(
-                "[RR_INPUT] {} tag extent {}x{} does not exactly match the one-to-one render extent {}x{}",
-                sourceName, diagnostic.effectiveWidth, diagnostic.effectiveHeight,
-                renderWidth, renderHeight);
+            LOG_ERROR("[RR_INPUT] {} tag extent {}x{} does not exactly match the one-to-one render extent {}x{}",
+                      sourceName, diagnostic.effectiveWidth, diagnostic.effectiveHeight, renderWidth, renderHeight);
             return false;
         }
 
-        const SourceFormatValidator formatValidator = combinedAlpha
-            ? IsDiffuseRayDirectionHitDistanceFormat
-            : IsDiffuseHitDistanceFormat;
-        const char* expectedFormat = combinedAlpha
-            ? "RGBA16F or RGBA32F (hit distance in alpha)"
-            : "R16F or R32F";
-        if (!ValidateReprojectionGuideSource(
-                sourceName, taggedResource.Get(), base,
-                diagnostic.effectiveWidth, diagnostic.effectiveHeight,
-                formatValidator, expectedFormat))
+        const SourceFormatValidator formatValidator =
+            combinedAlpha ? IsDiffuseRayDirectionHitDistanceFormat : IsDiffuseHitDistanceFormat;
+        const char* expectedFormat = combinedAlpha ? "RGBA16F or RGBA32F (hit distance in alpha)" : "R16F or R32F";
+        if (!ValidateReprojectionGuideSource(sourceName, taggedResource.Get(), base, diagnostic.effectiveWidth,
+                                             diagnostic.effectiveHeight, formatValidator, expectedFormat))
         {
             return false;
         }
 
-        specularHitDistanceSelection = {
-            taggedResource.Get(), base, combinedAlpha, sourceName
-        };
+        specularHitDistanceSelection = { taggedResource.Get(), base, combinedAlpha, sourceName };
         if (combinedAlpha)
-            _specularRayDirectionHitDistanceTaggedResource =
-                std::move(taggedResource);
+            _specularRayDirectionHitDistanceTaggedResource = std::move(taggedResource);
         else
             _specularHitDistanceTaggedResource = std::move(taggedResource);
         return true;
     };
 
-    if (!tryNGXSpecularHitDistance(
-            NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance,
-            ngxSpecularHitDistance, ngxSpecularHitDistanceBase, false) &&
-        !tryNGXSpecularHitDistance(
-            NVSDK_NGX_Parameter_DLSSD_SpecularRayDirectionHitDistance,
-            ngxSpecularRayDirectionHitDistance,
-            ngxSpecularRayDirectionHitDistanceBase, true) &&
-        !trySLSpecularHitDistance(
-            RRTaggedSignal::SpecularHitDistance,
-            "Streamline.SpecularHitDistance", false))
+    if (!tryNGXSpecularHitDistance(NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance, ngxSpecularHitDistance,
+                                   ngxSpecularHitDistanceBase, false) &&
+        !tryNGXSpecularHitDistance(NVSDK_NGX_Parameter_DLSSD_SpecularRayDirectionHitDistance,
+                                   ngxSpecularRayDirectionHitDistance, ngxSpecularRayDirectionHitDistanceBase, true) &&
+        !trySLSpecularHitDistance(RRTaggedSignal::SpecularHitDistance, "Streamline.SpecularHitDistance", false))
     {
-        trySLSpecularHitDistance(
-            RRTaggedSignal::SpecularRayDirectionHitDistance,
-            "Streamline.SpecularRayDirectionHitDistance", true);
+        trySLSpecularHitDistance(RRTaggedSignal::SpecularRayDirectionHitDistance,
+                                 "Streamline.SpecularRayDirectionHitDistance", true);
     }
 
     if (specularHitDistanceSelection.Resource)
     {
         _convDesc.SpecularHitDistanceBase = specularHitDistanceSelection.Base;
-        _convDesc.SpecularHitDistanceFromCombinedAlpha =
-            specularHitDistanceSelection.CombinedAlpha;
+        _convDesc.SpecularHitDistanceFromCombinedAlpha = specularHitDistanceSelection.CombinedAlpha;
         if (specularHitDistanceSelection.CombinedAlpha)
         {
-            _convDesc.Resources.InSpecularRayDirectionHitDistance =
-                specularHitDistanceSelection.Resource;
+            _convDesc.Resources.InSpecularRayDirectionHitDistance = specularHitDistanceSelection.Resource;
         }
         else
         {
-            _convDesc.Resources.InSpecHitDist =
-                specularHitDistanceSelection.Resource;
+            _convDesc.Resources.InSpecHitDist = specularHitDistanceSelection.Resource;
             // The legacy signal splitter consumes scalar hit distance directly.
             _convDesc.InputBase2.x = specularHitDistanceSelection.Base.x;
             _convDesc.InputBase2.y = specularHitDistanceSelection.Base.y;
         }
 
-        LOG_DEBUG(
-            "[RR_INPUT] selected {} for specular hit distance: base=({}, {}), combinedAlpha={}",
-            specularHitDistanceSelection.SourceName,
-            specularHitDistanceSelection.Base.x,
-            specularHitDistanceSelection.Base.y,
-            specularHitDistanceSelection.CombinedAlpha);
+        LOG_DEBUG("[RR_INPUT] selected {} for specular hit distance: base=({}, {}), combinedAlpha={}",
+                  specularHitDistanceSelection.SourceName, specularHitDistanceSelection.Base.x,
+                  specularHitDistanceSelection.Base.y, specularHitDistanceSelection.CombinedAlpha);
     }
-
 }
 
 // Binds the resources a title may publish beyond the required set.
@@ -2344,8 +2155,8 @@ void FSRDFeatureDx12::ResolveSpecularHitDistance(
 // Each is validated before use: presence says nothing about usability, and a
 // sentinel-filled resource passes every presence check there is.
 void FSRDFeatureDx12::AcquireOptionalInputs(const NVSDK_NGX_Parameter& inParams,
-    const RRD3D12SignalTagSnapshot& rrTagSnapshot, uint32_t renderWidth,
-    uint32_t renderHeight)
+                                            const RRD3D12SignalTagSnapshot& rrTagSnapshot, uint32_t renderWidth,
+                                            uint32_t renderHeight)
 {
     const auto& cfg = *Config::Instance();
 
@@ -2374,10 +2185,8 @@ void FSRDFeatureDx12::AcquireOptionalInputs(const NVSDK_NGX_Parameter& inParams,
         // tag whose Present/Evaluate lifetime may have expired is refused here like
         // anywhere else, no matter that the snapshot still holds the object alive.
         ID3D12Resource* linearDepthCandidate = nullptr;
-        if (AcquireSLTaggedResource(rrTagSnapshot, RRTaggedSignal::LinearDepth,
-                                    "Streamline.LinearDepth",
-                                    TagStatePolicy::AllowCommonTransition,
-                                    taggedLinearDepth, linearDepthDiagnostic))
+        if (AcquireSLTaggedResource(rrTagSnapshot, RRTaggedSignal::LinearDepth, "Streamline.LinearDepth",
+                                    TagStatePolicy::AllowCommonTransition, taggedLinearDepth, linearDepthDiagnostic))
         {
             linearDepthCandidate = taggedLinearDepth.Get();
         }
@@ -2385,15 +2194,13 @@ void FSRDFeatureDx12::AcquireOptionalInputs(const NVSDK_NGX_Parameter& inParams,
         if (linearDepthCandidate != nullptr)
         {
             const XMUINT2 base = linearDepthDiagnostic.usesExtent
-                ? XMUINT2 { linearDepthDiagnostic.extentLeft, linearDepthDiagnostic.extentTop }
-                : XMUINT2 {};
+                                     ? XMUINT2 { linearDepthDiagnostic.extentLeft, linearDepthDiagnostic.extentTop }
+                                     : XMUINT2 {};
             const D3D12_RESOURCE_DESC linearDepthDesc = linearDepthCandidate->GetDesc();
             const DXGI_FORMAT linearDepthViewFormat = FSRD::GetViewFormat(linearDepthDesc.Format);
 
-            if ((linearDepthViewFormat == DXGI_FORMAT_R32_FLOAT ||
-                 linearDepthViewFormat == DXGI_FORMAT_R16_FLOAT) &&
-                ValidateSourceExtent("TitleLinearDepth", linearDepthCandidate, base,
-                                     renderWidth, renderHeight))
+            if ((linearDepthViewFormat == DXGI_FORMAT_R32_FLOAT || linearDepthViewFormat == DXGI_FORMAT_R16_FLOAT) &&
+                ValidateSourceExtent("TitleLinearDepth", linearDepthCandidate, base, renderWidth, renderHeight))
             {
                 _titleLinearDepthTaggedResource = std::move(taggedLinearDepth);
                 _convDesc.Resources.InTitleLinearDepth = _titleLinearDepthTaggedResource.Get();
@@ -2411,8 +2218,7 @@ void FSRDFeatureDx12::AcquireOptionalInputs(const NVSDK_NGX_Parameter& inParams,
                              "(declared state {:#x}); view-space positions and the denoiser's "
                              "depth input will use it",
                              linearDepthDesc.Width, linearDepthDesc.Height, base.x, base.y,
-                             magic_enum::enum_name(linearDepthViewFormat),
-                             linearDepthDiagnostic.state);
+                             magic_enum::enum_name(linearDepthViewFormat), linearDepthDiagnostic.state);
                 }
             }
             else
@@ -2423,8 +2229,8 @@ void FSRDFeatureDx12::AcquireOptionalInputs(const NVSDK_NGX_Parameter& inParams,
                     loggedTitleLinearDepthRejection = true;
                     LOG_WARN("[RR_INPUT] title linear depth present but unusable: {}x{} "
                              "(base ({}, {})), required {}x{}+({}, {})",
-                             linearDepthDesc.Width, linearDepthDesc.Height, base.x, base.y,
-                             renderWidth, renderHeight, base.x, base.y);
+                             linearDepthDesc.Width, linearDepthDesc.Height, base.x, base.y, renderWidth, renderHeight,
+                             base.x, base.y);
                 }
             }
         }
@@ -2439,24 +2245,21 @@ void FSRDFeatureDx12::AcquireOptionalInputs(const NVSDK_NGX_Parameter& inParams,
                 const size_t index = static_cast<size_t>(RRTaggedSignal::LinearDepth);
                 if (index < rrTagSnapshot.resources.size())
                 {
-                    const RRTaggedResourceDiagnostic& diagnostic =
-                        rrTagSnapshot.resources[index].diagnostic;
+                    const RRTaggedResourceDiagnostic& diagnostic = rrTagSnapshot.resources[index].diagnostic;
                     LOG_WARN("[RR_INPUT] title linear depth is enabled but its tag could not be "
                              "acquired: observed={}, present={}, lifecycle={}, tagFrame={}, "
                              "tagViewport={}, activeFrame={}, activeViewport={}, "
                              "effectiveExtent={}x{}, declaredState={:#x}",
-                             diagnostic.observed, diagnostic.present,
-                             magic_enum::enum_name(diagnostic.lifecycle),
-                             diagnostic.frameIndex, diagnostic.viewport,
-                             rrTagSnapshot.activeEvaluationFrame,
-                             rrTagSnapshot.activeEvaluationViewport,
-                             diagnostic.effectiveWidth, diagnostic.effectiveHeight,
-                             diagnostic.state);
+                             diagnostic.observed, diagnostic.present, magic_enum::enum_name(diagnostic.lifecycle),
+                             diagnostic.frameIndex, diagnostic.viewport, rrTagSnapshot.activeEvaluationFrame,
+                             rrTagSnapshot.activeEvaluationViewport, diagnostic.effectiveWidth,
+                             diagnostic.effectiveHeight, diagnostic.state);
                 }
                 else
                 {
                     LOG_WARN("[RR_INPUT] title linear depth is enabled but the tag snapshot has no "
-                             "slot for it ({} slots)", rrTagSnapshot.resources.size());
+                             "slot for it ({} slots)",
+                             rrTagSnapshot.resources.size());
                 }
             }
         }
@@ -2471,10 +2274,9 @@ void FSRDFeatureDx12::AcquireOptionalInputs(const NVSDK_NGX_Parameter& inParams,
         TryGetNGXVoidPointer(inParams, "DLSSD.ResponsivityMask", responsivityMask);
 
         if (responsivityMask != nullptr &&
-            ValidateReprojectionGuideSource(
-                "ResponsivityMask", responsivityMask, { 0u, 0u }, renderWidth, renderHeight,
-                IsResponsivityMaskFormat,
-                "R8_UNORM, R16_FLOAT, R32_FLOAT, RGBA8_UNORM or RGBA16_FLOAT"))
+            ValidateReprojectionGuideSource("ResponsivityMask", responsivityMask, { 0u, 0u }, renderWidth, renderHeight,
+                                            IsResponsivityMaskFormat,
+                                            "R8_UNORM, R16_FLOAT, R32_FLOAT, RGBA8_UNORM or RGBA16_FLOAT"))
         {
             const D3D12_RESOURCE_DESC responsivityDesc = responsivityMask->GetDesc();
             _convDesc.Resources.InResponsivityMask = responsivityMask;
@@ -2488,8 +2290,7 @@ void FSRDFeatureDx12::AcquireOptionalInputs(const NVSDK_NGX_Parameter& inParams,
             const float responsivityThreshold = cfg.FfxDenoiserResponsivityThreshold.value_or_default();
             const bool responsivityInvert = cfg.FfxDenoiserResponsivityInvert.value_or_default();
 
-            if (responsivityMask != _loggedResponsivityMask ||
-                responsivityDesc.Width != _loggedResponsivityWidth ||
+            if (responsivityMask != _loggedResponsivityMask || responsivityDesc.Width != _loggedResponsivityWidth ||
                 responsivityDesc.Height != _loggedResponsivityHeight ||
                 responsivityViewFormat != _loggedResponsivityViewFormat ||
                 responsivityThreshold != _loggedResponsivityThreshold ||
@@ -2504,10 +2305,8 @@ void FSRDFeatureDx12::AcquireOptionalInputs(const NVSDK_NGX_Parameter& inParams,
 
                 LOG_INFO("[RR_INPUT] responsivity hint bound: {}x{}, {}, threshold {:.4f} "
                          "({} counts as unstable)",
-                         responsivityDesc.Width, responsivityDesc.Height,
-                         magic_enum::enum_name(responsivityViewFormat),
-                         responsivityThreshold,
-                         responsivityInvert ? "above" : "below");
+                         responsivityDesc.Width, responsivityDesc.Height, magic_enum::enum_name(responsivityViewFormat),
+                         responsivityThreshold, responsivityInvert ? "above" : "below");
             }
         }
     }
@@ -2516,7 +2315,6 @@ void FSRDFeatureDx12::AcquireOptionalInputs(const NVSDK_NGX_Parameter& inParams,
     // later published again instead of being suppressed by the last successful frame.
     if (_convDesc.Resources.InResponsivityMask == nullptr)
         _loggedResponsivityMask = nullptr;
-
 }
 
 // Binds the diffuse ray length, which RR's non-PSR handling of reflected geometry
@@ -2524,8 +2322,8 @@ void FSRDFeatureDx12::AcquireOptionalInputs(const NVSDK_NGX_Parameter& inParams,
 //
 // Without it the diffuse signal declares every pixel a ray miss at infinity - the
 // strongest possible claim, and almost always false when a title supplies one.
-void FSRDFeatureDx12::ResolveDiffuseHitDistance(const NVSDK_NGX_Parameter& inParams,
-    uint32_t renderWidth, uint32_t renderHeight)
+void FSRDFeatureDx12::ResolveDiffuseHitDistance(const NVSDK_NGX_Parameter& inParams, uint32_t renderWidth,
+                                                uint32_t renderHeight)
 {
     const auto& cfg = *Config::Instance();
 
@@ -2537,14 +2335,11 @@ void FSRDFeatureDx12::ResolveDiffuseHitDistance(const NVSDK_NGX_Parameter& inPar
     _diffuseHitDistanceBaseY = 0;
     _diffuseRayDirectionHitDistanceBaseX = 0;
     _diffuseRayDirectionHitDistanceBaseY = 0;
-    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance,
-                         _diffuseHitDistanceProbe);
+    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance, _diffuseHitDistanceProbe);
     TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_DiffuseRayDirectionHitDistance,
                          _diffuseRayDirectionHitDistanceProbe);
-    inParams.Get(NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance_Subrect_Base_X,
-                 &_diffuseHitDistanceBaseX);
-    inParams.Get(NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance_Subrect_Base_Y,
-                 &_diffuseHitDistanceBaseY);
+    inParams.Get(NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance_Subrect_Base_X, &_diffuseHitDistanceBaseX);
+    inParams.Get(NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance_Subrect_Base_Y, &_diffuseHitDistanceBaseY);
     inParams.Get(NVSDK_NGX_Parameter_DLSSD_DiffuseRayDirectionHitDistance_Subrect_Base_X,
                  &_diffuseRayDirectionHitDistanceBaseX);
     inParams.Get(NVSDK_NGX_Parameter_DLSSD_DiffuseRayDirectionHitDistance_Subrect_Base_Y,
@@ -2560,32 +2355,25 @@ void FSRDFeatureDx12::ResolveDiffuseHitDistance(const NVSDK_NGX_Parameter& inPar
 
     if (cfg.FfxDenoiserDiffuseHitDistance.value_or_default())
     {
-        const XMUINT2 scalarBase {
-            _diffuseHitDistanceBaseX, _diffuseHitDistanceBaseY
-        };
-        const XMUINT2 combinedBase {
-            _diffuseRayDirectionHitDistanceBaseX, _diffuseRayDirectionHitDistanceBaseY
-        };
+        const XMUINT2 scalarBase { _diffuseHitDistanceBaseX, _diffuseHitDistanceBaseY };
+        const XMUINT2 combinedBase { _diffuseRayDirectionHitDistanceBaseX, _diffuseRayDirectionHitDistanceBaseY };
 
         if (_diffuseHitDistanceProbe &&
-            ValidateReprojectionGuideSource(
-                NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance, _diffuseHitDistanceProbe,
-                scalarBase, renderWidth, renderHeight, IsDiffuseHitDistanceFormat,
-                "R16F or R32F"))
+            ValidateReprojectionGuideSource(NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance, _diffuseHitDistanceProbe,
+                                            scalarBase, renderWidth, renderHeight, IsDiffuseHitDistanceFormat,
+                                            "R16F or R32F"))
         {
             _convDesc.Resources.InDiffuseHitDistance = _diffuseHitDistanceProbe;
             _convDesc.DiffuseHitDistanceBase = scalarBase;
             _convDesc.DiffuseHitDistanceMode = 1;
         }
         else if (_diffuseRayDirectionHitDistanceProbe &&
-                 ValidateReprojectionGuideSource(
-                     NVSDK_NGX_Parameter_DLSSD_DiffuseRayDirectionHitDistance,
-                     _diffuseRayDirectionHitDistanceProbe, combinedBase,
-                     renderWidth, renderHeight, IsDiffuseRayDirectionHitDistanceFormat,
-                     "RGBA16F or RGBA32F (hit distance in alpha)"))
+                 ValidateReprojectionGuideSource(NVSDK_NGX_Parameter_DLSSD_DiffuseRayDirectionHitDistance,
+                                                 _diffuseRayDirectionHitDistanceProbe, combinedBase, renderWidth,
+                                                 renderHeight, IsDiffuseRayDirectionHitDistanceFormat,
+                                                 "RGBA16F or RGBA32F (hit distance in alpha)"))
         {
-            _convDesc.Resources.InDiffuseHitDistance =
-                _diffuseRayDirectionHitDistanceProbe;
+            _convDesc.Resources.InDiffuseHitDistance = _diffuseRayDirectionHitDistanceProbe;
             _convDesc.DiffuseHitDistanceBase = combinedBase;
             _convDesc.DiffuseHitDistanceMode = 2;
         }
@@ -2594,7 +2382,6 @@ void FSRDFeatureDx12::ResolveDiffuseHitDistance(const NVSDK_NGX_Parameter& inPar
     // InputBase4.zw was reserved; it now carries the diffuse hit-distance origin.
     _convDesc.InputBase4.z = _convDesc.DiffuseHitDistanceBase.x;
     _convDesc.InputBase4.w = _convDesc.DiffuseHitDistanceBase.y;
-
 }
 
 // Resolves the view and projection the denoiser reprojects with.
@@ -2603,8 +2390,8 @@ void FSRDFeatureDx12::ResolveDiffuseHitDistance(const NVSDK_NGX_Parameter& inPar
 // partially filled or sentinel-filled one passes a presence check and poisons
 // every reconstructed position with NaN, which reaches the denoiser as
 // cameraPositionDelta and reads there as a camera that never moved.
-bool FSRDFeatureDx12::ResolveCameraMatrices(const NVSDK_NGX_Parameter& inParams,
-    const sl::Constants& slData, bool hasCurrentSLConstants)
+bool FSRDFeatureDx12::ResolveCameraMatrices(const NVSDK_NGX_Parameter& inParams, const sl::Constants& slData,
+                                            bool hasCurrentSLConstants)
 {
     bool isReady = true;
 
@@ -2630,8 +2417,7 @@ bool FSRDFeatureDx12::ResolveCameraMatrices(const NVSDK_NGX_Parameter& inParams,
             return false;
 
         const XMFLOAT3 cameraPosition = GetFloat3Column(invView, 3);
-        return std::isfinite(cameraPosition.x) && std::isfinite(cameraPosition.y) &&
-               std::isfinite(cameraPosition.z);
+        return std::isfinite(cameraPosition.x) && std::isfinite(cameraPosition.y) && std::isfinite(cameraPosition.z);
     };
 
     // Builds the view matrix from the Streamline camera basis. Used both when NGX
@@ -2658,10 +2444,9 @@ bool FSRDFeatureDx12::ResolveCameraMatrices(const NVSDK_NGX_Parameter& inParams,
             if (!loggedDegenerateSLView)
             {
                 loggedDegenerateSLView = true;
-                LOG_ERROR(
-                    "[RR_INPUT] the Streamline camera basis is degenerate; its view "
-                    "matrix cannot be inverted, so camera position and reprojection "
-                    "would read NaN. Rejecting the frame instead");
+                LOG_ERROR("[RR_INPUT] the Streamline camera basis is degenerate; its view "
+                          "matrix cannot be inverted, so camera position and reprojection "
+                          "would read NaN. Rejecting the frame instead");
             }
             _viewMatrix = {};
             _invViewMatrix = {};
@@ -2690,24 +2475,20 @@ bool FSRDFeatureDx12::ResolveCameraMatrices(const NVSDK_NGX_Parameter& inParams,
             {
                 loggedDegenerateViewMatrix = true;
                 const XMFLOAT3 cameraPosition = GetFloat3Column(_invViewMatrix, 3);
-                LOG_ERROR(
-                    "[RR_INPUT] the title's {} matrix cannot be inverted; camera position "
-                    "reads ({}, {}, {}) and determinant is {}. Every consumer of the camera "
-                    "position would receive NaN. Falling back to the Streamline camera "
-                    "constants. Raw published matrix (row-major): "
-                    "[{:.6f}, {:.6f}, {:.6f}, {:.6f}], [{:.6f}, {:.6f}, {:.6f}, {:.6f}], "
-                    "[{:.6f}, {:.6f}, {:.6f}, {:.6f}], [{:.6f}, {:.6f}, {:.6f}, {:.6f}]",
-                    NVSDK_NGX_Parameter_DLSS_WORLD_TO_VIEW_MATRIX,
-                    cameraPosition.x, cameraPosition.y, cameraPosition.z,
-                    XMVectorGetX(XMMatrixDeterminant(_viewMatrix)),
-                    _viewMatrix.r[0].m128_f32[0], _viewMatrix.r[0].m128_f32[1],
-                    _viewMatrix.r[0].m128_f32[2], _viewMatrix.r[0].m128_f32[3],
-                    _viewMatrix.r[1].m128_f32[0], _viewMatrix.r[1].m128_f32[1],
-                    _viewMatrix.r[1].m128_f32[2], _viewMatrix.r[1].m128_f32[3],
-                    _viewMatrix.r[2].m128_f32[0], _viewMatrix.r[2].m128_f32[1],
-                    _viewMatrix.r[2].m128_f32[2], _viewMatrix.r[2].m128_f32[3],
-                    _viewMatrix.r[3].m128_f32[0], _viewMatrix.r[3].m128_f32[1],
-                    _viewMatrix.r[3].m128_f32[2], _viewMatrix.r[3].m128_f32[3]);
+                LOG_ERROR("[RR_INPUT] the title's {} matrix cannot be inverted; camera position "
+                          "reads ({}, {}, {}) and determinant is {}. Every consumer of the camera "
+                          "position would receive NaN. Falling back to the Streamline camera "
+                          "constants. Raw published matrix (row-major): "
+                          "[{:.6f}, {:.6f}, {:.6f}, {:.6f}], [{:.6f}, {:.6f}, {:.6f}, {:.6f}], "
+                          "[{:.6f}, {:.6f}, {:.6f}, {:.6f}], [{:.6f}, {:.6f}, {:.6f}, {:.6f}]",
+                          NVSDK_NGX_Parameter_DLSS_WORLD_TO_VIEW_MATRIX, cameraPosition.x, cameraPosition.y,
+                          cameraPosition.z, XMVectorGetX(XMMatrixDeterminant(_viewMatrix)),
+                          _viewMatrix.r[0].m128_f32[0], _viewMatrix.r[0].m128_f32[1], _viewMatrix.r[0].m128_f32[2],
+                          _viewMatrix.r[0].m128_f32[3], _viewMatrix.r[1].m128_f32[0], _viewMatrix.r[1].m128_f32[1],
+                          _viewMatrix.r[1].m128_f32[2], _viewMatrix.r[1].m128_f32[3], _viewMatrix.r[2].m128_f32[0],
+                          _viewMatrix.r[2].m128_f32[1], _viewMatrix.r[2].m128_f32[2], _viewMatrix.r[2].m128_f32[3],
+                          _viewMatrix.r[3].m128_f32[0], _viewMatrix.r[3].m128_f32[1], _viewMatrix.r[3].m128_f32[2],
+                          _viewMatrix.r[3].m128_f32[3]);
             }
         }
     }
@@ -2755,10 +2536,8 @@ bool FSRDFeatureDx12::ResolveCameraMatrices(const NVSDK_NGX_Parameter& inParams,
         if (!StreamlineHooks::isSetConstantsHooked() || !hasCurrentSLConstants)
             return false;
 
-        if (slData.cameraFOV == sl::INVALID_FLOAT ||
-            slData.cameraNear == sl::INVALID_FLOAT ||
-            slData.cameraFar == sl::INVALID_FLOAT ||
-            slData.cameraAspectRatio == sl::INVALID_FLOAT ||
+        if (slData.cameraFOV == sl::INVALID_FLOAT || slData.cameraNear == sl::INVALID_FLOAT ||
+            slData.cameraFar == sl::INVALID_FLOAT || slData.cameraAspectRatio == sl::INVALID_FLOAT ||
             slData.cameraNear == slData.cameraFar)
         {
             LOG_ERROR("Streamline projection data is incomplete! Denoiser not ready.");
@@ -2773,9 +2552,8 @@ bool FSRDFeatureDx12::ResolveCameraMatrices(const NVSDK_NGX_Parameter& inParams,
         const float farPlane = slData.cameraFar;
         _isRightHanded = slData.cameraViewToClip[2].w < 0.0f;
 
-        _projMatrix = CreateColumnVectorPerspectiveProjection(
-            fov, slData.cameraAspectRatio, nearPlane, farPlane,
-            _isRightHanded, DepthInverted());
+        _projMatrix = CreateColumnVectorPerspectiveProjection(fov, slData.cameraAspectRatio, nearPlane, farPlane,
+                                                              _isRightHanded, DepthInverted());
 
         if (!projectionIsUsable(_projMatrix))
         {
@@ -2783,12 +2561,11 @@ bool FSRDFeatureDx12::ResolveCameraMatrices(const NVSDK_NGX_Parameter& inParams,
             if (!loggedDegenerateSLProjection)
             {
                 loggedDegenerateSLProjection = true;
-                LOG_ERROR(
-                    "[RR_INPUT] the Streamline projection scalars do not build an "
-                    "invertible matrix (fov={:.4f}, aspect={:.4f}, near={:.4f}, "
-                    "far={:.4f}); camera position and reprojection would read NaN. "
-                    "Rejecting the frame instead",
-                    fov, slData.cameraAspectRatio, nearPlane, farPlane);
+                LOG_ERROR("[RR_INPUT] the Streamline projection scalars do not build an "
+                          "invertible matrix (fov={:.4f}, aspect={:.4f}, near={:.4f}, "
+                          "far={:.4f}); camera position and reprojection would read NaN. "
+                          "Rejecting the frame instead",
+                          fov, slData.cameraAspectRatio, nearPlane, farPlane);
             }
             _projMatrix = {};
             return false;
@@ -2814,21 +2591,17 @@ bool FSRDFeatureDx12::ResolveCameraMatrices(const NVSDK_NGX_Parameter& inParams,
             if (!loggedDegenerateProjMatrix)
             {
                 loggedDegenerateProjMatrix = true;
-                LOG_ERROR(
-                    "[RR_INPUT] the title's {} matrix is not invertible, so no view-space "
-                    "position can be reconstructed from it. Falling back to the Streamline "
-                    "camera scalars. Raw published matrix (row-major): "
-                    "[{:.6f}, {:.6f}, {:.6f}, {:.6f}], [{:.6f}, {:.6f}, {:.6f}, {:.6f}], "
-                    "[{:.6f}, {:.6f}, {:.6f}, {:.6f}], [{:.6f}, {:.6f}, {:.6f}, {:.6f}]",
-                    NVSDK_NGX_Parameter_DLSS_VIEW_TO_CLIP_MATRIX,
-                    _projMatrix.r[0].m128_f32[0], _projMatrix.r[0].m128_f32[1],
-                    _projMatrix.r[0].m128_f32[2], _projMatrix.r[0].m128_f32[3],
-                    _projMatrix.r[1].m128_f32[0], _projMatrix.r[1].m128_f32[1],
-                    _projMatrix.r[1].m128_f32[2], _projMatrix.r[1].m128_f32[3],
-                    _projMatrix.r[2].m128_f32[0], _projMatrix.r[2].m128_f32[1],
-                    _projMatrix.r[2].m128_f32[2], _projMatrix.r[2].m128_f32[3],
-                    _projMatrix.r[3].m128_f32[0], _projMatrix.r[3].m128_f32[1],
-                    _projMatrix.r[3].m128_f32[2], _projMatrix.r[3].m128_f32[3]);
+                LOG_ERROR("[RR_INPUT] the title's {} matrix is not invertible, so no view-space "
+                          "position can be reconstructed from it. Falling back to the Streamline "
+                          "camera scalars. Raw published matrix (row-major): "
+                          "[{:.6f}, {:.6f}, {:.6f}, {:.6f}], [{:.6f}, {:.6f}, {:.6f}, {:.6f}], "
+                          "[{:.6f}, {:.6f}, {:.6f}, {:.6f}], [{:.6f}, {:.6f}, {:.6f}, {:.6f}]",
+                          NVSDK_NGX_Parameter_DLSS_VIEW_TO_CLIP_MATRIX, _projMatrix.r[0].m128_f32[0],
+                          _projMatrix.r[0].m128_f32[1], _projMatrix.r[0].m128_f32[2], _projMatrix.r[0].m128_f32[3],
+                          _projMatrix.r[1].m128_f32[0], _projMatrix.r[1].m128_f32[1], _projMatrix.r[1].m128_f32[2],
+                          _projMatrix.r[1].m128_f32[3], _projMatrix.r[2].m128_f32[0], _projMatrix.r[2].m128_f32[1],
+                          _projMatrix.r[2].m128_f32[2], _projMatrix.r[2].m128_f32[3], _projMatrix.r[3].m128_f32[0],
+                          _projMatrix.r[3].m128_f32[1], _projMatrix.r[3].m128_f32[2], _projMatrix.r[3].m128_f32[3]);
             }
         }
     }
@@ -2862,25 +2635,21 @@ bool FSRDFeatureDx12::ResolveSignalTypes(bool isReady, bool hasCurrentSLConstant
     // lock is permanent, so a frame that is about to be rejected must not set it -
     // the first Evaluate frequently arrives before the title has tagged its optional
     // guides, and locking there would pin the classification to Direct for good.
-    if (isReady && !cfg.FfxDenoiserSpecularSignalType.has_value() &&
-        !_autoSpecularSignalResolved)
+    if (isReady && !cfg.FfxDenoiserSpecularSignalType.has_value() && !_autoSpecularSignalResolved)
     {
         // A guide is present when the specular step bound one - the same question, asked of
         // the frame's result rather than of the step's local selection.
-        const bool hasSpecularHitDistanceGuide =
-            _convDesc.Resources.InSpecHitDist != nullptr ||
-            _convDesc.Resources.InSpecularRayDirectionHitDistance != nullptr;
+        const bool hasSpecularHitDistanceGuide = _convDesc.Resources.InSpecHitDist != nullptr ||
+                                                 _convDesc.Resources.InSpecularRayDirectionHitDistance != nullptr;
 
         const ffxStructType_t resolvedType = hasSpecularHitDistanceGuide
-            ? FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_SPECULAR
-            : FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_SPECULAR;
+                                                 ? FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_SPECULAR
+                                                 : FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_SPECULAR;
 
-        LOG_INFO(
-            "[RR_INPUT] automatic specular classification resolved to {} on the first validated frame ({})",
-            GetSignalTypeName(resolvedType),
-            hasSpecularHitDistanceGuide
-                ? "validated hit-distance guide present"
-                : "no validated hit-distance guide; keeping every specular pixel active");
+        LOG_INFO("[RR_INPUT] automatic specular classification resolved to {} on the first validated frame ({})",
+                 GetSignalTypeName(resolvedType),
+                 hasSpecularHitDistanceGuide ? "validated hit-distance guide present"
+                                             : "no validated hit-distance guide; keeping every specular pixel active");
 
         if (_specularSignalDescType == resolvedType)
         {
@@ -2895,27 +2664,24 @@ bool FSRDFeatureDx12::ResolveSignalTypes(bool isReady, bool hasCurrentSLConstant
             // the rebuilt instance resolve on its own first frame, where nothing has
             // been recorded yet. The resolution is deliberately not latched, so the
             // fresh instance repeats it rather than inheriting a stale decision.
-            LOG_INFO(
-                "[RR_INPUT] automatic specular classification needs {} -> {}; requesting a feature rebuild because this instance has already recorded GPU work",
-                GetSignalTypeName(_specularSignalDescType),
-                GetSignalTypeName(resolvedType));
+            LOG_INFO("[RR_INPUT] automatic specular classification needs {} -> {}; requesting a feature rebuild "
+                     "because this instance has already recorded GPU work",
+                     GetSignalTypeName(_specularSignalDescType), GetSignalTypeName(resolvedType));
             InvalidateDenoiserHistory();
             State::Instance().changeBackend[Handle()->Id] = true;
             return false;
         }
         else
         {
-            LOG_INFO(
-                "[RR_INPUT] recreating RR context for automatic specular classification: {} -> {}",
-                GetSignalTypeName(_specularSignalDescType),
-                GetSignalTypeName(resolvedType));
+            LOG_INFO("[RR_INPUT] recreating RR context for automatic specular classification: {} -> {}",
+                     GetSignalTypeName(_specularSignalDescType), GetSignalTypeName(resolvedType));
             _autoSpecularSignalDescType = resolvedType;
             _autoSpecularSignalResolved = true;
             DestroyDenoiserContext();
             if (!CreateDenoiserContext())
             {
-                LOG_ERROR(
-                    "[RR_INPUT] failed to recreate RR context for automatic specular classification; requesting a feature rebuild");
+                LOG_ERROR("[RR_INPUT] failed to recreate RR context for automatic specular classification; requesting "
+                          "a feature rebuild");
                 State::Instance().changeBackend[Handle()->Id] = true;
                 return false;
             }
@@ -2931,22 +2697,18 @@ bool FSRDFeatureDx12::ResolveSignalTypes(bool isReady, bool hasCurrentSLConstant
     // Deliberately a separate block rather than folded into the specular one above:
     // that block can return early to request a rebuild, and the two classifications
     // must not become order-dependent on each other.
-    if (isReady && !cfg.FfxDenoiserDiffuseSignalType.has_value() &&
-        !_autoDiffuseSignalResolved)
+    if (isReady && !cfg.FfxDenoiserDiffuseSignalType.has_value() && !_autoDiffuseSignalResolved)
     {
-        const bool hasDiffuseRayLength = _convDesc.Resources.InDiffuseHitDistance != nullptr &&
-            _convDesc.DiffuseHitDistanceMode != 0u;
+        const bool hasDiffuseRayLength =
+            _convDesc.Resources.InDiffuseHitDistance != nullptr && _convDesc.DiffuseHitDistanceMode != 0u;
 
-        const ffxStructType_t resolvedType = hasDiffuseRayLength
-            ? FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_DIFFUSE
-            : FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_DIFFUSE;
+        const ffxStructType_t resolvedType = hasDiffuseRayLength ? FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_DIFFUSE
+                                                                 : FFX_API_DISPATCH_DESC_TYPE_DENOISER_DIRECT_DIFFUSE;
 
-        LOG_INFO(
-            "[RR_INPUT] automatic diffuse classification resolved to {} on the first validated frame ({})",
-            GetSignalTypeName(resolvedType),
-            hasDiffuseRayLength
-                ? "validated diffuse ray length present"
-                : "no diffuse ray length; keeping every diffuse pixel active");
+        LOG_INFO("[RR_INPUT] automatic diffuse classification resolved to {} on the first validated frame ({})",
+                 GetSignalTypeName(resolvedType),
+                 hasDiffuseRayLength ? "validated diffuse ray length present"
+                                     : "no diffuse ray length; keeping every diffuse pixel active");
 
         if (_diffuseSignalDescType == resolvedType)
         {
@@ -2955,9 +2717,9 @@ bool FSRDFeatureDx12::ResolveSignalTypes(bool isReady, bool hasCurrentSLConstant
         }
         else if (_preprocessorHasRecordedWork)
         {
-            LOG_INFO(
-                "[RR_INPUT] automatic diffuse classification needs {} -> {}; requesting a feature rebuild because this instance has already recorded GPU work",
-                GetSignalTypeName(_diffuseSignalDescType), GetSignalTypeName(resolvedType));
+            LOG_INFO("[RR_INPUT] automatic diffuse classification needs {} -> {}; requesting a feature rebuild because "
+                     "this instance has already recorded GPU work",
+                     GetSignalTypeName(_diffuseSignalDescType), GetSignalTypeName(resolvedType));
             InvalidateDenoiserHistory();
             State::Instance().changeBackend[Handle()->Id] = true;
             return false;
@@ -2971,8 +2733,8 @@ bool FSRDFeatureDx12::ResolveSignalTypes(bool isReady, bool hasCurrentSLConstant
             DestroyDenoiserContext();
             if (!CreateDenoiserContext())
             {
-                LOG_ERROR(
-                    "[RR_INPUT] failed to recreate RR context for automatic diffuse classification; requesting a feature rebuild");
+                LOG_ERROR("[RR_INPUT] failed to recreate RR context for automatic diffuse classification; requesting a "
+                          "feature rebuild");
                 State::Instance().changeBackend[Handle()->Id] = true;
                 return false;
             }
@@ -2985,8 +2747,7 @@ bool FSRDFeatureDx12::ResolveSignalTypes(bool isReady, bool hasCurrentSLConstant
 bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParams)
 {
     const auto& cfg = *Config::Instance();
-    const SLConstantsSnapshot slConstantsSnapshot =
-        StreamlineHooks::getSLConstantsSnapshot();
+    const SLConstantsSnapshot slConstantsSnapshot = StreamlineHooks::getSLConstantsSnapshot();
     const auto& slData = slConstantsSnapshot.constants;
 
     // Gather DLSS-RR input buffers for conversion and repacking for FSR-RR
@@ -3004,13 +2765,11 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
     _convDesc.Flags = 0;
     _specularHitDistanceTaggedResource.Reset();
     _specularRayDirectionHitDistanceTaggedResource.Reset();
-    const RRD3D12SignalTagSnapshot rrTagSnapshot =
-        StreamlineHooks::getRRD3D12SignalTagSnapshot();
-    const bool hasCurrentSLConstants =
-        rrTagSnapshot.activeEvaluationFrame != UINT32_MAX &&
-        rrTagSnapshot.activeEvaluationViewport != UINT32_MAX &&
-        slConstantsSnapshot.frameIndex == rrTagSnapshot.activeEvaluationFrame &&
-        slConstantsSnapshot.viewport == rrTagSnapshot.activeEvaluationViewport;
+    const RRD3D12SignalTagSnapshot rrTagSnapshot = StreamlineHooks::getRRD3D12SignalTagSnapshot();
+    const bool hasCurrentSLConstants = rrTagSnapshot.activeEvaluationFrame != UINT32_MAX &&
+                                       rrTagSnapshot.activeEvaluationViewport != UINT32_MAX &&
+                                       slConstantsSnapshot.frameIndex == rrTagSnapshot.activeEvaluationFrame &&
+                                       slConstantsSnapshot.viewport == rrTagSnapshot.activeEvaluationViewport;
     RRTaggedResourceDiagnostic emissiveTagDiagnostic {};
 
     // Standard TSR buffers
@@ -3028,9 +2787,8 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
     // Roughness mode is instance state. When creation metadata is absent, lock it
     // once from the first usable frame; never flip modes because one resource is
     // temporarily missing, as that changes shader bindings and invalidates history.
-    const bool hasSeparateRoughness = TryGetNGXVoidPointer(
-        inParams, NVSDK_NGX_Parameter_GBuffer_Roughness,
-        _convDesc.Resources.InRoughness);
+    const bool hasSeparateRoughness =
+        TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_GBuffer_Roughness, _convDesc.Resources.InRoughness);
     // A Streamline title tags NormalRoughness at the buffer where its normals and roughness really
     // live. Some titles leave the NGX GBuffer_Normals binding on a normals-only texture whose alpha
     // carries nothing -- RE Engine publishes R10G10B10A2 there, whose two alpha bits read back as
@@ -3048,18 +2806,17 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
         Microsoft::WRL::ComPtr<ID3D12Resource> taggedNormalRoughness;
         RRTaggedResourceDiagnostic normalRoughnessDiagnostic {};
 
-        if (AcquireSLTaggedResource(rrTagSnapshot, RRTaggedSignal::NormalRoughness,
-                                    "Streamline.NormalRoughness", TagStatePolicy::RequireShaderRead,
-                                    taggedNormalRoughness, normalRoughnessDiagnostic))
+        if (AcquireSLTaggedResource(rrTagSnapshot, RRTaggedSignal::NormalRoughness, "Streamline.NormalRoughness",
+                                    TagStatePolicy::RequireShaderRead, taggedNormalRoughness,
+                                    normalRoughnessDiagnostic))
         {
-            const XMUINT2 base = normalRoughnessDiagnostic.usesExtent
-                                     ? XMUINT2 { normalRoughnessDiagnostic.extentLeft,
-                                                 normalRoughnessDiagnostic.extentTop }
-                                     : XMUINT2 {};
+            const XMUINT2 base = normalRoughnessDiagnostic.usesExtent ? XMUINT2 { normalRoughnessDiagnostic.extentLeft,
+                                                                                  normalRoughnessDiagnostic.extentTop }
+                                                                      : XMUINT2 {};
 
             if (AlphaCarriesRoughness(taggedNormalRoughness.Get()) &&
-                ValidateSourceExtent("Streamline.NormalRoughness", taggedNormalRoughness.Get(), base,
-                                     RenderWidth(), RenderHeight()))
+                ValidateSourceExtent("Streamline.NormalRoughness", taggedNormalRoughness.Get(), base, RenderWidth(),
+                                     RenderHeight()))
             {
                 static bool loggedTaggedNormalRoughness = false;
                 if (!loggedTaggedNormalRoughness)
@@ -3068,9 +2825,8 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
                     LOG_INFO("[RR_INPUT] using the Streamline NormalRoughness tag for normals and "
                              "packed roughness; the NGX normals binding ({}) has no alpha wide "
                              "enough to carry it",
-                             (int) (_convDesc.Resources.InNormals
-                                        ? _convDesc.Resources.InNormals->GetDesc().Format
-                                        : DXGI_FORMAT_UNKNOWN));
+                             (int) (_convDesc.Resources.InNormals ? _convDesc.Resources.InNormals->GetDesc().Format
+                                                                  : DXGI_FORMAT_UNKNOWN));
                 }
 
                 _normalRoughnessTaggedResource = std::move(taggedNormalRoughness);
@@ -3123,17 +2879,14 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
         {
             loggedNormalsPtr = _convDesc.Resources.InNormals;
 
-            const auto normalsFormat = _convDesc.Resources.InNormals
-                                           ? _convDesc.Resources.InNormals->GetDesc().Format
-                                           : DXGI_FORMAT_UNKNOWN;
+            const auto normalsFormat =
+                _convDesc.Resources.InNormals ? _convDesc.Resources.InNormals->GetDesc().Format : DXGI_FORMAT_UNKNOWN;
 
             Microsoft::WRL::ComPtr<ID3D12Resource> probeTagged;
             RRTaggedResourceDiagnostic probeDiagnostic {};
-            const bool tagAcquired =
-                AcquireSLTaggedResource(rrTagSnapshot, RRTaggedSignal::NormalRoughness,
-                                        "Streamline.NormalRoughness.probe",
-                                        TagStatePolicy::RequireShaderRead, probeTagged,
-                                        probeDiagnostic);
+            const bool tagAcquired = AcquireSLTaggedResource(
+                rrTagSnapshot, RRTaggedSignal::NormalRoughness, "Streamline.NormalRoughness.probe",
+                TagStatePolicy::RequireShaderRead, probeTagged, probeDiagnostic);
 
             LOG_INFO("[RR_INPUT] normals bind: ptr={}, format={}, alphaCarriesRoughness={}, "
                      "separateRoughness={}, roughnessSource={} | SL NormalRoughness tag: "
@@ -3155,7 +2908,8 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
     if (!TryGetLoggedResource(inParams, NVSDK_NGX_Parameter_SpecularAlbedo, _convDesc.Resources.InSpecAlbedo))
         isReady = false;
 
-    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, _convDesc.Resources.InBiasMask);
+    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask,
+                         _convDesc.Resources.InBiasMask);
 
     // Optional diagnostic-only emissive input. Do not use it for RR signal
     // separation until its contents, exposure and composition semantics are verified.
@@ -3167,10 +2921,9 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
     TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_GBuffer_Emissive, _emissiveProbe);
     if (!_emissiveProbe)
     {
-        _emissiveProbeFromStreamline = AcquireSLTaggedResource(
-            rrTagSnapshot, RRTaggedSignal::Emissive, "Streamline.Emissive",
-            TagStatePolicy::RequireShaderRead,
-            _emissiveTaggedResource, emissiveTagDiagnostic);
+        _emissiveProbeFromStreamline =
+            AcquireSLTaggedResource(rrTagSnapshot, RRTaggedSignal::Emissive, "Streamline.Emissive",
+                                    TagStatePolicy::RequireShaderRead, _emissiveTaggedResource, emissiveTagDiagnostic);
         if (_emissiveProbeFromStreamline)
             _emissiveProbe = _emissiveTaggedResource.Get();
     }
@@ -3184,67 +2937,52 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
     // encoding as temporal-history metadata.
     _materialIdProbe = nullptr;
     _shadingModelIdProbe = nullptr;
-    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_GBuffer_MaterialId,
-                         _materialIdProbe);
-    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_GBuffer_ShadingModelId,
-                         _shadingModelIdProbe);
+    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_GBuffer_MaterialId, _materialIdProbe);
+    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_GBuffer_ShadingModelId, _shadingModelIdProbe);
 
     // Optional specular hit-distance inputs. Selection is deferred until all source
     // origins and extents are known, so an invalid high-priority candidate can never
     // reach an SRV binding.
     ID3D12Resource* ngxSpecularHitDistance = nullptr;
     ID3D12Resource* ngxSpecularRayDirectionHitDistance = nullptr;
-    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance,
-                         ngxSpecularHitDistance);
-    TryGetNGXVoidPointer(inParams,
-                         NVSDK_NGX_Parameter_DLSSD_SpecularRayDirectionHitDistance,
+    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance, ngxSpecularHitDistance);
+    TryGetNGXVoidPointer(inParams, NVSDK_NGX_Parameter_DLSSD_SpecularRayDirectionHitDistance,
                          ngxSpecularRayDirectionHitDistance);
 
-    const XMUINT2 colorBase = GetSubrectBase(
-        inParams, NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X,
-        NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y);
-    const XMUINT2 depthBase = GetSubrectBase(
-        inParams, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X,
-        NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y);
-    const XMUINT2 declaredMotionBase = GetSubrectBase(
-        inParams, NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X,
-        NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y);
+    const XMUINT2 colorBase = GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X,
+                                             NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y);
+    const XMUINT2 depthBase = GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_X,
+                                             NVSDK_NGX_Parameter_DLSS_Input_Depth_Subrect_Base_Y);
+    const XMUINT2 declaredMotionBase = GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_X,
+                                                      NVSDK_NGX_Parameter_DLSS_Input_MV_SubrectBase_Y);
     XMUINT2 motionBase = declaredMotionBase;
-    const XMUINT2 normalBase = GetSubrectBase(
-        inParams, NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_X,
-        NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_Y);
-    const XMUINT2 roughnessBase = GetSubrectBase(
-        inParams, NVSDK_NGX_Parameter_DLSS_Input_Roughness_Subrect_Base_X,
-        NVSDK_NGX_Parameter_DLSS_Input_Roughness_Subrect_Base_Y);
-    const XMUINT2 diffuseAlbedoBase = GetSubrectBase(
-        inParams, NVSDK_NGX_Parameter_DLSS_Input_DiffuseAlbedo_Subrect_Base_X,
-        NVSDK_NGX_Parameter_DLSS_Input_DiffuseAlbedo_Subrect_Base_Y);
-    const XMUINT2 specularAlbedoBase = GetSubrectBase(
-        inParams, NVSDK_NGX_Parameter_DLSS_Input_SpecularAlbedo_Subrect_Base_X,
-        NVSDK_NGX_Parameter_DLSS_Input_SpecularAlbedo_Subrect_Base_Y);
-    const XMUINT2 ngxSpecularHitDistanceBase = GetSubrectBase(
-        inParams, NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance_Subrect_Base_X,
-        NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance_Subrect_Base_Y);
-    const XMUINT2 ngxSpecularRayDirectionHitDistanceBase = GetSubrectBase(
-        inParams,
-        NVSDK_NGX_Parameter_DLSSD_SpecularRayDirectionHitDistance_Subrect_Base_X,
-        NVSDK_NGX_Parameter_DLSSD_SpecularRayDirectionHitDistance_Subrect_Base_Y);
-    const XMUINT2 biasBase = GetSubrectBase(
-        inParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_SubrectBase_X,
-        NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_SubrectBase_Y);
+    const XMUINT2 normalBase = GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_X,
+                                              NVSDK_NGX_Parameter_DLSS_Input_Normals_Subrect_Base_Y);
+    const XMUINT2 roughnessBase = GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSS_Input_Roughness_Subrect_Base_X,
+                                                 NVSDK_NGX_Parameter_DLSS_Input_Roughness_Subrect_Base_Y);
+    const XMUINT2 diffuseAlbedoBase =
+        GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSS_Input_DiffuseAlbedo_Subrect_Base_X,
+                       NVSDK_NGX_Parameter_DLSS_Input_DiffuseAlbedo_Subrect_Base_Y);
+    const XMUINT2 specularAlbedoBase =
+        GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSS_Input_SpecularAlbedo_Subrect_Base_X,
+                       NVSDK_NGX_Parameter_DLSS_Input_SpecularAlbedo_Subrect_Base_Y);
+    const XMUINT2 ngxSpecularHitDistanceBase =
+        GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance_Subrect_Base_X,
+                       NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance_Subrect_Base_Y);
+    const XMUINT2 ngxSpecularRayDirectionHitDistanceBase =
+        GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSSD_SpecularRayDirectionHitDistance_Subrect_Base_X,
+                       NVSDK_NGX_Parameter_DLSSD_SpecularRayDirectionHitDistance_Subrect_Base_Y);
+    const XMUINT2 biasBase = GetSubrectBase(inParams, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_SubrectBase_X,
+                                            NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_SubrectBase_Y);
 
     XMUINT2 emissiveBase = colorBase;
     if (_emissiveProbeFromStreamline)
     {
         if (emissiveTagDiagnostic.present && emissiveTagDiagnostic.usesExtent)
-            emissiveBase = {
-                emissiveTagDiagnostic.extentLeft, emissiveTagDiagnostic.extentTop
-            };
+            emissiveBase = { emissiveTagDiagnostic.extentLeft, emissiveTagDiagnostic.extentTop };
     }
     if (_convDesc.Resources.InEmissive &&
-        !ValidateSourceExtent(
-            "Emissive", _convDesc.Resources.InEmissive, emissiveBase,
-            RenderWidth(), RenderHeight()))
+        !ValidateSourceExtent("Emissive", _convDesc.Resources.InEmissive, emissiveBase, RenderWidth(), RenderHeight()))
     {
         _convDesc.Resources.InEmissive = nullptr;
         _emissiveProbeCompatible = false;
@@ -3252,10 +2990,9 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
 
     _convDesc.FloorSourceBase = { colorBase.x, colorBase.y, depthBase.x, depthBase.y };
     _convDesc.InputBase1 = { normalBase.x, normalBase.y, roughnessBase.x, roughnessBase.y };
-    _convDesc.InputBase2 = { ngxSpecularHitDistanceBase.x, ngxSpecularHitDistanceBase.y,
-                             diffuseAlbedoBase.x, diffuseAlbedoBase.y };
-    _convDesc.InputBase3 = { specularAlbedoBase.x, specularAlbedoBase.y,
-                             biasBase.x, biasBase.y };
+    _convDesc.InputBase2 = { ngxSpecularHitDistanceBase.x, ngxSpecularHitDistanceBase.y, diffuseAlbedoBase.x,
+                             diffuseAlbedoBase.y };
+    _convDesc.InputBase3 = { specularAlbedoBase.x, specularAlbedoBase.y, biasBase.x, biasBase.y };
     _convDesc.InputBase4 = { emissiveBase.x, emissiveBase.y, 0u, 0u };
 
     const uint32_t renderWidth = RenderWidth();
@@ -3270,36 +3007,27 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
     // actual D3D12 extent must win when the two contracts no longer fit.
     if (_convDesc.Resources.InMotionVectors)
     {
-        const D3D12_RESOURCE_DESC motionDesc =
-            _convDesc.Resources.InMotionVectors->GetDesc();
-        const bool declaredExtentFits =
-            uint64_t(motionBase.x) + motionWidth <= motionDesc.Width &&
-            uint64_t(motionBase.y) + motionHeight <= motionDesc.Height;
+        const D3D12_RESOURCE_DESC motionDesc = _convDesc.Resources.InMotionVectors->GetDesc();
+        const bool declaredExtentFits = uint64_t(motionBase.x) + motionWidth <= motionDesc.Width &&
+                                        uint64_t(motionBase.y) + motionHeight <= motionDesc.Height;
         const bool zeroBasedLogicalExtentFits =
-            uint64_t(motionWidth) <= motionDesc.Width &&
-            uint64_t(motionHeight) <= motionDesc.Height;
+            uint64_t(motionWidth) <= motionDesc.Width && uint64_t(motionHeight) <= motionDesc.Height;
         const bool zeroBasedRenderExtentFits =
-            uint64_t(RenderWidth()) <= motionDesc.Width &&
-            uint64_t(RenderHeight()) <= motionDesc.Height;
+            uint64_t(RenderWidth()) <= motionDesc.Width && uint64_t(RenderHeight()) <= motionDesc.Height;
         if (!declaredExtentFits && zeroBasedLogicalExtentFits)
         {
-            LOG_WARN(
-                "[RR_INPUT] NGX motion resource is {}x{} and cannot contain the declared "
-                "subrect {}x{}+({},{}); retaining its logical resolution with a "
-                "zero-based origin",
-                motionDesc.Width, motionDesc.Height, motionWidth, motionHeight,
-                motionBase.x, motionBase.y);
+            LOG_WARN("[RR_INPUT] NGX motion resource is {}x{} and cannot contain the declared "
+                     "subrect {}x{}+({},{}); retaining its logical resolution with a "
+                     "zero-based origin",
+                     motionDesc.Width, motionDesc.Height, motionWidth, motionHeight, motionBase.x, motionBase.y);
             motionBase = { 0u, 0u };
         }
-        else if (!declaredExtentFits && displayResolutionMotion &&
-                 zeroBasedRenderExtentFits)
+        else if (!declaredExtentFits && displayResolutionMotion && zeroBasedRenderExtentFits)
         {
-            LOG_WARN(
-                "[RR_INPUT] NGX motion resource is {}x{} and cannot contain the declared "
-                "display-resolution subrect {}x{}+({},{}); treating it as Streamline's "
-                "zero-based render-resolution camera-completed motion",
-                motionDesc.Width, motionDesc.Height, motionWidth, motionHeight,
-                motionBase.x, motionBase.y);
+            LOG_WARN("[RR_INPUT] NGX motion resource is {}x{} and cannot contain the declared "
+                     "display-resolution subrect {}x{}+({},{}); treating it as Streamline's "
+                     "zero-based render-resolution camera-completed motion",
+                     motionDesc.Width, motionDesc.Height, motionWidth, motionHeight, motionBase.x, motionBase.y);
             motionWidth = RenderWidth();
             motionHeight = RenderHeight();
             motionBase = { 0u, 0u };
@@ -3332,29 +3060,24 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
             // NGX helper APIs normalize a missing, non-finite, or zero component
             // to one. Preserve a valid negative component because it can encode
             // the title's axis convention.
-            LOG_WARN(
-                "[RR_INPUT] MV scale component missing/invalid/zero (x={}, y={}); "
-                "using NGX's unit fallback per component",
-                validMotionScaleX, validMotionScaleY);
+            LOG_WARN("[RR_INPUT] MV scale component missing/invalid/zero (x={}, y={}); "
+                     "using NGX's unit fallback per component",
+                     validMotionScaleX, validMotionScaleY);
         }
 
-        _convDesc.MotionInputSize = {
-            static_cast<float>(motionWidth), static_cast<float>(motionHeight),
-            1.0f / static_cast<float>(motionWidth), 1.0f / static_cast<float>(motionHeight)
-        };
-        _convDesc.MotionTransform = {
-            // NGX MV scale converts the stored value to render-pixel motion.
-            // The texture extent only controls where that value is fetched; UV
-            // normalization always uses the render extent, including high-res MV.
-            motionScaleX / static_cast<float>(RenderWidth()),
-            motionScaleY / static_cast<float>(RenderHeight()), 0.0f, 0.0f
+        _convDesc.MotionInputSize = { static_cast<float>(motionWidth), static_cast<float>(motionHeight),
+                                      1.0f / static_cast<float>(motionWidth), 1.0f / static_cast<float>(motionHeight) };
+        _convDesc.MotionTransform = { // NGX MV scale converts the stored value to render-pixel motion.
+                                      // The texture extent only controls where that value is fetched; UV
+                                      // normalization always uses the render extent, including high-res MV.
+                                      motionScaleX / static_cast<float>(RenderWidth()),
+                                      motionScaleY / static_cast<float>(RenderHeight()), 0.0f, 0.0f
         };
     }
 
-    ResolveSpecularHitDistance(
-        inParams, rrTagSnapshot, renderWidth, renderHeight, motionWidth, motionHeight,
-        ngxSpecularHitDistance, ngxSpecularRayDirectionHitDistance,
-        ngxSpecularHitDistanceBase, ngxSpecularRayDirectionHitDistanceBase);
+    ResolveSpecularHitDistance(inParams, rrTagSnapshot, renderWidth, renderHeight, motionWidth, motionHeight,
+                               ngxSpecularHitDistance, ngxSpecularRayDirectionHitDistance, ngxSpecularHitDistanceBase,
+                               ngxSpecularRayDirectionHitDistanceBase);
 
     AcquireOptionalInputs(inParams, rrTagSnapshot, renderWidth, renderHeight);
 
@@ -3368,34 +3091,27 @@ bool FSRDFeatureDx12::PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParam
         jitterY = 0.0f;
 
     const XMFLOAT2 currentJitter { jitterX, jitterY };
-    const XMFLOAT2 previousJitter = (_isInReset || !_hasDenoiserHistory)
-        ? currentJitter
-        : _previousDenoiserJitter;
-    _convDesc.JitterOffsets = {
-        currentJitter.x, currentJitter.y, previousJitter.x, previousJitter.y
-    };
+    const XMFLOAT2 previousJitter = (_isInReset || !_hasDenoiserHistory) ? currentJitter : _previousDenoiserJitter;
+    _convDesc.JitterOffsets = { currentJitter.x, currentJitter.y, previousJitter.x, previousJitter.y };
     _convDesc.MotionHistoryValid = _hasDenoiserHistory && !_isInReset;
     _convDesc.DisplayResolutionMotion = displayResolutionMotion;
     _convDesc.MotionVectorsJittered = JitteredMV();
 
-    isReady &= ValidateSourceExtent("Color", _convDesc.Resources.InColor,
-                                    colorBase, renderWidth, renderHeight);
-    isReady &= ValidateSourceExtent("Depth", _convDesc.Resources.InDepth,
-                                    depthBase, renderWidth, renderHeight);
-    isReady &= ValidateSourceExtent("MotionVectors", _convDesc.Resources.InMotionVectors,
-                                    motionBase, motionWidth, motionHeight);
-    isReady &= ValidateSourceExtent("Normals", _convDesc.Resources.InNormals,
-                                    normalBase, renderWidth, renderHeight);
+    isReady &= ValidateSourceExtent("Color", _convDesc.Resources.InColor, colorBase, renderWidth, renderHeight);
+    isReady &= ValidateSourceExtent("Depth", _convDesc.Resources.InDepth, depthBase, renderWidth, renderHeight);
+    isReady &= ValidateSourceExtent("MotionVectors", _convDesc.Resources.InMotionVectors, motionBase, motionWidth,
+                                    motionHeight);
+    isReady &= ValidateSourceExtent("Normals", _convDesc.Resources.InNormals, normalBase, renderWidth, renderHeight);
     if (_roughnessSource == RoughnessSource::Separate)
-        isReady &= ValidateSourceExtent("Roughness", _convDesc.Resources.InRoughness,
-                                        roughnessBase, renderWidth, renderHeight);
-    isReady &= ValidateSourceExtent("DiffuseAlbedo", _convDesc.Resources.InDiffAlbedo,
-                                    diffuseAlbedoBase, renderWidth, renderHeight);
-    isReady &= ValidateSourceExtent("SpecularAlbedo", _convDesc.Resources.InSpecAlbedo,
-                                    specularAlbedoBase, renderWidth, renderHeight);
+        isReady &= ValidateSourceExtent("Roughness", _convDesc.Resources.InRoughness, roughnessBase, renderWidth,
+                                        renderHeight);
+    isReady &= ValidateSourceExtent("DiffuseAlbedo", _convDesc.Resources.InDiffAlbedo, diffuseAlbedoBase, renderWidth,
+                                    renderHeight);
+    isReady &= ValidateSourceExtent("SpecularAlbedo", _convDesc.Resources.InSpecAlbedo, specularAlbedoBase, renderWidth,
+                                    renderHeight);
     if (_convDesc.Resources.InBiasMask)
-        isReady &= ValidateSourceExtent("BiasCurrentColor", _convDesc.Resources.InBiasMask,
-                                        biasBase, renderWidth, renderHeight);
+        isReady &= ValidateSourceExtent("BiasCurrentColor", _convDesc.Resources.InBiasMask, biasBase, renderWidth,
+                                        renderHeight);
 
     ResolveDiffuseHitDistance(inParams, renderWidth, renderHeight);
 
@@ -3465,8 +3181,8 @@ void FSRDFeatureDx12::ApplyDepthInterpretation()
     {
         hardwareDepth = true;
         depthSource = (_hasNGXDepthType && !_ngxReportedHWDepth)
-            ? "depth-stencil resource, overriding the title's linear declaration"
-            : "depth-stencil resource";
+                          ? "depth-stencil resource, overriding the title's linear declaration"
+                          : "depth-stencil resource";
     }
     else if (_hasNGXDepthType)
     {
@@ -3496,8 +3212,7 @@ void FSRDFeatureDx12::ApplyDepthInterpretation()
         if (_appliedHardwareDepth >= 0)
         {
             LOG_INFO("[RR_INPUT] depth interpretation changed: {} -> {}; resetting denoiser history",
-                     _appliedHardwareDepth != 0 ? "hardware" : "linear",
-                     hardwareDepth ? "hardware" : "linear");
+                     _appliedHardwareDepth != 0 ? "hardware" : "linear", hardwareDepth ? "hardware" : "linear");
             InvalidateDenoiserHistory();
         }
         else
@@ -3513,12 +3228,10 @@ void FSRDFeatureDx12::ApplyDepthInterpretation()
                 depthFlags = static_cast<uint32_t>(depthDesc.Flags);
             }
 
-            LOG_INFO(
-                "[RR_INPUT] depth interpretation: {} (source: {}); resource format={}, "
-                "resourceFlags={:#x}, ngxDeclared={}",
-                hardwareDepth ? "hardware" : "linear", depthSource,
-                magic_enum::enum_name(depthFormat), depthFlags,
-                _hasNGXDepthType ? (_ngxReportedHWDepth ? "hardware" : "linear") : "absent");
+            LOG_INFO("[RR_INPUT] depth interpretation: {} (source: {}); resource format={}, "
+                     "resourceFlags={:#x}, ngxDeclared={}",
+                     hardwareDepth ? "hardware" : "linear", depthSource, magic_enum::enum_name(depthFormat), depthFlags,
+                     _hasNGXDepthType ? (_ngxReportedHWDepth ? "hardware" : "linear") : "absent");
         }
 
         _appliedHardwareDepth = appliedHardwareDepth;
@@ -3528,25 +3241,20 @@ void FSRDFeatureDx12::ApplyDepthInterpretation()
 
     if (!_isHWDepth)
         _convDesc.Flags |= (uint32_t) FSRDConvFlags::IsDepthLinear;
-
 }
 
 bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InCommandList)
 {
-    const auto& cfg = *Config::Instance(); 
+    const auto& cfg = *Config::Instance();
     const auto dbgMode = static_cast<DebugModes>(cfg.FfxDenoiserDebugMode.value_or_default());
     // Prepare input converter
-    _convDesc.RenderSize = 
-    { 
-        (float) RenderWidth(), (float) RenderHeight(), 
-        1.0f / (float) RenderWidth(), 1.0f / (float) RenderHeight()
-    };
-    
+    _convDesc.RenderSize = { (float) RenderWidth(), (float) RenderHeight(), 1.0f / (float) RenderWidth(),
+                             1.0f / (float) RenderHeight() };
 
     if (_convDesc.MotionVectorsJittered)
-        _convDesc.Flags |= (uint32_t)FSRDConvFlags::MotionVectorsJittered;
+        _convDesc.Flags |= (uint32_t) FSRDConvFlags::MotionVectorsJittered;
     if (_convDesc.DisplayResolutionMotion)
-        _convDesc.Flags |= (uint32_t)FSRDConvFlags::DisplayResolutionMotion;
+        _convDesc.Flags |= (uint32_t) FSRDConvFlags::DisplayResolutionMotion;
     // The packing shader selects its debug view from the flag word's debug bits
     // (GetDebugMode) and writes it to the specular signal output, which is what
     // the debug blit shows. Nothing else carried the user's selection there, so
@@ -3555,40 +3263,31 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     _convDesc.Flags |= (uint32_t) GetConvDebugFlags(dbgMode);
     const bool normalsInViewSpace = cfg.FfxDenoiserNormalsInViewSpace.value_or_default();
     if (normalsInViewSpace)
-        _convDesc.Flags |= (uint32_t)FSRDConvFlags::NormalsViewSpace;
+        _convDesc.Flags |= (uint32_t) FSRDConvFlags::NormalsViewSpace;
 
     const int appliedNormalsInViewSpace = normalsInViewSpace ? 1 : 0;
     if (_appliedNormalsInViewSpace != appliedNormalsInViewSpace)
     {
         if (_appliedNormalsInViewSpace >= 0)
         {
-            LOG_INFO(
-                "[RR_INPUT] normal space changed: {}->{}; resetting denoiser history",
-                _appliedNormalsInViewSpace != 0 ? "view" : "world",
-                normalsInViewSpace ? "view" : "world");
+            LOG_INFO("[RR_INPUT] normal space changed: {}->{}; resetting denoiser history",
+                     _appliedNormalsInViewSpace != 0 ? "view" : "world", normalsInViewSpace ? "view" : "world");
             InvalidateDenoiserHistory();
         }
         _appliedNormalsInViewSpace = appliedNormalsInViewSpace;
     }
     if (_specularSignalDescType == FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_SPECULAR)
-        _convDesc.Flags |= (uint32_t)FSRDConvFlags::SpecularSignalIndirect;
+        _convDesc.Flags |= (uint32_t) FSRDConvFlags::SpecularSignalIndirect;
     _convDesc.FloorIsolation = std::clamp(cfg.FfxDenoiserFloorIsolation.value_or_default(), 0.0f, 1.0f);
-    _convDesc.RoughnessFloor = std::clamp(
-        cfg.FfxDenoiserRoughnessFloor.value_or_default(), 0.0f, 1.0f);
-    _convDesc.FloorHandoverMode = static_cast<uint32_t>(
-        std::clamp(cfg.FfxDenoiserFloorHandover.value_or_default(), 0, 2));
-    _convDesc.FloorHandoverStrength =
-        std::clamp(cfg.FfxDenoiserFloorHandoverStrength.value_or_default(), 0.0f, 1.0f);
-    _convDesc.FloorRawBlend =
-        std::clamp(cfg.FfxDenoiserFloorRawBlend.value_or_default(), 0.0f, 1.0f);
-    _convDesc.FloorStructureGate =
-        std::clamp(cfg.FfxDenoiserFloorStructureGate.value_or_default(), 0.0f, 1.0f);
-    _convDesc.DemodDivisorFloor =
-        std::clamp(cfg.FfxDenoiserDemodDivisorFloor.value_or_default(), 1e-4f, 0.5f);
-    _convDesc.FloorClampSmoothing =
-        std::clamp(cfg.FfxDenoiserFloorClampSmoothing.value_or_default(), 0.0f, 1.0f);
-    _convDesc.FloorHandoverDetail = std::clamp(
-        cfg.FfxDenoiserFloorHandoverDetail.value_or_default(), 0.0f, 1.0f);
+    _convDesc.RoughnessFloor = std::clamp(cfg.FfxDenoiserRoughnessFloor.value_or_default(), 0.0f, 1.0f);
+    _convDesc.FloorHandoverMode =
+        static_cast<uint32_t>(std::clamp(cfg.FfxDenoiserFloorHandover.value_or_default(), 0, 2));
+    _convDesc.FloorHandoverStrength = std::clamp(cfg.FfxDenoiserFloorHandoverStrength.value_or_default(), 0.0f, 1.0f);
+    _convDesc.FloorRawBlend = std::clamp(cfg.FfxDenoiserFloorRawBlend.value_or_default(), 0.0f, 1.0f);
+    _convDesc.FloorStructureGate = std::clamp(cfg.FfxDenoiserFloorStructureGate.value_or_default(), 0.0f, 1.0f);
+    _convDesc.DemodDivisorFloor = std::clamp(cfg.FfxDenoiserDemodDivisorFloor.value_or_default(), 1e-4f, 0.5f);
+    _convDesc.FloorClampSmoothing = std::clamp(cfg.FfxDenoiserFloorClampSmoothing.value_or_default(), 0.0f, 1.0f);
+    _convDesc.FloorHandoverDetail = std::clamp(cfg.FfxDenoiserFloorHandoverDetail.value_or_default(), 0.0f, 1.0f);
 
     _convDesc.Resources.InInspector = nullptr;
     _convDesc.InspectorChannel = ResTrack_Dx12::GetRRResourceChannel();
@@ -3597,8 +3296,7 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     // They previously disagreed - max(v, 1.0) here against clamp(v, 0.001, 1024)
     // there - so any value under 1.0 normalized OptiScaler's own NormDepth view
     // differently from AMD's, and the two could not be compared.
-    _convDesc.DebugDepthMax =
-        std::clamp(cfg.FfxDenoiserDebugDepthMax.value_or_default(), 0.001f, 1024.0f);
+    _convDesc.DebugDepthMax = std::clamp(cfg.FfxDenoiserDebugDepthMax.value_or_default(), 0.001f, 1024.0f);
 
     Microsoft::WRL::ComPtr<ID3D12Resource> inspectorResource;
     if (ResTrack_Dx12::IsRRResourceInspectorEnabled())
@@ -3616,15 +3314,13 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     {
         if (_appliedRoughnessFloor >= 0.0f)
         {
-            LOG_INFO(
-                "[RR_DIAG] RR roughness floor changed: floor {:.4f}->{:.4f}; "
-                "resetting denoiser history",
-                _appliedRoughnessFloor, _convDesc.RoughnessFloor);
+            LOG_INFO("[RR_DIAG] RR roughness floor changed: floor {:.4f}->{:.4f}; "
+                     "resetting denoiser history",
+                     _appliedRoughnessFloor, _convDesc.RoughnessFloor);
         }
         else
         {
-            LOG_INFO("[RR_DIAG] RR roughness floor initialized: floor={:.4f}",
-                     _convDesc.RoughnessFloor);
+            LOG_INFO("[RR_DIAG] RR roughness floor initialized: floor={:.4f}", _convDesc.RoughnessFloor);
         }
 
         _appliedRoughnessFloor = _convDesc.RoughnessFloor;
@@ -3635,7 +3331,7 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
         _convDesc.Flags |= (uint32_t) FSRDConvFlags::IsRoughnessPacked;
 
     if (_convDesc.Resources.InSpecHitDist)
-        _convDesc.Flags |= (uint32_t)FSRDConvFlags::HasSpecHitDistance;
+        _convDesc.Flags |= (uint32_t) FSRDConvFlags::HasSpecHitDistance;
     if (_convDesc.Resources.InEmissive)
         _convDesc.Flags |= (uint32_t) FSRDConvFlags::HasEmissiveInput;
 
@@ -3647,8 +3343,7 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     if (_convDesc.Resources.InResponsivityMask != nullptr)
         _convDesc.Flags |= (uint32_t) FSRDConvFlags::HasResponsivityMask;
 
-    _convDesc.ResponsivityTrustThreshold =
-        std::max(cfg.FfxDenoiserResponsivityThreshold.value_or_default(), 0.0f);
+    _convDesc.ResponsivityTrustThreshold = std::max(cfg.FfxDenoiserResponsivityThreshold.value_or_default(), 0.0f);
     _convDesc.ResponsivityInvert = cfg.FfxDenoiserResponsivityInvert.value_or_default();
     _convDesc.DiagnosticsEnabled = cfg.FfxDenoiserDiagnostics.value_or_default();
 
@@ -3688,20 +3383,17 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
         {
             loggedNear = planes.nearPlane;
             loggedFar = planes.farPlane;
-            LOG_INFO(
-                "[RR_DIAG] view planes: near={}, far={}, infinite={}, rightHanded={}, "
-                "depthInverted={}, hardwareDepth={}, projectionFromStreamline={}, "
-                "clipA={}, clipB={}, clipW={}",
-                planes.nearPlane, planes.farPlane, planes.isInfinite,
-                planes.isRightHanded, DepthInverted(), _isHWDepth,
-                _projectionFromStreamline,
-                _projMatrix.r[2].m128_f32[2], _projMatrix.r[2].m128_f32[3],
-                _projMatrix.r[3].m128_f32[2]);
+            LOG_INFO("[RR_DIAG] view planes: near={}, far={}, infinite={}, rightHanded={}, "
+                     "depthInverted={}, hardwareDepth={}, projectionFromStreamline={}, "
+                     "clipA={}, clipB={}, clipW={}",
+                     planes.nearPlane, planes.farPlane, planes.isInfinite, planes.isRightHanded, DepthInverted(),
+                     _isHWDepth, _projectionFromStreamline, _projMatrix.r[2].m128_f32[2], _projMatrix.r[2].m128_f32[3],
+                     _projMatrix.r[3].m128_f32[2]);
         }
     }
 
     if (_isRightHanded)
-        _convDesc.Flags |= (uint32_t)FSRDConvFlags::RightHanded;
+        _convDesc.Flags |= (uint32_t) FSRDConvFlags::RightHanded;
 
     ApplyDepthInterpretation();
 
@@ -3712,11 +3404,8 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     // field leaves the definition untouched, and a title's tag becoming usable or unusable
     // changes it with no menu interaction at all, which is the half of this that a config
     // comparison cannot see.
-    const DepthDefinition depthDefinition =
-    {
-        .titleLinearDepth = _convDesc.Resources.InTitleLinearDepth != nullptr,
-        .rightHanded = _isRightHanded
-    };
+    const DepthDefinition depthDefinition = { .titleLinearDepth = _convDesc.Resources.InTitleLinearDepth != nullptr,
+                                              .rightHanded = _isRightHanded };
 
     if (_hasAppliedDepthDefinition && depthDefinition != _appliedDepthDefinition)
     {
@@ -3761,13 +3450,9 @@ bool FSRDFeatureDx12::ConvertDenoiserBuffers(ID3D12GraphicsCommandList* InComman
     return true;
 }
 
-static bool ValidateRRDispatchChain(ID3D12GraphicsCommandList* commandList,
-                                    const ffxDispatchDescDenoiser& dispatchDesc,
-                                    ffxStructType_t expectedDiffuseType,
-                                    ffxStructType_t expectedSpecularType,
-                                    bool expectDiffuseSignal,
-                                    bool expectSpecularSignal,
-                                    bool expectedAmbientOcclusion)
+static bool ValidateRRDispatchChain(ID3D12GraphicsCommandList* commandList, const ffxDispatchDescDenoiser& dispatchDesc,
+                                    ffxStructType_t expectedDiffuseType, ffxStructType_t expectedSpecularType,
+                                    bool expectDiffuseSignal, bool expectSpecularSignal, bool expectedAmbientOcclusion)
 {
     if (!commandList || dispatchDesc.commandList != commandList)
     {
@@ -3786,8 +3471,7 @@ static bool ValidateRRDispatchChain(ID3D12GraphicsCommandList* commandList,
     bool foundAmbientOcclusion = false;
     bool foundDebugView = false;
 
-    for (const ffxDispatchDescHeader* signal = dispatchDesc.header.pNext;
-         signal != nullptr; signal = signal->pNext)
+    for (const ffxDispatchDescHeader* signal = dispatchDesc.header.pNext; signal != nullptr; signal = signal->pNext)
     {
         if (signal->type == FFX_API_DISPATCH_DESC_TYPE_DENOISER_DEBUG_VIEW)
         {
@@ -3810,15 +3494,14 @@ static bool ValidateRRDispatchChain(ID3D12GraphicsCommandList* commandList,
             found = &foundAmbientOcclusion;
         else
         {
-            LOG_ERROR("RR 1.2 dispatch contains unexpected descriptor {} ({:#x})",
-                      GetSignalTypeName(signal->type), signal->type);
+            LOG_ERROR("RR 1.2 dispatch contains unexpected descriptor {} ({:#x})", GetSignalTypeName(signal->type),
+                      signal->type);
             return false;
         }
 
         if (*found)
         {
-            LOG_ERROR("RR 1.2 dispatch contains duplicate {} descriptor",
-                      GetSignalTypeName(signal->type));
+            LOG_ERROR("RR 1.2 dispatch contains duplicate {} descriptor", GetSignalTypeName(signal->type));
             return false;
         }
         *found = true;
@@ -3829,8 +3512,8 @@ static bool ValidateRRDispatchChain(ID3D12GraphicsCommandList* commandList,
     {
         LOG_ERROR("RR 1.2 dispatch signal mismatch: diffuse={}, specular={}, AO={}; "
                   "expected diffuse={}, specular={}, AO={}",
-                  foundDiffuse, foundSpecular, foundAmbientOcclusion,
-                  expectDiffuseSignal, expectSpecularSignal, expectedAmbientOcclusion);
+                  foundDiffuse, foundSpecular, foundAmbientOcclusion, expectDiffuseSignal, expectSpecularSignal,
+                  expectedAmbientOcclusion);
         return false;
     }
 
@@ -3849,18 +3532,14 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
         return false;
     }
 
-
-    if (!ValidateRRDispatchChain(InCommandList, dispatchDesc,
-                                 _diffuseSignalDescType, _specularSignalDescType,
-                                 _denoiseDiffuse, _denoiseSpecular,
-                                 _ambientOcclusionEnabled))
+    if (!ValidateRRDispatchChain(InCommandList, dispatchDesc, _diffuseSignalDescType, _specularSignalDescType,
+                                 _denoiseDiffuse, _denoiseSpecular, _ambientOcclusionEnabled))
         return false;
 
     const ffxDispatchDescHeader* diffuseHeader = nullptr;
     const ffxDispatchDescHeader* specularHeader = nullptr;
     const ffxDispatchDescHeader* ambientOcclusionHeader = nullptr;
-    for (const ffxDispatchDescHeader* signal = dispatchDesc.header.pNext;
-         signal != nullptr; signal = signal->pNext)
+    for (const ffxDispatchDescHeader* signal = dispatchDesc.header.pNext; signal != nullptr; signal = signal->pNext)
     {
         if (signal->type == _diffuseSignalDescType)
             diffuseHeader = signal;
@@ -3874,9 +3553,10 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
     // header + signal ABI. The headers stay nullable: a single-signal chain
     // legitimately omits one, so references are formed only where that
     // signal's presence is known.
-    const auto* ambientOcclusion = ambientOcclusionHeader
-        ? reinterpret_cast<const ffxDispatchDescDenoiserAmbientOcclusion*>(ambientOcclusionHeader)
-        : nullptr;
+    const auto* ambientOcclusion =
+        ambientOcclusionHeader
+            ? reinterpret_cast<const ffxDispatchDescDenoiserAmbientOcclusion*>(ambientOcclusionHeader)
+            : nullptr;
     const bool resetRequested = !!(dispatchDesc.flags & FFX_DENOISER_DISPATCH_RESET);
     const bool resetTransition = resetRequested && !_lastDispatchRequestedReset;
     const bool logDispatchSnapshot = _logNextDenoiserDispatch || resetTransition;
@@ -3892,8 +3572,7 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
         {
             // The validated chain carries both signals here, so the header
             // dereference below is sound.
-            const auto& directDiffuse =
-                *reinterpret_cast<const ffxDispatchDescDenoiserDirectDiffuse*>(diffuseHeader);
+            const auto& directDiffuse = *reinterpret_cast<const ffxDispatchDescDenoiserDirectDiffuse*>(diffuseHeader);
             const auto& indirectSpecular =
                 *reinterpret_cast<const ffxDispatchDescDenoiserIndirectSpecular*>(specularHeader);
             LogRRDispatchSnapshot(dispatchDesc, directDiffuse, indirectSpecular, ambientOcclusion);
@@ -3901,75 +3580,47 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
         else
         {
             LOG_INFO("[RR_DIAG] single-signal dispatch: head={:#x} -> {} -> tail=0x0, frame={}, reset={}",
-                     dispatchDesc.header.type, GetSignalTypeName(_denoiseDiffuse ? _diffuseSignalDescType : _specularSignalDescType),
+                     dispatchDesc.header.type,
+                     GetSignalTypeName(_denoiseDiffuse ? _diffuseSignalDescType : _specularSignalDescType),
                      dispatchDesc.frameIndex, !!(dispatchDesc.flags & FFX_DENOISER_DISPATCH_RESET));
         }
         if (_denoiseDiffuse && _denoiseSpecular)
         {
-        LogRRDiffuseHitDistanceProbe(
-            NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance,
-            _diffuseHitDistanceProbe,
-            _diffuseHitDistanceBaseX,
-            _diffuseHitDistanceBaseY,
-            dispatchDesc.renderSize.width,
-            dispatchDesc.renderSize.height,
-            false);
-        LogRRDiffuseHitDistanceProbe(
-            NVSDK_NGX_Parameter_DLSSD_DiffuseRayDirectionHitDistance,
-            _diffuseRayDirectionHitDistanceProbe,
-            _diffuseRayDirectionHitDistanceBaseX,
-            _diffuseRayDirectionHitDistanceBaseY,
-            dispatchDesc.renderSize.width,
-            dispatchDesc.renderSize.height,
-            true);
-        LogRREmissiveProbe(
-            _emissiveProbe,
-            _emissiveProbeCompatible,
-            _emissiveProbeFromStreamline,
-            dispatchDesc.renderSize.width,
-            dispatchDesc.renderSize.height);
-        LogRRGBufferIdentityProbe(
-            NVSDK_NGX_Parameter_GBuffer_MaterialId,
-            _materialIdProbe,
-            dispatchDesc.renderSize.width,
-            dispatchDesc.renderSize.height);
-        LogRRGBufferIdentityProbe(
-            NVSDK_NGX_Parameter_GBuffer_ShadingModelId,
-            _shadingModelIdProbe,
-            dispatchDesc.renderSize.width,
-            dispatchDesc.renderSize.height);
-        StreamlineHooks::logRRSignalTagDiagnostics(
-            dispatchDesc.renderSize.width, dispatchDesc.renderSize.height);
-        StreamlineHooks::logSLTagInventoryDiagnostics(
-            dispatchDesc.renderSize.width, dispatchDesc.renderSize.height);
-        StreamlineHooks::logRRNGXPointerDiagnostics();
-        ResTrack_Dx12::LogRRScalarResourceCandidates(
-            dispatchDesc.renderSize.width, dispatchDesc.renderSize.height);
-        LOG_INFO(
-            "[RR_DIAG] conversion snapshot: viewSource={}, projectionSource={}, handedness={}, depthInput={}, "
-            "depthDirection={}, motionResolution={}, roughness={}, roughnessFloor={:.4f}, "
-            "zeroRoughnessMaterialType=unified-type-1, "
-            "specularHitDistance={} (invalid={}), diffuseHitDistance={}, diffuseDirectionHitDistance={}, "
-            "emissiveInput={} (previewCompatible={})",
-            _viewFromStreamline ? "Streamline" : "NGX",
-            _projectionFromStreamline ? "StreamlineReconstruction" : "NGX",
-            _isRightHanded ? "RH" : "LH",
-            _isHWDepth ? "hardware" : "linear",
-            DepthInverted() ? "reversed-Z" : "standard-Z",
-            LowResMV() ? "render" : "output",
-            _roughnessSource == RoughnessSource::Packed ? "packed" : "separate",
-            _convDesc.RoughnessFloor,
-            (_convDesc.Resources.InSpecHitDist ||
-             _convDesc.Resources.InSpecularRayDirectionHitDistance)
-                ? "present"
-                : "absent",
-            _specularSignalDescType == FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_SPECULAR
-                ? "negative"
-                : "zero",
-            _diffuseHitDistanceProbe ? "present" : "absent",
-            _diffuseRayDirectionHitDistanceProbe ? "present" : "absent",
-            _emissiveProbe ? "present" : "absent",
-            _emissiveProbeCompatible);
+            LogRRDiffuseHitDistanceProbe(NVSDK_NGX_Parameter_DLSSD_DiffuseHitDistance, _diffuseHitDistanceProbe,
+                                         _diffuseHitDistanceBaseX, _diffuseHitDistanceBaseY,
+                                         dispatchDesc.renderSize.width, dispatchDesc.renderSize.height, false);
+            LogRRDiffuseHitDistanceProbe(NVSDK_NGX_Parameter_DLSSD_DiffuseRayDirectionHitDistance,
+                                         _diffuseRayDirectionHitDistanceProbe, _diffuseRayDirectionHitDistanceBaseX,
+                                         _diffuseRayDirectionHitDistanceBaseY, dispatchDesc.renderSize.width,
+                                         dispatchDesc.renderSize.height, true);
+            LogRREmissiveProbe(_emissiveProbe, _emissiveProbeCompatible, _emissiveProbeFromStreamline,
+                               dispatchDesc.renderSize.width, dispatchDesc.renderSize.height);
+            LogRRGBufferIdentityProbe(NVSDK_NGX_Parameter_GBuffer_MaterialId, _materialIdProbe,
+                                      dispatchDesc.renderSize.width, dispatchDesc.renderSize.height);
+            LogRRGBufferIdentityProbe(NVSDK_NGX_Parameter_GBuffer_ShadingModelId, _shadingModelIdProbe,
+                                      dispatchDesc.renderSize.width, dispatchDesc.renderSize.height);
+            StreamlineHooks::logRRSignalTagDiagnostics(dispatchDesc.renderSize.width, dispatchDesc.renderSize.height);
+            StreamlineHooks::logSLTagInventoryDiagnostics(dispatchDesc.renderSize.width,
+                                                          dispatchDesc.renderSize.height);
+            StreamlineHooks::logRRNGXPointerDiagnostics();
+            ResTrack_Dx12::LogRRScalarResourceCandidates(dispatchDesc.renderSize.width, dispatchDesc.renderSize.height);
+            LOG_INFO(
+                "[RR_DIAG] conversion snapshot: viewSource={}, projectionSource={}, handedness={}, depthInput={}, "
+                "depthDirection={}, motionResolution={}, roughness={}, roughnessFloor={:.4f}, "
+                "zeroRoughnessMaterialType=unified-type-1, "
+                "specularHitDistance={} (invalid={}), diffuseHitDistance={}, diffuseDirectionHitDistance={}, "
+                "emissiveInput={} (previewCompatible={})",
+                _viewFromStreamline ? "Streamline" : "NGX",
+                _projectionFromStreamline ? "StreamlineReconstruction" : "NGX", _isRightHanded ? "RH" : "LH",
+                _isHWDepth ? "hardware" : "linear", DepthInverted() ? "reversed-Z" : "standard-Z",
+                LowResMV() ? "render" : "output", _roughnessSource == RoughnessSource::Packed ? "packed" : "separate",
+                _convDesc.RoughnessFloor,
+                (_convDesc.Resources.InSpecHitDist || _convDesc.Resources.InSpecularRayDirectionHitDistance) ? "present"
+                                                                                                             : "absent",
+                _specularSignalDescType == FFX_API_DISPATCH_DESC_TYPE_DENOISER_INDIRECT_SPECULAR ? "negative" : "zero",
+                _diffuseHitDistanceProbe ? "present" : "absent",
+                _diffuseRayDirectionHitDistanceProbe ? "present" : "absent", _emissiveProbe ? "present" : "absent",
+                _emissiveProbeCompatible);
         }
     }
 
@@ -3978,9 +3629,8 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
     // comparison below re-applies whichever source just became active.
     const bool useAmdDefaults = cfg.FfxDenoiserUseAmdDefaults.value_or_default();
 
-    const auto updateConfiguration = [this, useAmdDefaults](
-                                         const CustomOptional<float>& cfgValue, float amdDefault,
-                                         float& currentValue, FfxApiConfigureDenoiserKey key)
+    const auto updateConfiguration = [this, useAmdDefaults](const CustomOptional<float>& cfgValue, float amdDefault,
+                                                            float& currentValue, FfxApiConfigureDenoiserKey key)
     {
         const float requestedValue = useAmdDefaults ? amdDefault : cfgValue.value_or_default();
         if (requestedValue == currentValue)
@@ -4007,11 +3657,9 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
                              _denoiserSettings.m_CrossBilateralNormalStrength,
                              FFX_API_CONFIGURE_DENOISER_KEY_CROSS_BILATERAL_NORMAL_STRENGTH) ||
         !updateConfiguration(cfg.FfxDenoiserStabilityBias, _denoiserAmdDefaults.m_StabilityBias,
-                             _denoiserSettings.m_StabilityBias,
-                             FFX_API_CONFIGURE_DENOISER_KEY_STABILITY_BIAS) ||
+                             _denoiserSettings.m_StabilityBias, FFX_API_CONFIGURE_DENOISER_KEY_STABILITY_BIAS) ||
         !updateConfiguration(cfg.FfxDenoiserMaxRadiance, _denoiserAmdDefaults.m_MaxRadiance,
-                             _denoiserSettings.m_MaxRadiance,
-                             FFX_API_CONFIGURE_DENOISER_KEY_MAX_RADIANCE) ||
+                             _denoiserSettings.m_MaxRadiance, FFX_API_CONFIGURE_DENOISER_KEY_MAX_RADIANCE) ||
         !updateConfiguration(cfg.FfxDenoiserRadianceClip, _denoiserAmdDefaults.m_RadianceClipStdK,
                              _denoiserSettings.m_RadianceClipStdK,
                              FFX_API_CONFIGURE_DENOISER_KEY_RADIANCE_CLIP_STD_K) ||
@@ -4022,8 +3670,7 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
         return false;
     }
 
-    const float requestedDebugDepthMax =
-        std::clamp(cfg.FfxDenoiserDebugDepthMax.value_or_default(), 0.001f, 1024.0f);
+    const float requestedDebugDepthMax = std::clamp(cfg.FfxDenoiserDebugDepthMax.value_or_default(), 0.001f, 1024.0f);
     if (requestedDebugDepthMax != _denoiserSettings.m_DebugViewLinearDepthBounds.max)
     {
         const FfxApiFloatBounds previousBounds = _denoiserSettings.m_DebugViewLinearDepthBounds;
@@ -4043,8 +3690,7 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
     ID3D12InfoQueue* infoQueue = nullptr;
     uint64_t firstD3D12Message = 0;
     const bool hasScopedInfoQueue =
-        logDispatchSnapshot && Device &&
-        SUCCEEDED(Device->QueryInterface(IID_PPV_ARGS(&infoQueue)));
+        logDispatchSnapshot && Device && SUCCEEDED(Device->QueryInterface(IID_PPV_ARGS(&infoQueue)));
 
     if (hasScopedInfoQueue)
     {
@@ -4052,18 +3698,15 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
     }
     else if (logDispatchSnapshot)
     {
-        LOG_INFO(
-            "[RR_DIAG][D3D12] InfoQueue unavailable. Dispatch return codes and device-removal reason are still "
-            "captured; enable the D3D12 debug layer before device creation for validation messages.");
+        LOG_INFO("[RR_DIAG][D3D12] InfoQueue unavailable. Dispatch return codes and device-removal reason are still "
+                 "captured; enable the D3D12 debug layer before device creation for validation messages.");
     }
 
     ++_denoiserDispatchAttempts;
     if (_convDesc.DiagnosticsEnabled)
     {
-        LOG_DEBUG("Dispatching FSR-RR 1.2 frame {} with {} + {}",
-                  dispatchDesc.frameIndex,
-                  GetSignalTypeName(_diffuseSignalDescType),
-                  GetSignalTypeName(_specularSignalDescType));
+        LOG_DEBUG("Dispatching FSR-RR 1.2 frame {} with {} + {}", dispatchDesc.frameIndex,
+                  GetSignalTypeName(_diffuseSignalDescType), GetSignalTypeName(_specularSignalDescType));
     }
     const ffxReturnCode_t result = FfxApiProxy::D3D12_Dispatch(&_pDenoiserCtx, &dispatchDesc.header);
     _lastDispatchRequestedReset = resetRequested;
@@ -4077,13 +3720,11 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
     if (result != FFX_API_RETURN_OK)
     {
         ++_denoiserDispatchFailures;
-        LOG_ERROR(
-            "[RR_DIAG] dispatch failed: frame={}, result={}, attempts={}, successes={}, failures={}",
-            dispatchDesc.frameIndex, FfxApiProxy::ReturnCodeToString(result),
-            _denoiserDispatchAttempts, _denoiserDispatchSuccesses, _denoiserDispatchFailures);
+        LOG_ERROR("[RR_DIAG] dispatch failed: frame={}, result={}, attempts={}, successes={}, failures={}",
+                  dispatchDesc.frameIndex, FfxApiProxy::ReturnCodeToString(result), _denoiserDispatchAttempts,
+                  _denoiserDispatchSuccesses, _denoiserDispatchFailures);
 
-        if (!hasScopedInfoQueue && Device &&
-            SUCCEEDED(Device->QueryInterface(IID_PPV_ARGS(&infoQueue))))
+        if (!hasScopedInfoQueue && Device && SUCCEEDED(Device->QueryInterface(IID_PPV_ARGS(&infoQueue))))
         {
             const uint64_t messageCount = infoQueue->GetNumStoredMessagesAllowedByRetrievalFilter();
             const uint64_t firstRecentMessage = messageCount > 32u ? messageCount - 32u : 0u;
@@ -4100,8 +3741,7 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
             }
             else
             {
-                LOG_ERROR("[RR_DIAG] D3D12 device is removed: HRESULT={:#x}",
-                          static_cast<uint32_t>(removedReason));
+                LOG_ERROR("[RR_DIAG] D3D12 device is removed: HRESULT={:#x}", static_cast<uint32_t>(removedReason));
                 Util::GetDeviceRemovedReason(Device);
             }
         }
@@ -4129,32 +3769,26 @@ bool FSRDFeatureDx12::DispatchDenoiser(ID3D12GraphicsCommandList* InCommandList,
     if ((_denoiserDispatchSuccesses % 60u) == 0u)
     {
         const XMFLOAT3 cameraPosition = GetFloat3Column(_invViewMatrix, 3);
-        LOG_INFO(
-            "[RR_CFG] frame={}, reset={}, render={}x{}, depthBounds=[{:.4f}, {:.4f}], "
-            "jitter=[{:.6f}, {:.6f}] (prev [{:.6f}, {:.6f}]), cameraDelta=[{:.6f}, {:.6f}, {:.6f}], "
-            "cameraPosition=[{:.6f}, {:.6f}, {:.6f}], "
-            "depthInterpretation={}, resetFrame={}, historyValid={}, viewSource={}, "
-            "signals={} + {} (diffuseEnabled={}, specularEnabled={})",
-            dispatchDesc.frameIndex, resetRequested,
-            dispatchDesc.renderSize.width, dispatchDesc.renderSize.height,
-            dispatchDesc.linearDepthBounds.min, dispatchDesc.linearDepthBounds.max,
-            dispatchDesc.jitterOffsets.x, dispatchDesc.jitterOffsets.y,
-            _convDesc.JitterOffsets.z, _convDesc.JitterOffsets.w,
-            dispatchDesc.cameraPositionDelta.x, dispatchDesc.cameraPositionDelta.y,
-            dispatchDesc.cameraPositionDelta.z,
-            cameraPosition.x, cameraPosition.y, cameraPosition.z,
-            _isHWDepth ? "hardware" : "linear", _isInReset, _hasDenoiserHistory,
-            _viewFromStreamline ? "Streamline" : "NGX",
-            GetSignalTypeName(_diffuseSignalDescType), GetSignalTypeName(_specularSignalDescType),
-            _denoiseDiffuse, _denoiseSpecular);
+        LOG_INFO("[RR_CFG] frame={}, reset={}, render={}x{}, depthBounds=[{:.4f}, {:.4f}], "
+                 "jitter=[{:.6f}, {:.6f}] (prev [{:.6f}, {:.6f}]), cameraDelta=[{:.6f}, {:.6f}, {:.6f}], "
+                 "cameraPosition=[{:.6f}, {:.6f}, {:.6f}], "
+                 "depthInterpretation={}, resetFrame={}, historyValid={}, viewSource={}, "
+                 "signals={} + {} (diffuseEnabled={}, specularEnabled={})",
+                 dispatchDesc.frameIndex, resetRequested, dispatchDesc.renderSize.width, dispatchDesc.renderSize.height,
+                 dispatchDesc.linearDepthBounds.min, dispatchDesc.linearDepthBounds.max, dispatchDesc.jitterOffsets.x,
+                 dispatchDesc.jitterOffsets.y, _convDesc.JitterOffsets.z, _convDesc.JitterOffsets.w,
+                 dispatchDesc.cameraPositionDelta.x, dispatchDesc.cameraPositionDelta.y,
+                 dispatchDesc.cameraPositionDelta.z, cameraPosition.x, cameraPosition.y, cameraPosition.z,
+                 _isHWDepth ? "hardware" : "linear", _isInReset, _hasDenoiserHistory,
+                 _viewFromStreamline ? "Streamline" : "NGX", GetSignalTypeName(_diffuseSignalDescType),
+                 GetSignalTypeName(_specularSignalDescType), _denoiseDiffuse, _denoiseSpecular);
     }
 
     if (_logNextDenoiserDispatch)
     {
-        LOG_INFO(
-            "[RR_DIAG] first dispatch succeeded: frame={}, context={:X}, attempts={}, reset={}",
-            dispatchDesc.frameIndex, reinterpret_cast<uintptr_t>(_pDenoiserCtx),
-            _denoiserDispatchAttempts, resetRequested);
+        LOG_INFO("[RR_DIAG] first dispatch succeeded: frame={}, context={:X}, attempts={}, reset={}",
+                 dispatchDesc.frameIndex, reinterpret_cast<uintptr_t>(_pDenoiserCtx), _denoiserDispatchAttempts,
+                 resetRequested);
         _logNextDenoiserDispatch = false;
     }
     else if (resetTransition)
@@ -4177,10 +3811,7 @@ void FSRDFeatureDx12::CommitDenoiserHistory() noexcept
 {
     _lastCamPos = GetFloat3Column(_invViewMatrix, 3);
     _prevViewMatrix = _viewMatrix;
-    _previousDenoiserJitter = {
-        _convDesc.JitterOffsets.x,
-        _convDesc.JitterOffsets.y
-    };
+    _previousDenoiserJitter = { _convDesc.JitterOffsets.x, _convDesc.JitterOffsets.y };
     _hasDenoiserHistory = true;
 }
 
@@ -4262,10 +3893,9 @@ ffxReturnCode_t FSRDFeatureDx12::SetDefaultConfiguration(FfxApiConfigureDenoiser
     if (!data)
         return FFX_API_RETURN_ERROR_PARAMETER;
 
-    ffxQueryDescDenoiserGetDefaultKeyValue queryDesc = 
-    {
-        .header = { .type = FFX_API_QUERY_DESC_TYPE_DENOISER_GET_DEFAULT_KEYVALUE }, 
-        .key = (uint64_t)key, 
+    ffxQueryDescDenoiserGetDefaultKeyValue queryDesc = {
+        .header = { .type = FFX_API_QUERY_DESC_TYPE_DENOISER_GET_DEFAULT_KEYVALUE },
+        .key = (uint64_t) key,
         .count = 1u,
         .data = data
     };
@@ -4280,13 +3910,11 @@ ffxReturnCode_t FSRDFeatureDx12::ApplyConfiguration(FfxApiConfigureDenoiserKey k
     if (!data)
         return FFX_API_RETURN_ERROR_PARAMETER;
 
-    ffxConfigureDescDenoiserKeyValue configureDesc =
-    {
-        .header = { .type = FFX_API_CONFIGURE_DESC_TYPE_DENOISER_KEYVALUE }, 
-        .key = (uint64_t)key, 
-        .count = 1u,
-        .data = data
-    };
+    ffxConfigureDescDenoiserKeyValue configureDesc = { .header = { .type =
+                                                                       FFX_API_CONFIGURE_DESC_TYPE_DENOISER_KEYVALUE },
+                                                       .key = (uint64_t) key,
+                                                       .count = 1u,
+                                                       .data = data };
 
     const ffxReturnCode_t code = FfxApiProxy::D3D12_Configure(&_pDenoiserCtx, &configureDesc.header);
     return code;

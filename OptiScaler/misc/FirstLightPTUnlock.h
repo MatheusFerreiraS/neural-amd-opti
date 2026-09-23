@@ -9,5 +9,5 @@
 
 namespace FirstLightPTUnlock
 {
-    void StartWatcher();
+void StartWatcher();
 }

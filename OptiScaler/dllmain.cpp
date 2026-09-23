@@ -1794,18 +1794,22 @@ static DWORD WINAPI PatchFirstLightPTGate(LPVOID)
     const BYTE* base = (const BYTE*) mi.lpBaseOfDll;
     const SIZE_T size = mi.SizeOfImage;
 
-    for (int attempt = 0; attempt < 120; attempt++)  // retry ~60s while the packer unpacks
+    for (int attempt = 0; attempt < 120; attempt++) // retry ~60s while the packer unpacks
     {
         for (SIZE_T i = 0; i + sizeof(pattern) + 4 <= size; i++)
         {
             bool match = true;
             for (SIZE_T j = 0; j < sizeof(pattern); j++)
             {
-                if (base[i + j] != pattern[j]) { match = false; break; }
+                if (base[i + j] != pattern[j])
+                {
+                    match = false;
+                    break;
+                }
             }
             if (match)
             {
-                void* jneAddr = const_cast<BYTE*>(base + i + 11);  // skip cmp, land on 0F 85
+                void* jneAddr = const_cast<BYTE*>(base + i + 11); // skip cmp, land on 0F 85
                 BYTE nops[6] = { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 };
                 DWORD oldProtect = 0;
                 if (VirtualProtect(jneAddr, sizeof(nops), PAGE_EXECUTE_READWRITE, &oldProtect))
@@ -1939,7 +1943,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             cfg->ForceXeLL.set_volatile_value(false);
             cfg->UseFakenvapi.set_volatile_value(false);
             cfg->FN_ForceReflex.set_volatile_value(ForceReflex::InGame);
-            LOG_INFO("External frame generation: leaving Streamline/Reflex and MFG control to the game or unlocker; NR/SR remain available");
+            LOG_INFO("External frame generation: leaving Streamline/Reflex and MFG control to the game or unlocker; "
+                     "NR/SR remain available");
         }
         State::Instance().activeFgInput = Config::Instance()->FGInput.value_or_default();
         State::Instance().activeFgOutput = Config::Instance()->FGOutput.value_or_default();
@@ -2142,14 +2147,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
 
         // Asi plugins
-    // 007 First Light: force the PT/RR settings registration branch (needs the unpacked image)
-    {
-        auto exePath = Util::ExePath().filename().string();
-        std::transform(exePath.begin(), exePath.end(), exePath.begin(),
-                       [](unsigned char c) { return (char) std::tolower(c); });
-        if (exePath == "007firstlight.exe")
-            CreateThread(nullptr, 0, PatchFirstLightPTGate, nullptr, 0, nullptr);
-    }
+        // 007 First Light: force the PT/RR settings registration branch (needs the unpacked image)
+        {
+            auto exePath = Util::ExePath().filename().string();
+            std::transform(exePath.begin(), exePath.end(), exePath.begin(),
+                           [](unsigned char c) { return (char) std::tolower(c); });
+            if (exePath == "007firstlight.exe")
+                CreateThread(nullptr, 0, PatchFirstLightPTGate, nullptr, 0, nullptr);
+        }
 
         if (Config::Instance()->LoadAsiPlugins.value_or_default())
         {

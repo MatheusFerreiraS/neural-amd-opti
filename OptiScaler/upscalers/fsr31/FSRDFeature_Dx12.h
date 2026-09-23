@@ -29,7 +29,6 @@ class FSRDFeatureDx12 : public FSR31FeatureDx12
     // title submission of the frame.
 
   private:
-
     struct DenoiserConfiguration
     {
         static constexpr uint32_t kScalarCount = FFX_API_CONFIGURE_DENOISER_KEY_DISOCCLUSION_THRESHOLD;
@@ -65,9 +64,7 @@ class FSRDFeatureDx12 : public FSR31FeatureDx12
                 return &m_DebugViewLinearDepthBounds;
 
             const int index = static_cast<int>(key) - 1;
-            return index >= 0 && index < static_cast<int>(kScalarCount)
-                ? &ScalarValues[index]
-                : nullptr;
+            return index >= 0 && index < static_cast<int>(kScalarCount) ? &ScalarValues[index] : nullptr;
         }
     };
 
@@ -161,10 +158,8 @@ class FSRDFeatureDx12 : public FSR31FeatureDx12
     DXGI_FORMAT _loggedResponsivityViewFormat = DXGI_FORMAT_UNKNOWN;
     float _loggedResponsivityThreshold = -1.0f;
     bool _loggedResponsivityInvert = false;
-    std::array<uint64_t, static_cast<size_t>(RRTaggedSignal::Count)>
-        _lastConsumedSLTagUpdates {};
-    std::array<uint32_t, static_cast<size_t>(RRTaggedSignal::Count)>
-        _lastConsumedSLTagFrames {};
+    std::array<uint64_t, static_cast<size_t>(RRTaggedSignal::Count)> _lastConsumedSLTagUpdates {};
+    std::array<uint32_t, static_cast<size_t>(RRTaggedSignal::Count)> _lastConsumedSLTagFrames {};
     bool _emissiveProbeCompatible = false;
     bool _emissiveProbeFromStreamline = false;
     uint32_t _diffuseHitDistanceBaseX = 0;
@@ -214,7 +209,6 @@ class FSRDFeatureDx12 : public FSR31FeatureDx12
     uint64_t _denoiserDispatchSuccesses = 0;
     uint64_t _denoiserDispatchFailures = 0;
 
-
     // One-shot GPU probe of the RR diffuse path: copies the denoiser's diffuse
     // OUTPUT and its (demodulated) INPUT signal into readback buffers on the
     // deferred list, and logs luma statistics once the fence retires them.
@@ -225,11 +219,11 @@ class FSRDFeatureDx12 : public FSR31FeatureDx12
 
     // Matrices
     // Row-major storage with column-vector multiplication semantics.
-    DirectX::XMMATRIX _invViewMatrix;   // Camera rotation and translation
-    DirectX::XMMATRIX _viewMatrix;      // World to camera space
-    DirectX::XMMATRIX _prevViewMatrix;  // Last world to camera space
-    DirectX::XMMATRIX _projMatrix;      // Unjittered perspective projection
-    bool _isRightHanded;                // True if the camera matrix is right handed
+    DirectX::XMMATRIX _invViewMatrix;  // Camera rotation and translation
+    DirectX::XMMATRIX _viewMatrix;     // World to camera space
+    DirectX::XMMATRIX _prevViewMatrix; // Last world to camera space
+    DirectX::XMMATRIX _projMatrix;     // Unjittered perspective projection
+    bool _isRightHanded;               // True if the camera matrix is right handed
 
     std::unique_ptr<FSRDPreprocessor_Dx12> FSRDConvShader;
 
@@ -272,11 +266,10 @@ class FSRDFeatureDx12 : public FSR31FeatureDx12
         AllowCommonTransition,
     };
 
-    bool AcquireSLTaggedResource(
-        const RRD3D12SignalTagSnapshot& snapshot, RRTaggedSignal signal,
-        const char* sourceName, TagStatePolicy statePolicy,
-        Microsoft::WRL::ComPtr<ID3D12Resource>& resource,
-        RRTaggedResourceDiagnostic& diagnostic);
+    bool AcquireSLTaggedResource(const RRD3D12SignalTagSnapshot& snapshot, RRTaggedSignal signal,
+                                 const char* sourceName, TagStatePolicy statePolicy,
+                                 Microsoft::WRL::ComPtr<ID3D12Resource>& resource,
+                                 RRTaggedResourceDiagnostic& diagnostic);
 
     /**
      * @brief Retrieves DLSS-RR inputs to populate the inputs for the interop layer in order to generate
@@ -284,27 +277,22 @@ class FSRDFeatureDx12 : public FSR31FeatureDx12
      */
     bool PrepareDenoiseConvInput(const NVSDK_NGX_Parameter& inParams);
 
-    void ResolveSpecularHitDistance(const NVSDK_NGX_Parameter& inParams,
-                                    const RRD3D12SignalTagSnapshot& rrTagSnapshot,
-                                    uint32_t renderWidth, uint32_t renderHeight,
-                                    uint32_t motionWidth, uint32_t motionHeight,
-                                    ID3D12Resource* ngxSpecularHitDistance,
+    void ResolveSpecularHitDistance(const NVSDK_NGX_Parameter& inParams, const RRD3D12SignalTagSnapshot& rrTagSnapshot,
+                                    uint32_t renderWidth, uint32_t renderHeight, uint32_t motionWidth,
+                                    uint32_t motionHeight, ID3D12Resource* ngxSpecularHitDistance,
                                     ID3D12Resource* ngxSpecularRayDirectionHitDistance,
                                     const DirectX::XMUINT2& ngxSpecularHitDistanceBase,
                                     const DirectX::XMUINT2& ngxSpecularRayDirectionHitDistanceBase);
 
-    void AcquireOptionalInputs(const NVSDK_NGX_Parameter& inParams,
-                              const RRD3D12SignalTagSnapshot& rrTagSnapshot,
-                              uint32_t renderWidth, uint32_t renderHeight);
+    void AcquireOptionalInputs(const NVSDK_NGX_Parameter& inParams, const RRD3D12SignalTagSnapshot& rrTagSnapshot,
+                               uint32_t renderWidth, uint32_t renderHeight);
 
-    void ResolveDiffuseHitDistance(const NVSDK_NGX_Parameter& inParams,
-                                   uint32_t renderWidth, uint32_t renderHeight);
+    void ResolveDiffuseHitDistance(const NVSDK_NGX_Parameter& inParams, uint32_t renderWidth, uint32_t renderHeight);
 
-    bool ResolveCameraMatrices(const NVSDK_NGX_Parameter& inParams,
-                               const sl::Constants& slData, bool hasCurrentSLConstants);
+    bool ResolveCameraMatrices(const NVSDK_NGX_Parameter& inParams, const sl::Constants& slData,
+                               bool hasCurrentSLConstants);
 
     bool ResolveSignalTypes(bool isReady, bool hasCurrentSLConstants);
-
 
     /**
      * @brief Converts previously retrieved DLSS-RR resources into FSR-RR inputs.

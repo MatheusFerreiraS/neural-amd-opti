@@ -91,10 +91,12 @@ void STDMETHODCALLTYPE Execute(ID3D12CommandQueue* q, UINT n, ID3D12CommandList*
         // Separate Execute calls establish an execution boundary around the
         // interop list. Preserve list order and execute each list exactly once.
         Message("AMD isolated neural command list from a render batch");
-        if (index) ExecuteBatch(q, static_cast<UINT>(index), c);
+        if (index)
+            ExecuteBatch(q, static_cast<UINT>(index), c);
         ExecuteBatch(q, 1, c + index);
         auto remaining = n - static_cast<UINT>(index) - 1;
-        if (remaining) ExecuteBatch(q, remaining, c + index + 1);
+        if (remaining)
+            ExecuteBatch(q, remaining, c + index + 1);
         return;
     }
     ExecuteBatch(q, n, c);
@@ -136,11 +138,13 @@ template <class Use> void WithPhysicalAdapter(LUID luid, Use&& use)
 bool IsAmd(ID3D12Device* d)
 {
     bool amd = false;
-    WithPhysicalAdapter(d->GetAdapterLuid(), [&](IDXGIAdapter1* a) {
-        DXGI_ADAPTER_DESC1 desc {};
-        amd = SUCCEEDED(a->GetDesc1(&desc)) && desc.VendorId == 0x1002;
-        LOG_INFO("AMD pre-SR physical adapter vendor: {:04X}, AMD: {}", desc.VendorId, amd);
-    });
+    WithPhysicalAdapter(d->GetAdapterLuid(),
+                        [&](IDXGIAdapter1* a)
+                        {
+                            DXGI_ADAPTER_DESC1 desc {};
+                            amd = SUCCEEDED(a->GetDesc1(&desc)) && desc.VendorId == 0x1002;
+                            LOG_INFO("AMD pre-SR physical adapter vendor: {:04X}, AMD: {}", desc.VendorId, amd);
+                        });
     return amd;
 }
 // This process's share of the adapter's local memory. Logged at every resolution change, because
@@ -148,15 +152,18 @@ bool IsAmd(ID3D12Device* d)
 std::string VramUsage(LUID luid)
 {
     std::string text = "vram unknown";
-    WithPhysicalAdapter(luid, [&](IDXGIAdapter1* a) {
-        IDXGIAdapter3* a3 = nullptr;
-        DXGI_QUERY_VIDEO_MEMORY_INFO info {};
-        if (FAILED(a->QueryInterface(IID_PPV_ARGS(&a3))))
-            return;
-        if (SUCCEEDED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
-            text = "vram " + std::to_string(info.CurrentUsage >> 20) + "/" + std::to_string(info.Budget >> 20) + " MB";
-        a3->Release();
-    });
+    WithPhysicalAdapter(luid,
+                        [&](IDXGIAdapter1* a)
+                        {
+                            IDXGIAdapter3* a3 = nullptr;
+                            DXGI_QUERY_VIDEO_MEMORY_INFO info {};
+                            if (FAILED(a->QueryInterface(IID_PPV_ARGS(&a3))))
+                                return;
+                            if (SUCCEEDED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+                                text = "vram " + std::to_string(info.CurrentUsage >> 20) + "/" +
+                                       std::to_string(info.Budget >> 20) + " MB";
+                            a3->Release();
+                        });
     return text;
 }
 } // namespace
@@ -206,8 +213,8 @@ const char* RuntimeName()
     }
     return cachedName;
 }
-static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3D12CommandQueue* q,
-                bool afterUpscale, ID3D12Resource** outResult)
+static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3D12CommandQueue* q, bool afterUpscale,
+                ID3D12Resource** outResult)
 {
     if (outResult)
         *outResult = nullptr;
@@ -287,8 +294,8 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     // only a bootstrap hint; Submitted identifies the queue executing our list.
     AmdPreSr::Frame f {};
     f.afterUpscale = afterUpscale;
-    f.colour = afterUpscale ? Resource(params, NVSDK_NGX_Parameter_Output)
-                            : Resource(params, NVSDK_NGX_Parameter_Color);
+    f.colour =
+        afterUpscale ? Resource(params, NVSDK_NGX_Parameter_Output) : Resource(params, NVSDK_NGX_Parameter_Color);
     f.motion = Resource(params, NVSDK_NGX_Parameter_MotionVectors);
     f.depth = Resource(params, NVSDK_NGX_Parameter_Depth);
     f.exposure = Resource(params, NVSDK_NGX_Parameter_ExposureTexture);
@@ -313,8 +320,10 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     if (f.colour)
     {
         const auto extent = f.colour->GetDesc();
-        if (!f.width) f.width = static_cast<UINT>(extent.Width);
-        if (!f.height) f.height = extent.Height;
+        if (!f.width)
+            f.width = static_cast<UINT>(extent.Width);
+        if (!f.height)
+            f.height = extent.Height;
     }
     if (afterUpscale && (!f.guideWidth || !f.guideHeight) && f.depth)
     {
@@ -335,14 +344,16 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     {
         params->Get(NVSDK_NGX_Parameter_OutWidth, &f.motionWidth);
         params->Get(NVSDK_NGX_Parameter_OutHeight, &f.motionHeight);
-        if (!f.motionWidth) f.motionWidth = static_cast<UINT>(f.motion->GetDesc().Width);
-        if (!f.motionHeight) f.motionHeight = f.motion->GetDesc().Height;
+        if (!f.motionWidth)
+            f.motionWidth = static_cast<UINT>(f.motion->GetDesc().Width);
+        if (!f.motionHeight)
+            f.motionHeight = f.motion->GetDesc().Height;
     }
     // Let SR finish its reconfiguration before rebuilding the private HIP model.
     // Do not retain or replay the old image while input sizes are settling.
-    static UINT settlingWidth=0, settlingHeight=0;
-    static float settlingScale=1.f;
-    static ULONGLONG settlingSince=0;
+    static UINT settlingWidth = 0, settlingHeight = 0;
+    static float settlingScale = 1.f;
+    static ULONGLONG settlingSince = 0;
     // Post-upscale answers to the "after RR" controls, so the two placements can be tuned apart.
     // The AMD backend never supersamples, so its scale tops out at 1.0 (the frame's own size).
     const bool dynamicOn = Config::Instance()->AmdDynamicScale.value_or_default();
@@ -353,25 +364,29 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     dynamicScaleNow = dynamicOn ? sessionScale : 0.f;
     dynamicFpsNow = dynamicOn ? static_cast<float>(dynamicScale.Fps()) : 0.f;
     dynamicChangesNow = dynamicScale.changes;
-    const float requestedScale=sessionScale;
-    const auto now=GetTickCount64();
-    if(settlingWidth!=f.width || settlingHeight!=f.height || settlingScale!=requestedScale) {
+    const float requestedScale = sessionScale;
+    const auto now = GetTickCount64();
+    if (settlingWidth != f.width || settlingHeight != f.height || settlingScale != requestedScale)
+    {
         b->TraceBoundary("settings change: input " + std::to_string(settlingWidth) + "x" +
-            std::to_string(settlingHeight) + " -> " + std::to_string(f.width) + "x" +
-            std::to_string(f.height) + "; NR scale " + std::to_string(settlingScale) +
-            " -> " + std::to_string(requestedScale) + "; " + VramUsage(adapter));
-        settlingWidth=f.width;settlingHeight=f.height;settlingScale=requestedScale;settlingSince=now;
+                         std::to_string(settlingHeight) + " -> " + std::to_string(f.width) + "x" +
+                         std::to_string(f.height) + "; NR scale " + std::to_string(settlingScale) + " -> " +
+                         std::to_string(requestedScale) + "; " + VramUsage(adapter));
+        settlingWidth = f.width;
+        settlingHeight = f.height;
+        settlingScale = requestedScale;
+        settlingSince = now;
         b->InvalidateHistory();
     }
-    if(now-settlingSince<300) {
+    if (now - settlingSince < 300)
+    {
         Message("AMD neural: waiting for resolution settings to settle");
         return true;
     }
     const FrameIdentity current { f.colour, f.motion, f.depth, f.width, f.height };
     // Resource addresses rotate in Unreal's frame buffers. Only an extent
     // change requires warm-up; pointer equality can suppress every frame.
-    const bool sameFrame = current.width == lastFrame.width &&
-                           current.height == lastFrame.height;
+    const bool sameFrame = current.width == lastFrame.width && current.height == lastFrame.height;
     if (!sameFrame)
     {
         lastFrame = current;
@@ -455,9 +470,9 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     // The pinned AMD binary explicitly disables the broad lighting/colour
     // channels. Its embedded UI warns that nonzero tone mostly darkens frames.
     // An old INI's 0 (Auto) converted nothing, the same as Linear, so it reads as Linear.
-    s.encoding=std::clamp(cfg.AmdEncoding.value_or_default(),1,3);
-    s.toneChannels=cfg.AmdNeuralLightingStrength.value_or_default()>0;
-    s.tone=s.toneChannels ? std::clamp(cfg.AmdNeuralLightingStrength.value_or_default(),0.f,1.f) : 0.f;
+    s.encoding = std::clamp(cfg.AmdEncoding.value_or_default(), 1, 3);
+    s.toneChannels = cfg.AmdNeuralLightingStrength.value_or_default() > 0;
+    s.tone = s.toneChannels ? std::clamp(cfg.AmdNeuralLightingStrength.value_or_default(), 0.f, 1.f) : 0.f;
     s.structure = cfg.DlssNrLocalStructure.value_or_default();
     s.skin = cfg.DlssNrSkinStructure.value_or_default();
     if (s.skin < 0)
@@ -501,10 +516,7 @@ bool After(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3D12Co
 {
     return Run(cmd, params, q, true, outResult);
 }
-bool HasReplacement(NVSDK_NGX_Parameter* params)
-{
-    return params && replacedParams == params && originalColour;
-}
+bool HasReplacement(NVSDK_NGX_Parameter* params) { return params && replacedParams == params && originalColour; }
 void Restore(NVSDK_NGX_Parameter* params)
 {
     if (params && replacedParams == params)
@@ -552,7 +564,8 @@ bool GraphicsRestartNeeded(UINT activePasses)
 }
 std::string Status()
 {
-    if(AmdPresentExperimental::IsTarget()) return AmdPresentExperimental::Status();
+    if (AmdPresentExperimental::IsTarget())
+        return AmdPresentExperimental::Status();
     {
         std::lock_guard l(messageMutex);
         if (!message.empty())

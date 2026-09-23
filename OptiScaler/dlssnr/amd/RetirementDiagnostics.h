@@ -14,7 +14,7 @@ namespace AmdPreSr
 {
 class RetirementDiagnostics
 {
-public:
+  public:
     struct Event
     {
         const char* source = "Unknown";
@@ -60,17 +60,19 @@ public:
         Event local;
         Event& event;
         bool emit;
-        Scope(RetirementDiagnostics& d, const std::filesystem::path& path, const char* version,
-              const char* source, Event* external = nullptr)
+        Scope(RetirementDiagnostics& d, const std::filesystem::path& path, const char* version, const char* source,
+              Event* external = nullptr)
             : owner(d), directory(path), runtime(version), event(external ? *external : local), emit(!external)
         {
             event.source = source;
             event.attempt = d.attempt;
-            if (!event.qpc) event.qpc = Clock();
+            if (!event.qpc)
+                event.qpc = Clock();
         }
         ~Scope() noexcept
         {
-            if (emit) owner.Add(event, directory, runtime);
+            if (emit)
+                owner.Add(event, directory, runtime);
         }
     };
 
@@ -83,44 +85,45 @@ public:
 
     void Flush(const std::filesystem::path& directory, const char* runtime, const char* reason) noexcept
     {
-        if (!start || finished) return;
+        if (!start || finished)
+            return;
         finished = true;
         const auto elapsed = Milliseconds(Clock() - start);
         try
         {
             std::ofstream out(directory / L"amd_presr.log", std::ios::app);
             out << std::fixed << std::setprecision(3);
-            out << "[AMD-S4-BEGIN] capture=" << capture << " runtime=" << runtime
-                << " window_ms=30000 schema=1\n";
+            out << "[AMD-S4-BEGIN] capture=" << capture << " runtime=" << runtime << " window_ms=30000 schema=1\n";
             for (size_t i = 0; i < count; ++i)
             {
                 const auto& e = events[i];
                 out << "[AMD-S4] capture=" << capture << " t_ms=" << Milliseconds(e.qpc - start)
-                    << " source=" << e.source << " attempt=" << e.attempt
-                    << " pending=" << e.pending << " submitted=" << e.submitted << " passes=" << e.passes
-                    << " native=" << e.nativeDone;
+                    << " source=" << e.source << " attempt=" << e.attempt << " pending=" << e.pending
+                    << " submitted=" << e.submitted << " passes=" << e.passes << " native=" << e.nativeDone;
                 for (size_t pass = 0; pass < e.done.size(); ++pass)
                     out << " done" << pass << '=' << e.done[pass] << " job" << pass << '=' << e.jobs[pass];
                 out << " gpu_before=" << e.gpuBefore << " gpu_after=" << e.gpuAfter << " target=" << e.target
-                    << " retired=" << e.retired << " wait_ms=" << e.waitMs
-                    << " extra_wait_ms=" << e.extraWaitMs << " extra_gpu_before=" << e.extraGpuBefore
-                    << " extra_gpu_after=" << e.extraGpuAfter << " extra_target=" << e.extraTarget
-                    << " extra_waited=" << e.extraWaited << " outcome=" << e.outcome << " accepted=" << e.accepted
-                    << " width=" << e.width << " height=" << e.height << " every_frame=" << e.everyFrame
-                    << " recorded_at=" << e.recordedAt << " submitted_at=" << e.submittedAt
-                    << " wait_iters=" << e.waitIterations << " waited_before_done=" << e.waitedBeforeDone
-                    << '\n';
+                    << " retired=" << e.retired << " wait_ms=" << e.waitMs << " extra_wait_ms=" << e.extraWaitMs
+                    << " extra_gpu_before=" << e.extraGpuBefore << " extra_gpu_after=" << e.extraGpuAfter
+                    << " extra_target=" << e.extraTarget << " extra_waited=" << e.extraWaited
+                    << " outcome=" << e.outcome << " accepted=" << e.accepted << " width=" << e.width
+                    << " height=" << e.height << " every_frame=" << e.everyFrame << " recorded_at=" << e.recordedAt
+                    << " submitted_at=" << e.submittedAt << " wait_iters=" << e.waitIterations
+                    << " waited_before_done=" << e.waitedBeforeDone << '\n';
             }
             out << "[AMD-S4-END] capture=" << capture << " rows=" << count << " reason=" << reason
                 << " elapsed_ms=" << elapsed << '\n';
         }
-        catch (...) { /* Diagnostics must never change game error handling. */ }
+        catch (...)
+        { /* Diagnostics must never change game error handling. */
+        }
     }
 
-private:
+  private:
     void Add(const Event& event, const std::filesystem::path& directory, const char* runtime) noexcept
     {
-        if (!start || finished) return;
+        if (!start || finished)
+            return;
         // Exclude the event that triggers the flush, and thus the flush cost,
         // from the measured interval. A late callback ends an idle capture too.
         if (Milliseconds(event.qpc - start) >= 30000)
@@ -131,7 +134,8 @@ private:
         if (event.pending || event.source == std::string_view("Record") ||
             event.source == std::string_view("EfWaitLoop"))
             events[count++] = event;
-        if (count == events.size()) Flush(directory, runtime, "capacity");
+        if (count == events.size())
+            Flush(directory, runtime, "capacity");
     }
     std::array<Event, 16384> events {};
     size_t count = 0;

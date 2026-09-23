@@ -61,7 +61,8 @@ struct DynamicScale
             }
             // The 25% floor can flatten the last levels into nearly the current scale. A rebuild for
             // that little is not worth its cost, so a step must cut the scale by at least 10%.
-            else if (slowMs >= 2000 && level + 1 < std::size(kLevels) && Scale(base, level + 1) <= Scale(base, level) * .9f)
+            else if (slowMs >= 2000 && level + 1 < std::size(kLevels) &&
+                     Scale(base, level + 1) <= Scale(base, level) * .9f)
             {
                 ++level;
                 ++changes;

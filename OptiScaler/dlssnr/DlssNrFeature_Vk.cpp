@@ -28,8 +28,8 @@ namespace
 // it, whichever API is being used, so these calls go through the same shim the D3D12 path does.
 using PFN_VkProbe = int(__cdecl*)(const wchar_t*);
 using PFN_VkInit = int(__cdecl*)(const wchar_t*, const wchar_t*, void*, void*, void*, int);
-using PFN_VkCreate = void*(__cdecl*)(void*, void*, unsigned int, unsigned int, int, float, int, float, float, float,
-                                     int, int);
+using PFN_VkCreate = void*(__cdecl*) (void*, void*, unsigned int, unsigned int, int, float, int, float, float, float,
+                                      int, int);
 using PFN_VkEvaluate = int(__cdecl*)(void*, void*, void*, void*, void*, void*, void*, unsigned int, unsigned int,
                                      unsigned int, unsigned int, int, int, float, int, float, float, float, int, float,
                                      float);
@@ -319,8 +319,8 @@ bool CreateMeterReadback()
         VkMemoryAllocateInfo alloc {};
         alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         alloc.allocationSize = req.size;
-        alloc.memoryTypeIndex = FindMemoryTypeIndex(
-            req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        alloc.memoryTypeIndex = FindMemoryTypeIndex(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
         if (alloc.memoryTypeIndex == UINT32_MAX ||
             vkAllocateMemory(g_vk.device, &alloc, nullptr, &g_vk.meterReadbackMemory[i]) != VK_SUCCESS ||
@@ -576,8 +576,7 @@ bool EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, Vk
     // number, not a lost device, and the gate on the readback throws a wrong number away.
     NVSDK_NGX_Resource_VK* exposure = nullptr;
     float preExposure = 1.0f;
-    const bool havePre =
-        params->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &preExposure) == NVSDK_NGX_Result_Success;
+    const bool havePre = params->Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &preExposure) == NVSDK_NGX_Result_Success;
 
     params->Get(NVSDK_NGX_Parameter_ExposureTexture, (void**) &exposure);
 
@@ -623,8 +622,8 @@ bool EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, Vk
         std::abs(loggedExposure - g_vk.gameExposure) > std::max(0.02f * g_vk.gameExposure, 1e-5f))
     {
         loggedExposure = g_vk.gameExposure;
-        LOG_INFO("DLSS-NR Vulkan: the game's exposure is {}, pre-exposure {}, so white point {}",
-                 g_vk.gameExposure, g_vk.gamePreExposure, g_vk.gamePreExposure / g_vk.gameExposure);
+        LOG_INFO("DLSS-NR Vulkan: the game's exposure is {}, pre-exposure {}, so white point {}", g_vk.gameExposure,
+                 g_vk.gamePreExposure, g_vk.gamePreExposure / g_vk.gameExposure);
     }
 
     if (sourceView == VK_NULL_HANDLE || destView == VK_NULL_HANDLE || depth == nullptr || motion == nullptr)
@@ -698,9 +697,8 @@ bool EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, Vk
             return false;
         }
 
-        const int result =
-            g_vk.init(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
-                      (void*) instance, (void*) physicalDevice, (void*) device, 0x0000015);
+        const int result = g_vk.init(snippet->wstring().c_str(), State::Instance().NVNGX_ApplicationDataPath.c_str(),
+                                     (void*) instance, (void*) physicalDevice, (void*) device, 0x0000015);
 
         if (result != 1)
         {
@@ -762,8 +760,7 @@ bool EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, Vk
 
     // Resize. The feature is built for a size and has to be rebuilt when the frame OR the working
     // size changes -- moving the slider is a rebuild, which is why it is compared here.
-    if (g_vk.width != width || g_vk.height != height || g_vk.workWidth != workWidth ||
-        g_vk.workHeight != workHeight)
+    if (g_vk.width != width || g_vk.height != height || g_vk.workWidth != workWidth || g_vk.workHeight != workHeight)
     {
         // This block releases the feature and frees the surfaces below IMMEDIATELY. A frame-size
         // change is already fenced by the game -- it recreates the swapchain around it -- but moving
@@ -785,9 +782,9 @@ bool EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, Vk
 
         // The meter is a fixed 8x8 whatever the frame is, so it is only built the once -- but it is
         // built alongside the rest so that a failure here is caught by the same check.
-        const bool meterReady = (g_vk.meter.Valid() || CreateImage(g_vk.meter, kMeterSide, kMeterSide,
-                                                                   VK_FORMAT_R32_SFLOAT, true)) &&
-                                CreateMeterReadback();
+        const bool meterReady =
+            (g_vk.meter.Valid() || CreateImage(g_vk.meter, kMeterSide, kMeterSide, VK_FORMAT_R32_SFLOAT, true)) &&
+            CreateMeterReadback();
 
         if (!meterReady)
             LOG_WARN("DLSS-NR Vulkan: no exposure meter; the white point stays on the slider");
@@ -849,8 +846,7 @@ bool EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, Vk
     {
         unsigned int gameReset = 0;
 
-        if (params->Get(NVSDK_NGX_Parameter_Reset, &gameReset) == NVSDK_NGX_Result_Success &&
-            gameReset != 0)
+        if (params->Get(NVSDK_NGX_Parameter_Reset, &gameReset) == NVSDK_NGX_Result_Success && gameReset != 0)
         {
             g_vk.reset = true;
 
@@ -905,7 +901,8 @@ bool EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, Vk
     encode.SkinProtection = cfg.DlssNrSkinProtection.value_or_default();
     encode.ShowSkinMask = cfg.DlssNrShowSkinMask.value_or_default();
     encode.SkinDetail = strength(cfg.DlssNrSkinDetail.value_or_default());
-    encode.SkinColour = cfg.DlssNrSkinToneEnabled.value_or_default() ? strength(cfg.DlssNrSkinColour.value_or_default()) : 0.0f;
+    encode.SkinColour =
+        cfg.DlssNrSkinToneEnabled.value_or_default() ? strength(cfg.DlssNrSkinColour.value_or_default()) : 0.0f;
     encode.EnvironmentDetail = strength(cfg.DlssNrEnvironmentDetail.value_or_default());
     encode.EnvironmentColour = strength(cfg.DlssNrEnvironmentColour.value_or_default());
     encode.ColourStrength = cfg.DlssNrColourStrength.value_or_default();
@@ -983,11 +980,11 @@ bool EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, Vk
                 g_vk.nrScaler = wantScaler;
             }
             if (!g_vk.superUp)
-                g_vk.superUp = std::make_unique<OS_Vk>("DLSS-NR VK supersample up", device, physicalDevice,
-                                                       true, wantScaler);
+                g_vk.superUp =
+                    std::make_unique<OS_Vk>("DLSS-NR VK supersample up", device, physicalDevice, true, wantScaler);
             if (!g_vk.superDown)
-                g_vk.superDown = std::make_unique<OS_Vk>("DLSS-NR VK supersample down", device,
-                                                         physicalDevice, false, wantScaler);
+                g_vk.superDown =
+                    std::make_unique<OS_Vk>("DLSS-NR VK supersample down", device, physicalDevice, false, wantScaler);
 
             Transition(cmdBuffer, g_vk.proxy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
             Transition(cmdBuffer, g_vk.proxySmall, VK_IMAGE_LAYOUT_GENERAL);
@@ -1153,9 +1150,8 @@ bool EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, Vk
     // The edit lands on destView, which the shader binds as a storage image and therefore reads as
     // GENERAL. Unsplit that is the game's frame, arriving and staying in GENERAL. Split it belongs to
     // the caller's pipeline, which rests its surfaces there too, so neither is transitioned here.
-    if (!g_vk.pass->Dispatch(cmdBuffer, resolve, width, height, resolveProxy->view, resolveAnswer->view,
-                             g_vk.keep.view, VK_NULL_HANDLE, destView, VK_NULL_HANDLE,
-                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
+    if (!g_vk.pass->Dispatch(cmdBuffer, resolve, width, height, resolveProxy->view, resolveAnswer->view, g_vk.keep.view,
+                             VK_NULL_HANDLE, destView, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL))
     {
         Fail("the resolve dispatch failed");
         return false;

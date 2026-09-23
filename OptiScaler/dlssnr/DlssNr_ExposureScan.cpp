@@ -49,13 +49,13 @@ struct Tracked
     std::string shape;
     bool isBuffer = false;
     unsigned int bytes = 4;
-    DXGI_FORMAT texFormat = DXGI_FORMAT_UNKNOWN;  // the source texture's format, for CopyTextureRegion
+    DXGI_FORMAT texFormat = DXGI_FORMAT_UNKNOWN; // the source texture's format, for CopyTextureRegion
 
     float latest = 0.0f;
     float lowest = 0.0f;
     float highest = 0.0f;
     unsigned int reads = 0;
-    unsigned int inRange = 0;   // reads that could plausibly be an exposure
+    unsigned int inRange = 0; // reads that could plausibly be an exposure
     bool moves = false;
 };
 
@@ -67,7 +67,7 @@ struct ScanState
     unsigned long long frames = 0;
     const char* status = "not started";
     bool complained = false;
-    unsigned int nearMissLogged = 0;   // bounded diagnostic; see NoteResource
+    unsigned int nearMissLogged = 0; // bounded diagnostic; see NoteResource
 };
 
 ScanState g_scan;
@@ -185,9 +185,8 @@ bool EnsureReadback(ID3D12Device* device)
         desc.SampleDesc.Count = 1;
         desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-        if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                                                   D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                                   IID_PPV_ARGS(&g_scan.readback[i]))))
+        if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                   nullptr, IID_PPV_ARGS(&g_scan.readback[i]))))
         {
             g_scan.status = "could not allocate the readback buffers";
             return false;
@@ -220,8 +219,8 @@ bool Wanted()
 // engines actually allocate: some keep a small histogram beside the value, some keep a few frames of
 // history, and some put the whole thing in a four-channel texture and use one channel. The filter
 // only has to be tight enough that the list stays readable.
-bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsigned int* outBytes,
-                      bool* outIsBuffer, DXGI_FORMAT* outFormat)
+bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsigned int* outBytes, bool* outIsBuffer,
+                      DXGI_FORMAT* outFormat)
 {
     // An exposure is computed, so it is written by a shader. This is the one condition worth being
     // strict about: it removes almost everything without removing anything that could be the answer.
@@ -268,8 +267,7 @@ bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsi
     return false;
 }
 
-void Adopt(ID3D12Resource* resource, const std::string& shape, unsigned int bytes, bool isBuffer,
-           DXGI_FORMAT texFormat)
+void Adopt(ID3D12Resource* resource, const std::string& shape, unsigned int bytes, bool isBuffer, DXGI_FORMAT texFormat)
 {
     for (const Tracked& t : g_scan.tracked)
     {
@@ -330,9 +328,9 @@ void NoteResource(const D3D12_RESOURCE_DESC* desc, ID3D12Resource* resource)
         if ((desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0 && g_scan.nearMissLogged < 40)
         {
             g_scan.nearMissLogged++;
-            LOG_INFO("DLSS-NR scan near-miss #{}: UAV dim {} {}x{}x{} fmt {} (filter rejected)",
-                     g_scan.nearMissLogged, (int) desc->Dimension, (unsigned int) desc->Width,
-                     desc->Height, desc->DepthOrArraySize, (int) desc->Format);
+            LOG_INFO("DLSS-NR scan near-miss #{}: UAV dim {} {}x{}x{} fmt {} (filter rejected)", g_scan.nearMissLogged,
+                     (int) desc->Dimension, (unsigned int) desc->Width, desc->Height, desc->DepthOrArraySize,
+                     (int) desc->Format);
         }
 
         return;
@@ -533,8 +531,7 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
         if (t.resource == nullptr)
             continue;
 
-        Barrier(cmdList, t.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_COPY_SOURCE);
+        Barrier(cmdList, t.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
 
         if (t.isBuffer)
         {
@@ -561,8 +558,7 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList)
             cmdList->CopyTextureRegion(&to, 0, 0, 0, &src, &one);
         }
 
-        Barrier(cmdList, t.resource, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Barrier(cmdList, t.resource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
 
     g_scan.frames++;
@@ -628,8 +624,8 @@ const char* Headline()
             mostReads = std::max(mostReads, t.reads);
 
         line = "DLSS-NR exposure scan: watching " + std::to_string(g_scan.tracked.size()) +
-               ", none moving yet -- walk between light and shade  (" +
-               std::to_string(mostReads * 100 / kPatience) + "%)";
+               ", none moving yet -- walk between light and shade  (" + std::to_string(mostReads * 100 / kPatience) +
+               "%)";
         break;
     }
 
@@ -661,10 +657,9 @@ const char* Headline()
         char buf[192];
         // The live value is in here so the line visibly ticks. Without it the indicator looks stuck
         // the moment the range settles, which is exactly when it has succeeded.
-        snprintf(buf, sizeof(buf),
-                 "DLSS-NR exposure scan: FOUND -- candidate %zu = %.5f  (%.5f..%.5f, x%.0f)  done",
-                 best + 1, g_scan.tracked[best].latest, g_scan.tracked[best].lowest,
-                 g_scan.tracked[best].highest, bestRatio);
+        snprintf(buf, sizeof(buf), "DLSS-NR exposure scan: FOUND -- candidate %zu = %.5f  (%.5f..%.5f, x%.0f)  done",
+                 best + 1, g_scan.tracked[best].latest, g_scan.tracked[best].lowest, g_scan.tracked[best].highest,
+                 bestRatio);
         line = buf;
         break;
     }
@@ -751,38 +746,40 @@ bool Scanning() { return Wanted(); }
 
 namespace
 {
-std::vector<AnchorPoint> g_anchors;   // guarded by g_scanMutex, kept sorted by scan ascending
+std::vector<AnchorPoint> g_anchors; // guarded by g_scanMutex, kept sorted by scan ascending
 
 void SortAnchorsLocked()
 {
     std::sort(g_anchors.begin(), g_anchors.end(),
               [](const AnchorPoint& a, const AnchorPoint& b) { return a.scan < b.scan; });
 }
-}  // namespace
+} // namespace
 
 // Load the persisted table (or migrate a pre-existing single anchor) exactly once, before any lock
 // is taken -- LoadAnchors/AnchorAdd take g_scanMutex themselves, so this must not hold it.
 void EnsureAnchorsLoaded()
 {
     static std::once_flag once;
-    std::call_once(once, [] {
-        auto& cfg = *Config::Instance();
-        const std::string ser = cfg.DlssNrScanAnchors.value_or_default();
+    std::call_once(once,
+                   []
+                   {
+                       auto& cfg = *Config::Instance();
+                       const std::string ser = cfg.DlssNrScanAnchors.value_or_default();
 
-        if (!ser.empty())
-        {
-            LoadAnchors(ser);
-            return;
-        }
+                       if (!ser.empty())
+                       {
+                           LoadAnchors(ser);
+                           return;
+                       }
 
-        // Migration: fold a single-anchor ini from before this feature into a one-row table so the
-        // user does not lose the calibration they already set.
-        const float v = cfg.DlssNrScanAnchorValue.value_or_default();
-        const float w = cfg.DlssNrScanAnchorWhitePoint.value_or_default();
+                       // Migration: fold a single-anchor ini from before this feature into a one-row table so the
+                       // user does not lose the calibration they already set.
+                       const float v = cfg.DlssNrScanAnchorValue.value_or_default();
+                       const float w = cfg.DlssNrScanAnchorWhitePoint.value_or_default();
 
-        if (v > kFloor && w > 1e-6f)
-            AnchorAdd(v, w);
-    });
+                       if (v > kFloor && w > 1e-6f)
+                           AnchorAdd(v, w);
+                   });
 }
 
 std::vector<AnchorPoint> Anchors()

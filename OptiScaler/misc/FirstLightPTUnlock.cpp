@@ -45,21 +45,19 @@ static constexpr uintptr_t ManagerSlotRva = 0x5C6DBC8;
 static constexpr uintptr_t FeatureObjectOffset = 0x17C90;
 static constexpr uintptr_t FeatureObjectVtableRva = 0x2D41448;
 
-static std::atomic<bool> watcherStarted{ false };
-static std::atomic<bool> zrayTracerGatePatched{ false };
-static std::atomic<bool> featureSubGatePatched{ false };
+static std::atomic<bool> watcherStarted { false };
+static std::atomic<bool> zrayTracerGatePatched { false };
+static std::atomic<bool> featureSubGatePatched { false };
 
 // mov [rdi+0x17CB0], rax | mov rax, [rdi+0x17C90] | cmp byte [rax+0x49], r14b | je skip
-static constexpr BYTE ZRayTracerGatePattern[] = { 0x48, 0x89, 0x87, 0xB0, 0x7C, 0x01, 0x00,
-                                                  0x48, 0x8B, 0x87, 0x90, 0x7C, 0x01, 0x00,
-                                                  0x44, 0x38, 0x70, 0x49, 0x74, 0x39 };
+static constexpr BYTE ZRayTracerGatePattern[] = { 0x48, 0x89, 0x87, 0xB0, 0x7C, 0x01, 0x00, 0x48, 0x8B, 0x87,
+                                                  0x90, 0x7C, 0x01, 0x00, 0x44, 0x38, 0x70, 0x49, 0x74, 0x39 };
 
 // mov [rip->145E0FA90], r14 | movzx esi, byte [r14+0x49] | test sil, sil | je skip
 // This one gates the construction of the sub-object at feature object + 0x40857C0
 // which the level loading / ray tracing resource paths dereference without a check.
-static constexpr BYTE FeatureObjectSubGatePattern[] = { 0x4C, 0x89, 0x35, 0xD3, 0x59, 0x14, 0x05,
-                                                        0x41, 0x0F, 0xB6, 0x76, 0x49, 0x40, 0x84,
-                                                        0xF6, 0x74, 0x59 };
+static constexpr BYTE FeatureObjectSubGatePattern[] = { 0x4C, 0x89, 0x35, 0xD3, 0x59, 0x14, 0x05, 0x41, 0x0F,
+                                                        0xB6, 0x76, 0x49, 0x40, 0x84, 0xF6, 0x74, 0x59 };
 
 struct GatePatch
 {
@@ -86,34 +84,34 @@ static const GatePatch GatePatches[] = {
 // arg1 = {0, 0} zeroed at the top). Path tracing then runs without the NRD
 // denoiser instead of crashing. On a non-NULL member[0] the original prologue
 // is replayed and the function behaves normally.
-static std::atomic<bool> nrdSetupGuardPatched{ false };
+static std::atomic<bool> nrdSetupGuardPatched { false };
 
 // Entry prologue of the NRD resource setup function (VA 0x140E4BB00):
 //   mov rax, rsp | mov [rax+0x20], rbx | push rbp..r15 | lea rbp,[rsp-0x60] |
 //   sub rsp, 0x160 | mov r12, [rbp+0xC0] (5th arg) | mov rsi, rcx (arg1)
 static constexpr BYTE NrdSetupProloguePattern[] = {
-    0x48, 0x8B, 0xC4,                                                   // mov rax, rsp
-    0x48, 0x89, 0x58, 0x20,                                             // mov [rax+0x20], rbx
-    0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,   // push rbp,rsi,rdi,r12..r15
-    0x48, 0x8D, 0x6C, 0x24, 0xA0,                                       // lea rbp, [rsp-0x60]
-    0x48, 0x81, 0xEC, 0x60, 0x01, 0x00, 0x00,                           // sub rsp, 0x160
-    0x4C, 0x8B, 0xA5, 0xC0, 0x00, 0x00, 0x00,                           // mov r12, [rbp+0xC0]
-    0x48, 0x8B, 0xF1,                                                   // mov rsi, rcx
+    0x48, 0x8B, 0xC4,                                                 // mov rax, rsp
+    0x48, 0x89, 0x58, 0x20,                                           // mov [rax+0x20], rbx
+    0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, // push rbp,rsi,rdi,r12..r15
+    0x48, 0x8D, 0x6C, 0x24, 0xA0,                                     // lea rbp, [rsp-0x60]
+    0x48, 0x81, 0xEC, 0x60, 0x01, 0x00, 0x00,                         // sub rsp, 0x160
+    0x4C, 0x8B, 0xA5, 0xC0, 0x00, 0x00, 0x00,                         // mov r12, [rbp+0xC0]
+    0x48, 0x8B, 0xF1,                                                 // mov rsi, rcx
 };
 
 // Guard stub. First 39 bytes are static, the last 5 (jmp entry+7) get their
 // rel32 patched at install time.
 static constexpr BYTE NrdGuardCode[] = {
-    0x48, 0x8B, 0x44, 0x24, 0x28,                       // mov rax, [rsp+0x28] (5th arg: struct ptr)
-    0x48, 0x8B, 0x00,                                   // mov rax, [rax]      (member[0] = NRD object)
-    0x48, 0x85, 0xC0,                                   // test rax, rax
-    0x75, 0x13,                                         // jne prologueContinue
-    0x48, 0xC7, 0x00, 0x00, 0x00, 0x00, 0x00,           // mov qword ptr [rcx], 0
-    0x48, 0xC7, 0x41, 0x08, 0x00, 0x00, 0x00, 0x00,     // mov qword ptr [rcx+8], 0
-    0x48, 0x89, 0xC8,                                   // mov rax, rcx
-    0xC3,                                               // ret
-    0x48, 0x8B, 0xC4,                                   // mov rax, rsp (original entry instr 1)
-    0x48, 0x89, 0x58, 0x20,                             // mov [rax+0x20], rbx (original entry instr 2)
+    0x48, 0x8B, 0x44, 0x24, 0x28,                   // mov rax, [rsp+0x28] (5th arg: struct ptr)
+    0x48, 0x8B, 0x00,                               // mov rax, [rax]      (member[0] = NRD object)
+    0x48, 0x85, 0xC0,                               // test rax, rax
+    0x75, 0x13,                                     // jne prologueContinue
+    0x48, 0xC7, 0x00, 0x00, 0x00, 0x00, 0x00,       // mov qword ptr [rcx], 0
+    0x48, 0xC7, 0x41, 0x08, 0x00, 0x00, 0x00, 0x00, // mov qword ptr [rcx+8], 0
+    0x48, 0x89, 0xC8,                               // mov rax, rcx
+    0xC3,                                           // ret
+    0x48, 0x8B, 0xC4,                               // mov rax, rsp (original entry instr 1)
+    0x48, 0x89, 0x58, 0x20,                         // mov [rax+0x20], rbx (original entry instr 2)
 };
 
 static BYTE* s_stubFree = nullptr;
@@ -133,8 +131,8 @@ static BYTE* AllocateStub(SIZE_T bytes)
             {
                 uintptr_t hint = up ? exeBase + i * 0x10000000 : exeBase - i * 0x10000000;
                 hint &= ~static_cast<uintptr_t>(0xFFFF); // 64KB allocation granularity
-                page = VirtualAlloc(reinterpret_cast<LPVOID>(hint), 0x1000,
-                                    MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+                page = VirtualAlloc(reinterpret_cast<LPVOID>(hint), 0x1000, MEM_RESERVE | MEM_COMMIT,
+                                    PAGE_EXECUTE_READWRITE);
             }
         }
 
@@ -161,7 +159,7 @@ static bool IsReadable(uintptr_t address, size_t size)
     if (address < 0x10000)
         return false;
 
-    MEMORY_BASIC_INFORMATION mbi{};
+    MEMORY_BASIC_INFORMATION mbi {};
     if (!VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)))
         return false;
 
@@ -249,7 +247,7 @@ static void PatchRTGates()
     if (exeBase == 0)
         return;
 
-    MODULEINFO mi{};
+    MODULEINFO mi {};
     if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(nullptr), &mi, sizeof(mi)))
         return;
 
@@ -303,7 +301,7 @@ static void ApplyNrdSetupGuard()
     if (exeBase == 0)
         return;
 
-    MODULEINFO mi{};
+    MODULEINFO mi {};
     if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(nullptr), &mi, sizeof(mi)))
         return;
 
@@ -331,11 +329,11 @@ static void ApplyNrdSetupGuard()
         // out-struct pointer in rcx, so an unconditional zero-out faults on
         // the write (seen as an AV at the stub's own mov [rcx] instruction).
         // Use ApplyNativeDenoiserForceOff instead.
-        BYTE stubBytes[GuardStubSize]{};
+        BYTE stubBytes[GuardStubSize] {};
         std::memcpy(stubBytes, NrdGuardCode, sizeof(NrdGuardCode));
         stubBytes[sizeof(NrdGuardCode)] = 0xE9; // jmp rel32 opcode
-        const int32_t backJmp =
-            static_cast<int32_t>((reinterpret_cast<uintptr_t>(entry) + 7) - (reinterpret_cast<uintptr_t>(stub) + GuardStubSize));
+        const int32_t backJmp = static_cast<int32_t>((reinterpret_cast<uintptr_t>(entry) + 7) -
+                                                     (reinterpret_cast<uintptr_t>(stub) + GuardStubSize));
         std::memcpy(stubBytes + sizeof(NrdGuardCode) + 1, &backJmp, sizeof(backJmp));
 
         DWORD oldProtect = 0;
@@ -395,11 +393,11 @@ static void ForceNativeDenoiserFlagOff()
 // path with correct prologue and argument semantics - unlike the entry stub,
 // which cannot zero out the out-struct for call sites with a different ABI.
 static constexpr BYTE NrdEnableCheckPattern[] = {
-    0x80, 0xBB, 0xA8, 0x8E, 0x00, 0x00, 0x00,   // cmp byte ptr [rbx+0x8EA8], 0
-    0x0F, 0x84,                                 // je rel32
+    0x80, 0xBB, 0xA8, 0x8E, 0x00, 0x00, 0x00, // cmp byte ptr [rbx+0x8EA8], 0
+    0x0F, 0x84,                               // je rel32
 };
 static constexpr SIZE_T NrdDisabledEpilogueRva = 0xE4BDE6;
-static std::atomic<bool> nrdForceOffPatched{ false };
+static std::atomic<bool> nrdForceOffPatched { false };
 
 static void ApplyNativeDenoiserForceOff()
 {
@@ -410,7 +408,7 @@ static void ApplyNativeDenoiserForceOff()
     if (exeBase == 0)
         return;
 
-    MODULEINFO mi{};
+    MODULEINFO mi {};
     if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(nullptr), &mi, sizeof(mi)))
         return;
 
@@ -475,8 +473,7 @@ void FirstLightPTUnlock::StartWatcher()
 
             // Install the NRD setup null-guard before the user can enable
             // path tracing (the setup function runs when PT is toggled on)
-            while (!nrdSetupGuardPatched.load(std::memory_order_acquire)
-                   && !State::Instance().isShuttingDown)
+            while (!nrdSetupGuardPatched.load(std::memory_order_acquire) && !State::Instance().isShuttingDown)
             {
                 ApplyNrdSetupGuard();
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));

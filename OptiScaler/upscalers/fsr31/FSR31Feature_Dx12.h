@@ -60,8 +60,8 @@ class FSR31FeatureDx12 : public FSR31Feature, public IFeature_Dx12
     class ScopedConfigurableBarriers
     {
       public:
-        ScopedConfigurableBarriers(FSR31FeatureDx12& feature, ID3D12GraphicsCommandList* commandList) :
-            _feature(feature), _commandList(commandList)
+        ScopedConfigurableBarriers(FSR31FeatureDx12& feature, ID3D12GraphicsCommandList* commandList)
+            : _feature(feature), _commandList(commandList)
         {
             _feature.SetConfigurableBarriers(_commandList);
         }

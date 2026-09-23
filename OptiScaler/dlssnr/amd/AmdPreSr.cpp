@@ -243,7 +243,7 @@ struct Backend::Impl
     ComPtr<ID3D12PipelineState> depthPipeline;
     ComPtr<ID3D12PipelineState> motionPipeline, exposurePipeline;
     UINT lastMotionWidth = 0, lastMotionHeight = 0;
-    UINT lastInputWidth=0,lastInputHeight=0;
+    UINT lastInputWidth = 0, lastInputHeight = 0;
     bool hadExposure = false;
     std::array<HMODULE, 3> runtime {};
     std::array<UINT, 3> observedTimeouts {};
@@ -356,17 +356,20 @@ struct Backend::Impl
     // entry. Reading it is therefore the real guard.
     bool NativeRebuilding() const
     {
-        if (!L || !L->recreate) return true; // unknown layout: assume the worst
+        if (!L || !L->recreate)
+            return true; // unknown layout: assume the worst
         for (UINT i = 0; i < runtime.size(); ++i)
             if (auto h = runtime[i])
-                if (At<volatile uint8_t>(h, L->recreate) != 0) return true;
+                if (At<volatile uint8_t>(h, L->recreate) != 0)
+                    return true;
         return false;
     }
     // True while any slot still owns the resources its job borrowed.
     bool AnySlotBusy() const
     {
         for (size_t k = 0; k < slots.size(); ++k)
-            if (slots[k].pending.load(std::memory_order_acquire)) return true;
+            if (slots[k].pending.load(std::memory_order_acquire))
+                return true;
         return false;
     }
     bool HasUnsubmitted() const
@@ -389,8 +392,7 @@ struct Backend::Impl
     // 5s abandon and every Record in between was skipped. `submitted` is a plain
     // bool written under p->lock, so it cannot be read here; hand every
     // candidate to the caller, which holds the lock and can choose.
-    UINT FindPendingCandidates(UINT n, ID3D12CommandList* const* lists,
-                               std::array<UINT, kMaxSlots>& outSlots,
+    UINT FindPendingCandidates(UINT n, ID3D12CommandList* const* lists, std::array<UINT, kMaxSlots>& outSlots,
                                std::array<ID3D12CommandList*, kMaxSlots>& outPending) const
     {
         UINT count = 0;
@@ -414,8 +416,8 @@ struct Backend::Impl
     // Requires p->lock. Picks the first candidate that is still that slot's
     // pending list and has not been submitted yet.
     bool PickUnsubmitted(const std::array<UINT, kMaxSlots>& candSlots,
-                         const std::array<ID3D12CommandList*, kMaxSlots>& candPending, UINT count,
-                         UINT& outSlot, ID3D12CommandList*& outPending) const
+                         const std::array<ID3D12CommandList*, kMaxSlots>& candPending, UINT count, UINT& outSlot,
+                         ID3D12CommandList*& outPending) const
     {
         for (UINT c = 0; c < count; ++c)
         {
@@ -434,7 +436,7 @@ struct Backend::Impl
     {
         UINT64 value = 0;
         for (size_t k = 0; k < slots.size(); ++k)
-            value = (std::max)(value, slots[k].completion.load());
+            value = (std::max) (value, slots[k].completion.load());
         return value;
     }
     bool deviceLostReported = false;
@@ -460,23 +462,26 @@ struct Backend::Impl
     {
         const auto gpu = fence ? fence->GetCompletedValue() : 0;
         const auto removed = device->GetDeviceRemovedReason();
-          // Report the first slot with work outstanding; with one slot that
-          // is the only one, so the line keeps the original format.
-          const Slot* traced = &slots[0];
-          for (size_t k = 0; k < slots.size(); ++k)
-              if (slots[k].pending.load(std::memory_order_acquire)) { traced = &slots[k]; break; }
-        Log("AMD boundary: " + reason + " pending=" +
-            std::to_string(reinterpret_cast<uintptr_t>(traced->pending.load())) +
+        // Report the first slot with work outstanding; with one slot that
+        // is the only one, so the line keeps the original format.
+        const Slot* traced = &slots[0];
+        for (size_t k = 0; k < slots.size(); ++k)
+            if (slots[k].pending.load(std::memory_order_acquire))
+            {
+                traced = &slots[k];
+                break;
+            }
+        Log("AMD boundary: " + reason +
+            " pending=" + std::to_string(reinterpret_cast<uintptr_t>(traced->pending.load())) +
             " submitted=" + std::to_string(traced->submission.submitted) +
             " recordedAt=" + std::to_string(traced->submission.recordedAt) +
-            " submittedAt=" + std::to_string(traced->submission.submittedAt) +
-            " fence=" + std::to_string(gpu) + "/" + std::to_string(traced->completion.load()) +
-            " deviceHR=" + std::to_string(static_cast<UINT>(removed)) +
+            " submittedAt=" + std::to_string(traced->submission.submittedAt) + " fence=" + std::to_string(gpu) + "/" +
+            std::to_string(traced->completion.load()) + " deviceHR=" + std::to_string(static_cast<UINT>(removed)) +
             " NR=" + std::to_string(width) + "x" + std::to_string(height));
         for (UINT i = 0; i < runtime.size(); ++i)
             if (auto h = runtime[i])
-                Log("AMD boundary pass " + std::to_string(i + 1) + " native=" +
-                    std::to_string(At<UINT>(h, L->jobDone)) + "/" + std::to_string(traced->jobs[i]) +
+                Log("AMD boundary pass " + std::to_string(i + 1) +
+                    " native=" + std::to_string(At<UINT>(h, L->jobDone)) + "/" + std::to_string(traced->jobs[i]) +
                     " nativePending=" + std::to_string(reinterpret_cast<uintptr_t>(At<void*>(h, L->pendingList))) +
                     " timeouts=" + std::to_string(At<UINT>(h, L->timeoutCount)));
         if (FAILED(removed) && !deviceLostReported)
@@ -495,25 +500,21 @@ struct Backend::Impl
                 else
                     // 0x887a0004: driver did not report a page fault. Do not
                     // print "page fault" when the API said there was none.
-                    Log("AMD DRED page fault: not available hr=" +
-                        std::to_string(static_cast<UINT>(hr)));
+                    Log("AMD DRED page fault: not available hr=" + std::to_string(static_cast<UINT>(hr)));
                 D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs {};
                 const auto bh = dred->GetAutoBreadcrumbsOutput1(&breadcrumbs);
                 if (SUCCEEDED(bh))
                 {
                     Log("AMD DRED breadcrumbs: available");
                     UINT count = 0;
-                    for (auto node = breadcrumbs.pHeadAutoBreadcrumbNode; node && count++ < 16;
-                         node = node->pNext)
-                        Log("AMD DRED list=" +
-                            std::to_string(reinterpret_cast<uintptr_t>(node->pCommandList)) +
+                    for (auto node = breadcrumbs.pHeadAutoBreadcrumbNode; node && count++ < 16; node = node->pNext)
+                        Log("AMD DRED list=" + std::to_string(reinterpret_cast<uintptr_t>(node->pCommandList)) +
                             " progress=" +
-                            std::to_string(node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0) +
-                            "/" + std::to_string(node->BreadcrumbCount));
+                            std::to_string(node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0) + "/" +
+                            std::to_string(node->BreadcrumbCount));
                 }
                 else
-                    Log("AMD DRED breadcrumbs: not available hr=" +
-                        std::to_string(static_cast<UINT>(bh)));
+                    Log("AMD DRED breadcrumbs: not available hr=" + std::to_string(static_cast<UINT>(bh)));
             }
         }
     }
@@ -523,10 +524,9 @@ struct Backend::Impl
     {
         const auto gpuDone = fence ? fence->GetCompletedValue() : UINT64_MAX;
         Log(std::string("AMD slot-snap: ") + reason + " fence=" + std::to_string(gpuDone) +
-            " lastSubmitted=" + std::to_string(lastSubmitted) + " completedFrames=" +
-            std::to_string(completedFrames) + " pendingSkips=" + std::to_string(pendingSkips) +
-            " nativeRebuild=" + std::to_string(NativeRebuilding() ? 1 : 0) +
-            " failed=" + std::to_string(failed ? 1 : 0));
+            " lastSubmitted=" + std::to_string(lastSubmitted) + " completedFrames=" + std::to_string(completedFrames) +
+            " pendingSkips=" + std::to_string(pendingSkips) + " nativeRebuild=" +
+            std::to_string(NativeRebuilding() ? 1 : 0) + " failed=" + std::to_string(failed ? 1 : 0));
         for (size_t k = 0; k < slots.size(); ++k)
         {
             const auto& sl = slots[k];
@@ -537,7 +537,11 @@ struct Backend::Impl
             std::string dones;
             for (UINT i = 0; i < static_cast<UINT>(sl.jobs.size()); ++i)
             {
-                if (i) { jobs += ","; dones += ","; }
+                if (i)
+                {
+                    jobs += ",";
+                    dones += ",";
+                }
                 jobs += std::to_string(sl.jobs[i]);
                 UINT done = 0;
                 if (L && i < runtime.size() && runtime[i])
@@ -547,11 +551,9 @@ struct Backend::Impl
             }
             Log("AMD slot-snap k=" + std::to_string(k) +
                 " pending=" + std::to_string(reinterpret_cast<uintptr_t>(pending)) +
-                " submitted=" + std::to_string(sl.submission.submitted ? 1 : 0) +
-                " recordedAt=" + std::to_string(sl.submission.recordedAt) +
-                " submittedAt=" + std::to_string(sl.submission.submittedAt) +
-                " passCount=" + std::to_string(passCount) +
-                " jobs=[" + jobs + "] jobDone=[" + dones + "]" +
+                " submitted=" + std::to_string(sl.submission.submitted ? 1 : 0) + " recordedAt=" +
+                std::to_string(sl.submission.recordedAt) + " submittedAt=" + std::to_string(sl.submission.submittedAt) +
+                " passCount=" + std::to_string(passCount) + " jobs=[" + jobs + "] jobDone=[" + dones + "]" +
                 " completion=" + std::to_string(target) +
                 " fenceOk=" + std::to_string(gpuDone != UINT64_MAX && target != 0 && gpuDone >= target ? 1 : 0));
         }
@@ -561,9 +563,10 @@ struct Backend::Impl
     // D3D12 submission have retired.
     void RetireSlot(UINT k, bool waitForGpu, const char* source
 #ifdef AMD_RETIRE_DIAGNOSTICS
-                    , RetirementDiagnostics::Event* sample
+                    ,
+                    RetirementDiagnostics::Event* sample
 #endif
-                    )
+    )
     {
         Slot& sl = slots[k];
         if (!sl.pending.load(std::memory_order_acquire))
@@ -577,8 +580,8 @@ struct Backend::Impl
         const UINT passCount = (sl.passCount == Slot::kPassUnset) ? 0u : sl.passCount;
         for (UINT i = 0; i < passCount; ++i)
         {
-            const auto done = static_cast<UINT>(InterlockedCompareExchange(
-                reinterpret_cast<volatile LONG*>(&At<UINT>(runtime[i], L->jobDone)), 0, 0));
+            const auto done = static_cast<UINT>(
+                InterlockedCompareExchange(reinterpret_cast<volatile LONG*>(&At<UINT>(runtime[i], L->jobDone)), 0, 0));
             nativeDone &= sl.jobs[i] != 0 && done >= sl.jobs[i];
 #ifdef AMD_RETIRE_DIAGNOSTICS
             // sample is null for every slot except the one RetireSubmission
@@ -641,8 +644,8 @@ struct Backend::Impl
             {
                 ++completedFrames;
                 lastCompleted = lastSubmitted;
-                status = "Completed AMD pre-SR passes=" + std::to_string(passCount) + " at " +
-                         std::to_string(width) + "x" + std::to_string(height);
+                status = "Completed AMD pre-SR passes=" + std::to_string(passCount) + " at " + std::to_string(width) +
+                         "x" + std::to_string(height);
                 if (completedFrames <= 3 || completedFrames % 120 == 0)
                     Log(status);
             }
@@ -651,17 +654,17 @@ struct Backend::Impl
         if (sl.submission.ReportStall(GetTickCount64()))
         {
             Log("AMD submission stalled >5s; retaining list/resources until completion. submitted=" +
-                std::to_string(sl.submission.submitted) + " nativeDone=" + std::to_string(nativeDone) +
-                " passes=" + std::to_string(passCount) + " fence=" + std::to_string(gpuDone) +
-                "/" + std::to_string(target));
+                std::to_string(sl.submission.submitted) + " nativeDone=" + std::to_string(nativeDone) + " passes=" +
+                std::to_string(passCount) + " fence=" + std::to_string(gpuDone) + "/" + std::to_string(target));
             LogSlotSnapshot("stall");
         }
     }
     void RetireSubmission(bool waitForGpu = false, const char* source = "Unknown"
 #ifdef AMD_RETIRE_DIAGNOSTICS
-                          , RetirementDiagnostics::Event* recordEvent = nullptr
+                          ,
+                          RetirementDiagnostics::Event* recordEvent = nullptr
 #endif
-                          )
+    )
     {
 #ifdef AMD_RETIRE_DIAGNOSTICS
         RetirementDiagnostics::Scope timing(diagnostics, directory, L ? L->name : "uninitialized", source, recordEvent);
@@ -735,7 +738,7 @@ struct Backend::Impl
         const UINT slotPasses = (slots[k].passCount == Slot::kPassUnset) ? 0u : slots[k].passCount;
         unsigned iterations = 0;
 #ifdef AMD_RETIRE_DIAGNOSTICS
-        bool nativeAtEntry = true;   // first poll result: did we wait at all?
+        bool nativeAtEntry = true; // first poll result: did we wait at all?
 #endif
         const auto start = GetTickCount64();
         while (GetTickCount64() - start < 80)
@@ -773,7 +776,7 @@ struct Backend::Impl
         }
 #ifdef AMD_RETIRE_DIAGNOSTICS
         if (sample.outcome == std::string_view("poll"))
-            sample.outcome = "budget";   // fell out of the 80 ms loop without finishing
+            sample.outcome = "budget"; // fell out of the 80 ms loop without finishing
         sample.waitIterations = iterations;
         sample.waitedBeforeDone = !nativeAtEntry;
         sample.gpuAfter = fence ? fence->GetCompletedValue() : 0;
@@ -819,15 +822,18 @@ struct Backend::Impl
         // The hash above fixes this private module's import layout. Older games
         // ship a 2013 D3DCompiler that rejects the FP16 typed UAV load shader.
         // Bind only this module's compiler import; leave the game's DLL intact.
-        static HMODULE systemCompiler = [] {
+        static HMODULE systemCompiler = []
+        {
             wchar_t systemPath[MAX_PATH] {};
             auto length = GetSystemDirectoryW(systemPath, MAX_PATH);
-            if (!length || length >= MAX_PATH) return HMODULE(nullptr);
+            if (!length || length >= MAX_PATH)
+                return HMODULE(nullptr);
             auto path = std::filesystem::path(systemPath) / L"d3dcompiler_47.dll";
             return LoadLibraryExW(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         }();
         auto compile = systemCompiler ? GetProcAddress(systemCompiler, "D3DCompile") : nullptr;
-        if (!compile) throw std::runtime_error("System D3DCompile unavailable for AMD neural shaders");
+        if (!compile)
+            throw std::runtime_error("System D3DCompile unavailable for AMD neural shaders");
         if (L->d3dCompileIat)
         {
             auto import = reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(h) + L->d3dCompileIat);
@@ -910,15 +916,18 @@ struct Backend::Impl
         ps.CS = { blob->GetBufferPointer(), blob->GetBufferSize() };
         Check(device->CreateComputePipelineState(&ps, IID_PPV_ARGS(&depthPipeline)), "Depth pipeline");
         Check(D3DCompile(MotionShader, sizeof(MotionShader), "AMD motion resample", nullptr, nullptr, "main", "cs_5_0",
-                         D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &error), "Motion shader compile");
+                         D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &error),
+              "Motion shader compile");
         ps.CS = { blob->GetBufferPointer(), blob->GetBufferSize() };
         Check(device->CreateComputePipelineState(&ps, IID_PPV_ARGS(&motionPipeline)), "Motion pipeline");
-        Check(D3DCompile(ExposureShader, sizeof(ExposureShader), "AMD exposure conversion", nullptr, nullptr, "main", "cs_5_0",
-                         D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &error), "Exposure shader compile");
+        Check(D3DCompile(ExposureShader, sizeof(ExposureShader), "AMD exposure conversion", nullptr, nullptr, "main",
+                         "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &error),
+              "Exposure shader compile");
         ps.CS = { blob->GetBufferPointer(), blob->GetBufferSize() };
         Check(device->CreateComputePipelineState(&ps, IID_PPV_ARGS(&exposurePipeline)), "Exposure pipeline");
-        Check(D3DCompile(ResolveShader, sizeof(ResolveShader), "AMD residual resolve", nullptr, nullptr, "main", "cs_5_0",
-                         D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &error), "Resolve compile");
+        Check(D3DCompile(ResolveShader, sizeof(ResolveShader), "AMD residual resolve", nullptr, nullptr, "main",
+                         "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &error),
+              "Resolve compile");
         ps.CS = { blob->GetBufferPointer(), blob->GetBufferSize() };
         Check(device->CreateComputePipelineState(&ps, IID_PPV_ARGS(&resolvePipeline)), "Resolve pipeline");
         D3D12_DESCRIPTOR_HEAP_DESC hd { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kDescriptors,
@@ -943,7 +952,8 @@ Backend::Backend(ID3D12Device* d, ID3D12CommandQueue* q, const std::filesystem::
     // lands. Three earlier rounds were analysed without a tag and the logs could
     // not be told apart.
     p->LogDiagnostic("AMD graphics build source=" AMD_GRAPHICS_SOURCE_ID);
-    p->Log("AMD submission revision 20260919-1.8.6: multi-slot default; 0.3.1 new wait with guarded restore; Every-frame back on Ins menu" +
+    p->Log("AMD submission revision 20260919-1.8.6: multi-slot default; 0.3.1 new wait with guarded restore; "
+           "Every-frame back on Ins menu" +
            std::string(kBuildTag));
     try
     {
@@ -968,8 +978,8 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
     // Widening the choice of buffer here only lets the pick below take a slot
     // whose texture does not exist yet; the rebuild pass further down runs in
     // this same call and creates it before anything is recorded into it.
-    p->wantSlots = (std::clamp)(cfg.slots, 1u, Impl::kMaxSlots);
-    Frame f=incoming;
+    p->wantSlots = (std::clamp) (cfg.slots, 1u, Impl::kMaxSlots);
+    Frame f = incoming;
 #ifdef AMD_RETIRE_DIAGNOSTICS
     p->diagnostics.BeginRecord(p->frames != 0);
     RetirementDiagnostics::Scope timing(p->diagnostics, p->directory, p->L ? p->L->name : "uninitialized", "Record");
@@ -991,7 +1001,8 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
     auto* gfx = GraphicsSnap::GraphicsInvocationFor(listId);
     if (!gfx)
         gfx = &noEnvelope;
-    const auto logGraphics = [&]() {
+    const auto logGraphics = [&]()
+    {
         if (!gfx->requested)
             return;
         ++p->gfxAdmitSamples;
@@ -1003,23 +1014,20 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             std::string histogram;
             for (const auto& [reason, count] : p->gfxReasons)
                 histogram += " " + reason + "=" + std::to_string(count);
-            p->LogDiagnostic("AMD graphics admission n=" + std::to_string(p->gfxAdmitSamples) +
-                   " ok=" + std::to_string(p->gfxAdmitOk) + " reason=" + gfx->reason +
-                   " requested=" + std::to_string(gfx->requested) +
-                   " list=" + std::to_string(listId) + " listType=" + std::to_string(gfx->listType) +
-                   " generation=" + std::to_string(gfx->generation) +
-                   " generationKnown=" + std::to_string(gfx->generationKnown) +
-                   " predDisabled=" + std::to_string(gfx->predDisabled) +
-                   " renderPassIdle=" + std::to_string(gfx->renderPassIdle) +
-                   " psoReady=" + std::to_string(gfx->psoReady) +
-                   " admitted=" + std::to_string(gfx->admitted) +
-                   " freeze=" + std::to_string(gfx->frozen) + " pin=" + std::to_string(gfx->pinned) +
-                   " plan=" + std::to_string(gfx->planned) + " armed=" + std::to_string(gfx->armed) +
-                   " outcome=" + gfx->outcome + " gates{" + gfx->gates + "}");
-            p->LogDiagnostic("AMD graphics totals armed=" + std::to_string(p->gfxArmedSamples) +
-                   " nativeSpin0=" + std::to_string(p->gfxSpin0Calls) +
-                   " nativeSpin1=" + std::to_string(p->gfxSpin1Calls) +
-                   " drawObserved=" + std::to_string(p->gfxDrawCalls) + " reasons:" + histogram);
+            p->LogDiagnostic(
+                "AMD graphics admission n=" + std::to_string(p->gfxAdmitSamples) +
+                " ok=" + std::to_string(p->gfxAdmitOk) + " reason=" + gfx->reason +
+                " requested=" + std::to_string(gfx->requested) + " list=" + std::to_string(listId) +
+                " listType=" + std::to_string(gfx->listType) + " generation=" + std::to_string(gfx->generation) +
+                " generationKnown=" + std::to_string(gfx->generationKnown) + " predDisabled=" +
+                std::to_string(gfx->predDisabled) + " renderPassIdle=" + std::to_string(gfx->renderPassIdle) +
+                " psoReady=" + std::to_string(gfx->psoReady) + " admitted=" + std::to_string(gfx->admitted) +
+                " freeze=" + std::to_string(gfx->frozen) + " pin=" + std::to_string(gfx->pinned) +
+                " plan=" + std::to_string(gfx->planned) + " armed=" + std::to_string(gfx->armed) +
+                " outcome=" + gfx->outcome + " gates{" + gfx->gates + "}");
+            p->LogDiagnostic("AMD graphics totals armed=" + std::to_string(p->gfxArmedSamples) + " nativeSpin0=" +
+                             std::to_string(p->gfxSpin0Calls) + " nativeSpin1=" + std::to_string(p->gfxSpin1Calls) +
+                             " drawObserved=" + std::to_string(p->gfxDrawCalls) + " reasons:" + histogram);
         }
     };
     struct LogGraphicsOnReturn
@@ -1122,11 +1130,13 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             timing.event.outcome = "fence_skip";
 #endif
             if (++p->fenceSkips)
-                p->Log("AMD skipped: submitted GPU work not finished after 16 ms; count=" + std::to_string(p->fenceSkips));
+                p->Log("AMD skipped: submitted GPU work not finished after 16 ms; count=" +
+                       std::to_string(p->fenceSkips));
             return nullptr;
         }
         if (++p->fenceRecoveries <= 3 || p->fenceRecoveries % 120 == 0)
-            p->Log("AMD continuity: prior GPU work retired after short wait; count=" + std::to_string(p->fenceRecoveries));
+            p->Log("AMD continuity: prior GPU work retired after short wait; count=" +
+                   std::to_string(p->fenceRecoveries));
     }
     bool timedOut = false;
     for (UINT i = 0; i < p->runtime.size(); ++i)
@@ -1155,19 +1165,22 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
     {
         // Reject transient/dummy guides before any GPU commands or native jobs.
         // A later valid frame must be allowed to recover without restarting.
-        const auto cd=f.colour->GetDesc();
-        const UINT iw=f.width?f.width:UINT(cd.Width), ih=f.height?f.height:cd.Height;
+        const auto cd = f.colour->GetDesc();
+        const UINT iw = f.width ? f.width : UINT(cd.Width), ih = f.height ? f.height : cd.Height;
         // Post-upscale the guides are the render grid's and are meant to be smaller than the
         // colour; only their layout has to hold. Pre-SR they must still cover it.
-        const UINT gw=f.afterUpscale?(f.guideWidth?f.guideWidth:1u):iw;
-        const UINT gh=f.afterUpscale?(f.guideHeight?f.guideHeight:1u):ih;
-        for(auto guide : {f.motion,f.depth}) {
-            auto gd=guide->GetDesc();
-            if(gd.Width<gw || gd.Height<gh || gd.SampleDesc.Count!=1 || gd.DepthOrArraySize!=1 ||
-               gd.Dimension!=D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
-                const std::string reason="AMD neural: waiting for valid full-size guides; received "+Layout(guide);
-                if(p->status!=reason)p->Log(reason);
-                p->resetRequested=true;
+        const UINT gw = f.afterUpscale ? (f.guideWidth ? f.guideWidth : 1u) : iw;
+        const UINT gh = f.afterUpscale ? (f.guideHeight ? f.guideHeight : 1u) : ih;
+        for (auto guide : { f.motion, f.depth })
+        {
+            auto gd = guide->GetDesc();
+            if (gd.Width < gw || gd.Height < gh || gd.SampleDesc.Count != 1 || gd.DepthOrArraySize != 1 ||
+                gd.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+            {
+                const std::string reason = "AMD neural: waiting for valid full-size guides; received " + Layout(guide);
+                if (p->status != reason)
+                    p->Log(reason);
+                p->resetRequested = true;
                 return nullptr;
             }
         }
@@ -1193,15 +1206,15 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                 throw std::runtime_error(std::string("Unsupported AMD pre-SR ") +
                                          (guide == f.motion ? "motion: " : "depth: ") + Layout(guide));
         }
-        const UINT inputW=w, inputH=h;
-        const float scale=std::isfinite(cfg.modelScale)?std::clamp(cfg.modelScale,.25f,1.f):1.f;
-        w=(std::min)(inputW,(std::max)(32u,UINT(std::lround(inputW*scale))));
-        h=(std::min)(inputH,(std::max)(32u,UINT(std::lround(inputH*scale))));
-        const bool scaled=w!=inputW||h!=inputH;
+        const UINT inputW = w, inputH = h;
+        const float scale = std::isfinite(cfg.modelScale) ? std::clamp(cfg.modelScale, .25f, 1.f) : 1.f;
+        w = (std::min) (inputW, (std::max) (32u, UINT(std::lround(inputW * scale))));
+        h = (std::min) (inputH, (std::max) (32u, UINT(std::lround(inputH * scale))));
+        const bool scaled = w != inputW || h != inputH;
         // The guides' own active extent: the render grid post-upscale, the colour's otherwise.
         const UINT guideInW = f.guideWidth ? f.guideWidth : inputW;
         const UINT guideInH = f.guideHeight ? f.guideHeight : inputH;
-        const UINT mvW=f.motionWidth?f.motionWidth:guideInW, mvH=f.motionHeight?f.motionHeight:guideInH;
+        const UINT mvW = f.motionWidth ? f.motionWidth : guideInW, mvH = f.motionHeight ? f.motionHeight : guideInH;
         const auto depthDesc = f.depth->GetDesc();
         // The private AMD runtime already accepts typeless/depth-stencil guides
         // and stages only the colour-sized active region. Preparing another
@@ -1213,7 +1226,7 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         const bool convertDepth = scaled || f.afterUpscale;
         if (convertDepth && (depthDesc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE))
             throw std::runtime_error("NR scale: depth is not shader readable; use 100%");
-        if (convertDepth && DepthReadFormat(depthDesc.Format)==DXGI_FORMAT_UNKNOWN)
+        if (convertDepth && DepthReadFormat(depthDesc.Format) == DXGI_FORMAT_UNKNOWN)
             throw std::runtime_error("NR scale: unsupported depth view; use 100%");
         const bool resampleMotion = mvW != w || mvH != h;
         const auto motionDesc = f.motion->GetDesc();
@@ -1257,8 +1270,8 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             {
                 p->gfxStartupFallbackReported[i] = true;
                 p->LogDiagnostic("AMD graphics startup: 2000ms grace expired; pass=" + std::to_string(i + 1) +
-                       " starting compute, reason=" + gfx->reason +
-                       "; later admission alone cannot create A graphics PSO");
+                                 " starting compute, reason=" + gfx->reason +
+                                 "; later admission alone cannot create A graphics PSO");
             }
         }
         p->InitShader();
@@ -1312,8 +1325,10 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                 auto& slot = p->slots[k];
                 if (k >= p->wantSlots)
                 {
-                    if (slot.colour) slot.colour.Reset();
-                    if (slot.exposureCopy) slot.exposureCopy.Reset();
+                    if (slot.colour)
+                        slot.colour.Reset();
+                    if (slot.exposureCopy)
+                        slot.exposureCopy.Reset();
                     slot.decode.reset();
                     slot.encode.reset();
                     continue;
@@ -1329,18 +1344,21 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                 }
             }
             if (countChange)
-                p->Log("AMD slots: " + std::to_string(p->wantSlots) + " (buffers " +
-                       std::to_string(p->wantSlots) + ", cap " + std::to_string(Impl::kMaxSlots) + ")");
+                p->Log("AMD slots: " + std::to_string(p->wantSlots) + " (buffers " + std::to_string(p->wantSlots) +
+                       ", cap " + std::to_string(Impl::kMaxSlots) + ")");
             p->liveSlots = p->wantSlots;
             p->width = w;
             p->height = h;
         }
         const bool convertEncoding = cfg.encoding == 2 || cfg.encoding == 3;
-        if (convertEncoding) {
-            if(!sl->decode) sl->decode=std::make_unique<ColorEncoding>(p->device.Get());
-            if(!sl->encode) sl->encode=std::make_unique<ColorEncoding>(p->device.Get());
-            f.colour=sl->decode->Run(cmd,f.colour,f.colourState,inputW,inputH,cfg.encoding,false);
-            f.colourState=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        if (convertEncoding)
+        {
+            if (!sl->decode)
+                sl->decode = std::make_unique<ColorEncoding>(p->device.Get());
+            if (!sl->encode)
+                sl->encode = std::make_unique<ColorEncoding>(p->device.Get());
+            f.colour = sl->decode->Run(cmd, f.colour, f.colourState, inputW, inputH, cfg.encoding, false);
+            f.colourState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
         }
         auto prepareGuide = [&](ID3D12Resource* source, ComPtr<ID3D12Resource>& crop)
         {
@@ -1370,32 +1388,42 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         const bool applyLook = look.enabled && (look.mix > 0 || look.tone > 0 || look.inspect != 0);
         auto createScratch = [&](ComPtr<ID3D12Resource>& resource, UINT sw, UINT sh, DXGI_FORMAT format)
         {
-            if (resource && resource->GetDesc().Width == sw && resource->GetDesc().Height == sh) return;
+            if (resource && resource->GetDesc().Width == sw && resource->GetDesc().Height == sh)
+                return;
             resource.Reset();
             D3D12_HEAP_PROPERTIES hp {};
             hp.Type = D3D12_HEAP_TYPE_DEFAULT;
             D3D12_RESOURCE_DESC rd {};
             rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-            rd.Width = sw; rd.Height = sh; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
-            rd.Format = format; rd.SampleDesc.Count = 1;
+            rd.Width = sw;
+            rd.Height = sh;
+            rd.DepthOrArraySize = 1;
+            rd.MipLevels = 1;
+            rd.Format = format;
+            rd.SampleDesc.Count = 1;
             rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
             Check(p->device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&resource)), "Guide scratch");
+                                                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
+                                                     IID_PPV_ARGS(&resource)),
+                  "Guide scratch");
         };
-        if (scaled) {
-            createScratch(p->scaleBaseline,w,h,DXGI_FORMAT_R16G16B16A16_FLOAT);
-            createScratch(p->scaleOutput,inputW,inputH,DXGI_FORMAT_R16G16B16A16_FLOAT);
+        if (scaled)
+        {
+            createScratch(p->scaleBaseline, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT);
+            createScratch(p->scaleOutput, inputW, inputH, DXGI_FORMAT_R16G16B16A16_FLOAT);
         }
-        if (convertDepth) {
-            createScratch(p->depthCrop,w,h,DXGI_FORMAT_R32_FLOAT);
-            depth=p->depthCrop.Get();
+        if (convertDepth)
+        {
+            createScratch(p->depthCrop, w, h, DXGI_FORMAT_R32_FLOAT);
+            depth = p->depthCrop.Get();
         }
         if (resampleMotion)
         {
             createScratch(p->motionCrop, w, h, DXGI_FORMAT_R16G16_FLOAT);
             motion = p->motionCrop.Get();
         }
-        if (exposureSource) createScratch(sl->exposureCopy, 1, 1, DXGI_FORMAT_R32_FLOAT);
+        if (exposureSource)
+            createScratch(sl->exposureCopy, 1, 1, DXGI_FORMAT_R32_FLOAT);
         if (applyLook)
         {
             createScratch(p->lookColour, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT);
@@ -1403,13 +1431,15 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             {
                 ComPtr<ID3DBlob> blob, error;
                 auto hr = D3DCompile(AmdLookShader, sizeof(AmdLookShader), "AMD integrated appearance", nullptr,
-                    nullptr, "main", "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &error);
-                if (FAILED(hr) && error) p->Log(static_cast<const char*>(error->GetBufferPointer()));
+                                     nullptr, "main", "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &error);
+                if (FAILED(hr) && error)
+                    p->Log(static_cast<const char*>(error->GetBufferPointer()));
                 Check(hr, "Appearance shader compile");
                 D3D12_COMPUTE_PIPELINE_STATE_DESC ps {};
                 ps.pRootSignature = p->root.Get();
                 ps.CS = { blob->GetBufferPointer(), blob->GetBufferSize() };
-                Check(p->device->CreateComputePipelineState(&ps, IID_PPV_ARGS(&p->lookPipeline)), "Appearance pipeline");
+                Check(p->device->CreateComputePipelineState(&ps, IID_PPV_ARGS(&p->lookPipeline)),
+                      "Appearance pipeline");
             }
         }
         const bool guideChange = p->lastInputWidth != inputW || p->lastInputHeight != inputH ||
@@ -1417,11 +1447,12 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                                  p->hadExposure != (exposureSource != nullptr);
         if (resize || guideChange || p->frames == 0)
             p->Log("Guide mapping: motion=" + std::to_string(f.motionWidth) + "x" + std::to_string(f.motionHeight) +
-                   " resampled=" + std::to_string(resampleMotion) + " exposure=" +
-                   (exposureSource ? Layout(exposureSource) : "auto") +
+                   " resampled=" + std::to_string(resampleMotion) +
+                   " exposure=" + (exposureSource ? Layout(exposureSource) : "auto") +
                    " preExposure=" + std::to_string(f.preExposure) + " tone=" + std::to_string(cfg.tone));
         const UINT slotBase = p->activeSlot * Impl::kDescriptorsPerSlot;
-        const UINT descriptorStride = p->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        const UINT descriptorStride =
+            p->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         auto cpu = p->heap->GetCPUDescriptorHandleForHeapStart();
         cpu.ptr += static_cast<SIZE_T>(slotBase) * descriptorStride;
         D3D12_SHADER_RESOURCE_VIEW_DESC srv {};
@@ -1444,13 +1475,17 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             guideSrv.Format = ReadFormat(source->GetDesc().Format);
             p->device->CreateShaderResourceView(source, &guideSrv, handle);
             handle.ptr += stride;
-            auto guideUav = uav; guideUav.Format = format;
+            auto guideUav = uav;
+            guideUav.Format = format;
             p->device->CreateUnorderedAccessView(target, nullptr, &guideUav, handle);
         };
         // Indices are absolute, so each caller adds the slot's block base.
-        if (resampleMotion) guideDescriptors(slotBase + 4, f.motion, motion, DXGI_FORMAT_R16G16_FLOAT);
-        if (exposureSource) guideDescriptors(slotBase + 6, exposureSource, sl->exposureCopy.Get(), DXGI_FORMAT_R32_FLOAT);
-        if (applyLook) guideDescriptors(slotBase + 8, sl->colour.Get(), p->lookColour.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
+        if (resampleMotion)
+            guideDescriptors(slotBase + 4, f.motion, motion, DXGI_FORMAT_R16G16_FLOAT);
+        if (exposureSource)
+            guideDescriptors(slotBase + 6, exposureSource, sl->exposureCopy.Get(), DXGI_FORMAT_R32_FLOAT);
+        if (applyLook)
+            guideDescriptors(slotBase + 8, sl->colour.Get(), p->lookColour.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
         if (convertDepth)
         {
             // Distinct descriptor slots: overwriting the colour descriptors here
@@ -1471,9 +1506,11 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         cmd->SetPipelineState(p->pipeline.Get());
         auto heap = p->heap.Get();
         cmd->SetDescriptorHeaps(1, &heap);
-        { auto t0 = p->heap->GetGPUDescriptorHandleForHeapStart();
-          t0.ptr += static_cast<SIZE_T>(slotBase) * descriptorStride;
-          cmd->SetComputeRootDescriptorTable(0, t0); }
+        {
+            auto t0 = p->heap->GetGPUDescriptorHandleForHeapStart();
+            t0.ptr += static_cast<SIZE_T>(slotBase) * descriptorStride;
+            cmd->SetComputeRootDescriptorTable(0, t0);
+        }
         UINT dims[] { w, h, inputW, inputH };
         cmd->SetComputeRoot32BitConstants(1, 4, dims, 0);
         cmd->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
@@ -1515,7 +1552,7 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             cmd->SetPipelineState(p->depthPipeline.Get());
             // Source extent is the depth's own, which post-upscale is smaller than the colour.
             UINT depthDims[] { w, h, guideInW, guideInH };
-            cmd->SetComputeRoot32BitConstants(1,4,depthDims,0);
+            cmd->SetComputeRoot32BitConstants(1, 4, depthDims, 0);
             auto table = p->heap->GetGPUDescriptorHandleForHeapStart();
             table.ptr += static_cast<SIZE_T>(slotBase + 2) * descriptorStride;
             cmd->SetComputeRootDescriptorTable(0, table);
@@ -1527,32 +1564,41 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         if (exposureSource)
         {
             auto exposure = sl->exposureCopy.Get();
-            Barrier(cmd, exposure, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            Barrier(cmd, exposure, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             cmd->SetPipelineState(p->exposurePipeline.Get());
             auto table = p->heap->GetGPUDescriptorHandleForHeapStart();
             table.ptr += static_cast<SIZE_T>(slotBase + 6) * descriptorStride;
             cmd->SetComputeRootDescriptorTable(0, table);
-            struct { UINT w, h; float preExposure, exposureScale; } constants {
-                1, 1, std::isfinite(f.preExposure) && f.preExposure > 0 ? f.preExposure : 1,
-                std::isfinite(f.exposureScale) && f.exposureScale > 0 ? f.exposureScale : 1 };
+            struct
+            {
+                UINT w, h;
+                float preExposure, exposureScale;
+            } constants { 1, 1, std::isfinite(f.preExposure) && f.preExposure > 0 ? f.preExposure : 1,
+                          std::isfinite(f.exposureScale) && f.exposureScale > 0 ? f.exposureScale : 1 };
             cmd->SetComputeRoot32BitConstants(1, 4, &constants, 0);
             cmd->Dispatch(1, 1, 1);
-            Barrier(cmd, exposure, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Barrier(cmd, exposure, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
         UINT accepted = 0;
-        if (scaled) copyGuide(sl->colour.Get(),p->scaleBaseline.Get());
-        const bool settingsChanged = cfg.encoding != p->lastSettings.encoding || cfg.toneChannels != p->lastSettings.toneChannels || cfg.modelScale != p->lastSettings.modelScale || !p->haveSettings || cfg.tone != p->lastSettings.tone ||
-                                     cfg.structure != p->lastSettings.structure || cfg.skin != p->lastSettings.skin ||
-                                     cfg.everyFrame != p->lastSettings.everyFrame;
+        if (scaled)
+            copyGuide(sl->colour.Get(), p->scaleBaseline.Get());
+        const bool settingsChanged = cfg.encoding != p->lastSettings.encoding ||
+                                     cfg.toneChannels != p->lastSettings.toneChannels ||
+                                     cfg.modelScale != p->lastSettings.modelScale || !p->haveSettings ||
+                                     cfg.tone != p->lastSettings.tone || cfg.structure != p->lastSettings.structure ||
+                                     cfg.skin != p->lastSettings.skin || cfg.everyFrame != p->lastSettings.everyFrame;
         const bool explicitReset = p->resetRequested.exchange(false);
         const bool gap = p->lastSubmitted && GetTickCount64() - p->lastSubmitted > 250;
-        if (f.reset || resize || guideChange || passChange || p->resetAfterTimeout || settingsChanged || explicitReset || gap)
+        if (f.reset || resize || guideChange || passChange || p->resetAfterTimeout || settingsChanged ||
+            explicitReset || gap)
         {
-            p->Log("AMD history reset: frame=" + std::to_string(p->frames) +
-                   " game=" + std::to_string(f.reset) + " resize=" + std::to_string(resize) +
-                   " guides=" + std::to_string(guideChange) + " passes=" + std::to_string(passChange) +
-                   " timeout=" + std::to_string(p->resetAfterTimeout) + " settings=" + std::to_string(settingsChanged) +
-                   " explicit=" + std::to_string(explicitReset) + " gap=" + std::to_string(gap));
+            p->Log("AMD history reset: frame=" + std::to_string(p->frames) + " game=" + std::to_string(f.reset) +
+                   " resize=" + std::to_string(resize) + " guides=" + std::to_string(guideChange) +
+                   " passes=" + std::to_string(passChange) + " timeout=" + std::to_string(p->resetAfterTimeout) +
+                   " settings=" + std::to_string(settingsChanged) + " explicit=" + std::to_string(explicitReset) +
+                   " gap=" + std::to_string(gap));
         }
         for (UINT i = 0; i < p->activePasses; ++i)
         {
@@ -1575,7 +1621,8 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             At<uint8_t>(r, L->temporal) = cfg.everyFrame ? 0 : 1;
             // Engine +0x120 is the history-valid flag, +0x118 is the current
             // borrowed history view. Clear only at a quiescent frame boundary.
-            if (f.reset || resize || guideChange || passChange || p->resetAfterTimeout || settingsChanged || explicitReset || gap)
+            if (f.reset || resize || guideChange || passChange || p->resetAfterTimeout || settingsChanged ||
+                explicitReset || gap)
             {
                 At<uint8_t>(r, L->historyValid) = 0;
                 At<void*>(r, L->historyView) = nullptr;
@@ -1585,15 +1632,15 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             At<float>(r, L->tone) = i == 0 ? cfg.tone : 0;
             At<float>(r, L->structure) = cfg.structure;
             At<float>(r, L->skin) = cfg.skin;
-            At<UINT>(r, L->toneChannels)=cfg.toneChannels?1u:0u;
+            At<UINT>(r, L->toneChannels) = cfg.toneChannels ? 1u : 0u;
             At<UINT>(r, L->charMask) = 1; // Enable native semantic character-mask channel.
             // The old shader ceiling expired at high render resolutions even
             // when inference finished well inside the original runtime's watchdog.
             // Scale the spin allowance with pixels, but retain a hard ceiling
             // in the private shader if notification is lost. This is an
             // iteration allowance, not a portable millisecond conversion.
-            At<UINT>(r, L->watchdog) = static_cast<UINT>(std::clamp<UINT64>(
-                262144 + (UINT64(w) * h + 1) / 2, 262144, 2097152));
+            At<UINT>(r, L->watchdog) =
+                static_cast<UINT>(std::clamp<UINT64>(262144 + (UINT64(w) * h + 1) / 2, 262144, 2097152));
             Packet packet {};
             packet.list = cmd;
             packet.colour = sl->colour.Get();
@@ -1627,20 +1674,17 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             // their complete diagnostic line below.
             if (++p->recordCalls <= 3 || p->recordCalls % 300 == 0)
                 p->Log("AMD Record enter: n=" + std::to_string(p->recordCalls) +
-                       " jobBefore=" + std::to_string(jobBefore) +
-                       " doneBefore=" + std::to_string(doneBefore) +
+                       " jobBefore=" + std::to_string(jobBefore) + " doneBefore=" + std::to_string(doneBefore) +
                        " listBefore=" + std::to_string(reinterpret_cast<uintptr_t>(pendingBefore)) +
-                       " recreate=" + std::to_string(recreateBefore) +
-                       " lockCount=" + std::to_string(lockBefore) +
-                       " gate4c=" + std::to_string(gate4c) +
-                       " gate68=" + std::to_string(gate68) +
+                       " recreate=" + std::to_string(recreateBefore) + " lockCount=" + std::to_string(lockBefore) +
+                       " gate4c=" + std::to_string(gate4c) + " gate68=" + std::to_string(gate68) +
                        " count78=" + std::to_string(count78));
             const int actualSpin = L->spinDraw ? At<int>(r, L->spinDraw) : 0;
             const bool aPsoBefore = L->graphicsPso && At<void*>(r, L->graphicsPso) != nullptr;
             const bool predBefore = L->predicateReady && At<uint8_t>(r, L->predicateReady) == 1;
             const auto nativeBase = reinterpret_cast<uintptr_t>(r);
-            GraphicsSnap::ScopedNativeDrawObservation draws(listId,
-                L->graphicsWaitBegin ? nativeBase + L->graphicsWaitBegin : 0,
+            GraphicsSnap::ScopedNativeDrawObservation draws(
+                listId, L->graphicsWaitBegin ? nativeBase + L->graphicsWaitBegin : 0,
                 L->graphicsWaitEnd ? nativeBase + L->graphicsWaitEnd : 0,
                 { L->waitDispatchInit ? nativeBase + L->waitDispatchInit : 0,
                   L->waitDispatchFallback ? nativeBase + L->waitDispatchFallback : 0,
@@ -1648,46 +1692,47 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                   L->waitDispatchFinish ? nativeBase + L->waitDispatchFinish : 0 });
             const auto callStart = std::chrono::steady_clock::now();
             reinterpret_cast<RecordFn>(nativeBase + L->record)(&packet);
-            const auto callMicros = std::chrono::duration_cast<std::chrono::microseconds>(
-                                        std::chrono::steady_clock::now() - callStart)
-                                        .count();
+            const auto callMicros =
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - callStart)
+                    .count();
             p->gfxStartup[i].MarkRecorded();
             const bool aPsoAfter = L->graphicsPso && At<void*>(r, L->graphicsPso) != nullptr;
             const bool predAfter = L->predicateReady && At<uint8_t>(r, L->predicateReady) == 1;
             p->gfxDrawCalls += draws.observation.count;
-            if (actualSpin) ++p->gfxSpin1Calls; else ++p->gfxSpin0Calls;
-            const int nativeMode = draws.observation.count ? 0 :
-                draws.observation.dispatchSlices || draws.observation.dispatchFallback ? 1 :
-                gfx->requested && (!waitCoverage.drawCovered || !waitCoverage.dispatchCovered) ? 2 :
-                draws.observation.dispatchWait ? 3 : 4;
-            static constexpr const char* nativeModes[] = {
-                "graphics_recorded", "compute_wait_recorded", "observation_incomplete",
-                "wait_dispatch_only", "no_wait_calls_observed"
-            };
+            if (actualSpin)
+                ++p->gfxSpin1Calls;
+            else
+                ++p->gfxSpin0Calls;
+            const int nativeMode = draws.observation.count                                                          ? 0
+                                   : draws.observation.dispatchSlices || draws.observation.dispatchFallback         ? 1
+                                   : gfx->requested && (!waitCoverage.drawCovered || !waitCoverage.dispatchCovered) ? 2
+                                   : draws.observation.dispatchWait                                                 ? 3
+                                                                                                                    : 4;
+            static constexpr const char* nativeModes[] = { "graphics_recorded", "compute_wait_recorded",
+                                                           "observation_incomplete", "wait_dispatch_only",
+                                                           "no_wait_calls_observed" };
             const UINT64 nativeSample = ++p->gfxNativeSamples[i];
             const UINT64 logNow = GetTickCount64();
             const bool requestedChanged = p->gfxLastRequested[i] != static_cast<int>(gfx->requested);
-            const bool modeChanged = p->gfxLastSpin[i] != actualSpin || p->gfxLastPso[i] != aPsoAfter ||
-                                     p->gfxLastMode[i] != nativeMode;
+            const bool modeChanged =
+                p->gfxLastSpin[i] != actualSpin || p->gfxLastPso[i] != aPsoAfter || p->gfxLastMode[i] != nativeMode;
             // User requests always produce one line per active pass. Automatic
             // fallback chatter is limited per pass, without a lifetime quota.
             if (nativeSample <= 3 || nativeSample % 300 == 0 || requestedChanged ||
                 (modeChanged && logNow - p->gfxModeLogAt[i] >= 1000))
             {
-                p->LogDiagnostic("AMD graphics native: pass=" + std::to_string(i + 1) +
-                       " record=" + std::to_string(p->recordCalls) +
-                       " requested=" + std::to_string(gfx->requested) + " SpinDraw=" + std::to_string(actualSpin) +
-                       " aGraphicsPsoBefore=" + std::to_string(aPsoBefore) +
-                       " aGraphicsPsoAfter=" + std::to_string(aPsoAfter) +
-                       " predReadyBefore=" + std::to_string(predBefore) +
-                       " predReadyAfter=" + std::to_string(predAfter) +
-                       " drawObserved=" + std::to_string(draws.observation.count) +
-                       " dispatchWait=" + std::to_string(draws.observation.dispatchWait) +
-                       " dispatchInit=" + std::to_string(draws.observation.dispatchInit) +
-                       " dispatchFallback=" + std::to_string(draws.observation.dispatchFallback) +
-                       " dispatchSlices=" + std::to_string(draws.observation.dispatchSlices) +
-                       " dispatchFinish=" + std::to_string(draws.observation.dispatchFinish) +
-                       " mode=" + nativeModes[nativeMode]);
+                p->LogDiagnostic(
+                    "AMD graphics native: pass=" + std::to_string(i + 1) + " record=" + std::to_string(p->recordCalls) +
+                    " requested=" + std::to_string(gfx->requested) + " SpinDraw=" + std::to_string(actualSpin) +
+                    " aGraphicsPsoBefore=" + std::to_string(aPsoBefore) +
+                    " aGraphicsPsoAfter=" + std::to_string(aPsoAfter) +
+                    " predReadyBefore=" + std::to_string(predBefore) + " predReadyAfter=" + std::to_string(predAfter) +
+                    " drawObserved=" + std::to_string(draws.observation.count) +
+                    " dispatchWait=" + std::to_string(draws.observation.dispatchWait) +
+                    " dispatchInit=" + std::to_string(draws.observation.dispatchInit) +
+                    " dispatchFallback=" + std::to_string(draws.observation.dispatchFallback) +
+                    " dispatchSlices=" + std::to_string(draws.observation.dispatchSlices) + " dispatchFinish=" +
+                    std::to_string(draws.observation.dispatchFinish) + " mode=" + nativeModes[nativeMode]);
                 p->gfxLastRequested[i] = static_cast<int>(gfx->requested);
                 p->gfxLastSpin[i] = actualSpin;
                 p->gfxLastPso[i] = aPsoAfter;
@@ -1697,11 +1742,13 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             // Address/filter diagnostics are emitted once per category and
             // pass, keeping failed observation actionable without log floods.
             std::string detailKinds;
-            const auto addDetail = [&](bool present, UINT bit, const char* name) {
+            const auto addDetail = [&](bool present, UINT bit, const char* name)
+            {
                 if (present && !(p->gfxDetailSeen[i] & bit))
                 {
                     p->gfxDetailSeen[i] |= bit;
-                    if (!detailKinds.empty()) detailKinds += ',';
+                    if (!detailKinds.empty())
+                        detailKinds += ',';
                     detailKinds += name;
                 }
             };
@@ -1711,36 +1758,35 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             addDetail(gfx->requested && !waitCoverage.dispatchCovered, 4u, "dispatch_uncovered");
             addDetail(draws.observation.hookHits && !draws.observation.count, 8u, "draw_filtered");
             addDetail(draws.observation.dispatchHook && !draws.observation.dispatchWait, 16u, "dispatch_filtered");
-            addDetail(actualSpin && aPsoBefore && predBefore && !draws.observation.count,
-                      32u, "graphics_not_observed");
+            addDetail(actualSpin && aPsoBefore && predBefore && !draws.observation.count, 32u, "graphics_not_observed");
             if (!detailKinds.empty())
-                p->LogDiagnostic("AMD graphics native detail: pass=" + std::to_string(i + 1) +
-                       " record=" + std::to_string(p->recordCalls) + " categories=" + detailKinds +
-                       " requested=" + std::to_string(gfx->requested) + " SpinDraw=" + std::to_string(actualSpin) +
-                       " drawHook=" + std::to_string(draws.observation.hookHits) +
-                       " drawSameList=" + std::to_string(draws.observation.sameList) +
-                       " drawCaller=" + std::to_string(draws.observation.callerMatched) +
-                       " drawObserved=" + std::to_string(draws.observation.count) +
-                       " drawMismatch=" + std::to_string(draws.observation.mismatchReturn) +
-                       " drawMismatchList=" + std::to_string(draws.observation.mismatchList) +
-                       " drawTarget=" + std::to_string(waitCoverage.drawTarget) +
-                       " earlyDrawTarget=" + std::to_string(earlyDrawTarget) +
-                       " drawCovered=" + std::to_string(waitCoverage.drawCovered) +
-                       " drawAttachError=" + std::to_string(waitCoverage.drawError) +
-                       " dispatchTarget=" + std::to_string(waitCoverage.dispatchTarget) +
-                       " dispatchCovered=" + std::to_string(waitCoverage.dispatchCovered) +
-                       " dispatchAttachError=" + std::to_string(waitCoverage.dispatchError) +
-                       " dispatchHook=" + std::to_string(draws.observation.dispatchHook) +
-                       " dispatchSameList=" + std::to_string(draws.observation.dispatchSameList) +
-                       " dispatchWait=" + std::to_string(draws.observation.dispatchWait) +
-                       " dispatchInit=" + std::to_string(draws.observation.dispatchInit) +
-                       " dispatchFallback=" + std::to_string(draws.observation.dispatchFallback) +
-                       " dispatchSlices=" + std::to_string(draws.observation.dispatchSlices) +
-                       " dispatchFinish=" + std::to_string(draws.observation.dispatchFinish) +
-                       " dispatchMismatch=" + std::to_string(draws.observation.dispatchMismatchReturn) +
-                       " waitRange=" + std::to_string(nativeBase + (L->graphicsWaitBegin ? L->graphicsWaitBegin : 0)) +
-                       "-" + std::to_string(nativeBase + (L->graphicsWaitEnd ? L->graphicsWaitEnd : 0)) +
-                       " mode=" + nativeModes[nativeMode]);
+                p->LogDiagnostic(
+                    "AMD graphics native detail: pass=" + std::to_string(i + 1) +
+                    " record=" + std::to_string(p->recordCalls) + " categories=" + detailKinds +
+                    " requested=" + std::to_string(gfx->requested) + " SpinDraw=" + std::to_string(actualSpin) +
+                    " drawHook=" + std::to_string(draws.observation.hookHits) +
+                    " drawSameList=" + std::to_string(draws.observation.sameList) +
+                    " drawCaller=" + std::to_string(draws.observation.callerMatched) +
+                    " drawObserved=" + std::to_string(draws.observation.count) +
+                    " drawMismatch=" + std::to_string(draws.observation.mismatchReturn) +
+                    " drawMismatchList=" + std::to_string(draws.observation.mismatchList) + " drawTarget=" +
+                    std::to_string(waitCoverage.drawTarget) + " earlyDrawTarget=" + std::to_string(earlyDrawTarget) +
+                    " drawCovered=" + std::to_string(waitCoverage.drawCovered) +
+                    " drawAttachError=" + std::to_string(waitCoverage.drawError) +
+                    " dispatchTarget=" + std::to_string(waitCoverage.dispatchTarget) +
+                    " dispatchCovered=" + std::to_string(waitCoverage.dispatchCovered) +
+                    " dispatchAttachError=" + std::to_string(waitCoverage.dispatchError) +
+                    " dispatchHook=" + std::to_string(draws.observation.dispatchHook) +
+                    " dispatchSameList=" + std::to_string(draws.observation.dispatchSameList) +
+                    " dispatchWait=" + std::to_string(draws.observation.dispatchWait) +
+                    " dispatchInit=" + std::to_string(draws.observation.dispatchInit) +
+                    " dispatchFallback=" + std::to_string(draws.observation.dispatchFallback) +
+                    " dispatchSlices=" + std::to_string(draws.observation.dispatchSlices) +
+                    " dispatchFinish=" + std::to_string(draws.observation.dispatchFinish) +
+                    " dispatchMismatch=" + std::to_string(draws.observation.dispatchMismatchReturn) +
+                    " waitRange=" + std::to_string(nativeBase + (L->graphicsWaitBegin ? L->graphicsWaitBegin : 0)) +
+                    "-" + std::to_string(nativeBase + (L->graphicsWaitEnd ? L->graphicsWaitEnd : 0)) +
+                    " mode=" + nativeModes[nativeMode]);
             sl->jobs[i] = At<UINT>(r, L->jobId);
             // Staging recreation resets the native job counter. After a resize,
             // job 1 can follow job 1, so counter equality does not mean rejection.
@@ -1764,19 +1810,15 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             {
                 // No matching pending list means we must not claim publication.
                 // Counters alone cannot establish why Record declined.
-                p->Log("AMD Record refused: jobBefore=" + std::to_string(jobBefore) +
-                       " jobAfter=" + std::to_string(At<UINT>(r, L->jobId)) +
-                       " doneBefore=" + std::to_string(doneBefore) +
-                       " listBefore=" + std::to_string(reinterpret_cast<uintptr_t>(pendingBefore)) +
-                       " listAfter=" + std::to_string(reinterpret_cast<uintptr_t>(At<ID3D12CommandList*>(r, L->pendingList))) +
+                p->Log("AMD Record refused: jobBefore=" + std::to_string(jobBefore) + " jobAfter=" +
+                       std::to_string(At<UINT>(r, L->jobId)) + " doneBefore=" + std::to_string(doneBefore) +
+                       " listBefore=" + std::to_string(reinterpret_cast<uintptr_t>(pendingBefore)) + " listAfter=" +
+                       std::to_string(reinterpret_cast<uintptr_t>(At<ID3D12CommandList*>(r, L->pendingList))) +
                        " recreate_before=" + std::to_string(recreateBefore) +
-                       " lockCount=" + std::to_string(lockBefore) +
-                       " gate4c=" + std::to_string(gate4c) +
-                       " gate68=" + std::to_string(gate68) +
-                       " count78=" + std::to_string(count78) +
-                       " count78_after=" + std::to_string(L->counter78 ? At<UINT>(r, L->counter78) : 0) +
-                       " call_us=" + std::to_string(callMicros) +
-                       " slot=" + std::to_string(static_cast<UINT>(sl - &p->slots[0])) +
+                       " lockCount=" + std::to_string(lockBefore) + " gate4c=" + std::to_string(gate4c) +
+                       " gate68=" + std::to_string(gate68) + " count78=" + std::to_string(count78) +
+                       " count78_after=" + std::to_string(L->counter78 ? At<UINT>(r, L->counter78) : 0) + " call_us=" +
+                       std::to_string(callMicros) + " slot=" + std::to_string(static_cast<UINT>(sl - &p->slots[0])) +
                        " busy=" + std::to_string(p->AnySlotBusy() ? 1 : 0));
                 break;
             }
@@ -1784,8 +1826,7 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             // the runtime ever blocks, which is what decides if admission control is viable.
             if (p->recordCalls <= 3 || p->recordCalls % 300 == 0)
                 p->Log("AMD Record ok: n=" + std::to_string(p->recordCalls) +
-                       " jobAfter=" + std::to_string(At<UINT>(r, L->jobId)) +
-                       " call_us=" + std::to_string(callMicros) +
+                       " jobAfter=" + std::to_string(At<UINT>(r, L->jobId)) + " call_us=" + std::to_string(callMicros) +
                        " slot=" + std::to_string(static_cast<UINT>(sl - &p->slots[0])));
         }
         Barrier(cmd, f.motion, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, f.motionState);
@@ -1809,9 +1850,8 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             return nullptr;
         if (applyLook)
         {
-            auto bounded = [](float v, float lo, float hi, float fallback) {
-                return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback;
-            };
+            auto bounded = [](float v, float lo, float hi, float fallback)
+            { return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback; };
             struct Constants
             {
                 UINT w, h, appearance, inspect;
@@ -1819,21 +1859,33 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                 float colour, shadow, halo, flat, tone, exposureEV, contrast, saturation;
                 float compression, preExposure;
                 UINT detectSkin, reserved;
-            } c {
-                w, h, (std::min)(look.appearance, 3u), (std::min)(look.inspect, 3u),
-                bounded(look.mix,0,1,1), bounded(look.materialDetail,0,2,1.15f),
-                bounded(look.shapeDefinition,0,2,1.2f), bounded(look.localLighting,0,2,1.15f),
-                bounded(look.skinDetail,0,2,1.1f), bounded(look.skinSoftness,0,1,.486f),
-                bounded(look.specularControl,0,1,.58f), bounded(look.highlightRollOff,0,1,.9f),
-                bounded(look.colourSeparation,0,1,0), bounded(look.shadowDepth,0,1,.2f),
-                bounded(look.antiHalo,0,1,.901f), bounded(look.flatAreaProtection,0,1,0),
-                bounded(look.tone,0,1,0), bounded(look.exposureEV,-3,3,1),
-                bounded(look.contrast,.5f,1.5f,1), bounded(look.saturation,0,2,1),
-                bounded(look.highlightCompression,0,1,0),
-                std::isfinite(f.preExposure) && f.preExposure > 0 ? f.preExposure : 1, look.detectSkin, 0
-            };
+            } c { w,
+                  h,
+                  (std::min) (look.appearance, 3u),
+                  (std::min) (look.inspect, 3u),
+                  bounded(look.mix, 0, 1, 1),
+                  bounded(look.materialDetail, 0, 2, 1.15f),
+                  bounded(look.shapeDefinition, 0, 2, 1.2f),
+                  bounded(look.localLighting, 0, 2, 1.15f),
+                  bounded(look.skinDetail, 0, 2, 1.1f),
+                  bounded(look.skinSoftness, 0, 1, .486f),
+                  bounded(look.specularControl, 0, 1, .58f),
+                  bounded(look.highlightRollOff, 0, 1, .9f),
+                  bounded(look.colourSeparation, 0, 1, 0),
+                  bounded(look.shadowDepth, 0, 1, .2f),
+                  bounded(look.antiHalo, 0, 1, .901f),
+                  bounded(look.flatAreaProtection, 0, 1, 0),
+                  bounded(look.tone, 0, 1, 0),
+                  bounded(look.exposureEV, -3, 3, 1),
+                  bounded(look.contrast, .5f, 1.5f, 1),
+                  bounded(look.saturation, 0, 2, 1),
+                  bounded(look.highlightCompression, 0, 1, 0),
+                  std::isfinite(f.preExposure) && f.preExposure > 0 ? f.preExposure : 1,
+                  look.detectSkin,
+                  0 };
             static_assert(sizeof(Constants) == 24 * sizeof(UINT));
-            Barrier(cmd, p->lookColour.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            Barrier(cmd, p->lookColour.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             cmd->SetComputeRootSignature(p->root.Get());
             cmd->SetPipelineState(p->lookPipeline.Get());
             cmd->SetDescriptorHeaps(1, &heap);
@@ -1842,22 +1894,26 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             cmd->SetComputeRootDescriptorTable(0, table);
             cmd->SetComputeRoot32BitConstants(1, 24, &c, 0);
             cmd->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
-            Barrier(cmd, p->lookColour.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Barrier(cmd, p->lookColour.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
         auto finalColour = applyLook ? p->lookColour.Get() : sl->colour.Get();
         if (cfg.rtgi.enabled && !p->rtgiFailed)
         {
             try
             {
-                if (!p->rtgi) p->rtgi = std::make_unique<RtgiNative>(p->device.Get(), p->directory / L"experimental_lighting");
+                if (!p->rtgi)
+                    p->rtgi = std::make_unique<RtgiNative>(p->device.Get(), p->directory / L"experimental_lighting");
                 Frame rtgiFrame = f;
                 rtgiFrame.colour = finalColour;
-                rtgiFrame.width=w;rtgiFrame.height=h;
-                rtgiFrame.depth=depth;
-                rtgiFrame.depthState=scaled?D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE:f.depthState;
+                rtgiFrame.width = w;
+                rtgiFrame.height = h;
+                rtgiFrame.depth = depth;
+                rtgiFrame.depthState = scaled ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE : f.depthState;
                 rtgiFrame.colourState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
                 rtgiFrame.motion = motion;
-                rtgiFrame.motionState = motion == f.motion ? f.motionState : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                rtgiFrame.motionState =
+                    motion == f.motion ? f.motionState : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
                 rtgiFrame.motionScaleX *= resampleMotion ? float(w) / mvW : 1.0f;
                 rtgiFrame.motionScaleY *= resampleMotion ? float(h) / mvH : 1.0f;
                 rtgiFrame.reset |= resize || guideChange || passChange || p->resetAfterTimeout || explicitReset || gap;
@@ -1875,22 +1931,30 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         }
         else if (!cfg.rtgi.enabled)
         {
-            if (p->rtgi) p->rtgi->ResetHistory();
+            if (p->rtgi)
+                p->rtgi->ResetHistory();
             p->rtgiStatus.clear();
         }
-        if (scaled) {
-            guideDescriptors(slotBase + 10,f.colour,p->scaleOutput.Get(),DXGI_FORMAT_R16G16B16A16_FLOAT);
-            auto handle=p->heap->GetCPUDescriptorHandleForHeapStart();
-            auto stride=p->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        if (scaled)
+        {
+            guideDescriptors(slotBase + 10, f.colour, p->scaleOutput.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
+            auto handle = p->heap->GetCPUDescriptorHandleForHeapStart();
+            auto stride = p->device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
             handle.ptr += static_cast<SIZE_T>(slotBase + 12) * stride;
-            auto v=srv;v.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
-            p->device->CreateShaderResourceView(p->scaleBaseline.Get(),&v,handle);
-            handle.ptr+=stride;p->device->CreateShaderResourceView(finalColour,&v,handle);
-            Barrier(cmd,f.colour,f.colourState,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            Barrier(cmd,p->scaleOutput.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            cmd->SetComputeRootSignature(p->root.Get());cmd->SetDescriptorHeaps(1,&heap);
+            auto v = srv;
+            v.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            p->device->CreateShaderResourceView(p->scaleBaseline.Get(), &v, handle);
+            handle.ptr += stride;
+            p->device->CreateShaderResourceView(finalColour, &v, handle);
+            Barrier(cmd, f.colour, f.colourState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Barrier(cmd, p->scaleOutput.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            cmd->SetComputeRootSignature(p->root.Get());
+            cmd->SetDescriptorHeaps(1, &heap);
             cmd->SetPipelineState(p->resolvePipeline.Get());
-            auto table=heap->GetGPUDescriptorHandleForHeapStart();table.ptr+=static_cast<SIZE_T>(slotBase+10)*stride;cmd->SetComputeRootDescriptorTable(0,table);
+            auto table = heap->GetGPUDescriptorHandleForHeapStart();
+            table.ptr += static_cast<SIZE_T>(slotBase + 10) * stride;
+            cmd->SetComputeRootDescriptorTable(0, table);
             // Root table 2 names the (baseline, finalColour) pair written just above at
             // slotBase+12/+13, so it is two descriptors along from table 0. This used to
             // add (slotBase+2) on top of the already-advanced handle, which resolves to
@@ -1898,24 +1962,30 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             // read another slot's pair, and from slot 3 it pointed past the end of the
             // kDescriptors heap outright. Only reachable on the `scaled` path, which is
             // why it survived: every measurement so far ran at NR resolution 100%.
-            table.ptr+=static_cast<SIZE_T>(2)*stride;cmd->SetComputeRootDescriptorTable(2,table);
-            UINT rc[]{inputW,inputH,w,h};cmd->SetComputeRoot32BitConstants(1,4,rc,0);
-            cmd->Dispatch((inputW+7)/8,(inputH+7)/8,1);
-            Barrier(cmd,p->scaleOutput.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            Barrier(cmd,f.colour,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,f.colourState);
-            finalColour=p->scaleOutput.Get();
+            table.ptr += static_cast<SIZE_T>(2) * stride;
+            cmd->SetComputeRootDescriptorTable(2, table);
+            UINT rc[] { inputW, inputH, w, h };
+            cmd->SetComputeRoot32BitConstants(1, 4, rc, 0);
+            cmd->Dispatch((inputW + 7) / 8, (inputH + 7) / 8, 1);
+            Barrier(cmd, p->scaleOutput.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Barrier(cmd, f.colour, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, f.colourState);
+            finalColour = p->scaleOutput.Get();
         }
         p->resetAfterTimeout = false;
         p->lastSettings = cfg;
         p->haveSettings = true;
-        p->lastInputWidth=inputW;p->lastInputHeight=inputH;
+        p->lastInputWidth = inputW;
+        p->lastInputHeight = inputH;
         p->lastMotionWidth = f.motionWidth;
         p->lastMotionHeight = f.motionHeight;
         p->hadExposure = exposureSource != nullptr;
         if (p->frames <= 120 || resize)
             p->Log("Recorded pre-SR " + std::to_string(w) + "x" + std::to_string(h) +
                    " passes=" + std::to_string(p->activePasses));
-        if(convertEncoding) finalColour=sl->encode->Run(cmd,finalColour,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,inputW,inputH,cfg.encoding,true);
+        if (convertEncoding)
+            finalColour = sl->encode->Run(cmd, finalColour, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, inputW,
+                                          inputH, cfg.encoding, true);
 #ifdef AMD_RETIRE_DIAGNOSTICS
         timing.event.outcome = "recorded";
 #endif
@@ -1930,13 +2000,16 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
 }
 int Backend::PendingListIndex(UINT count, ID3D12CommandList* const* lists) const
 {
-    if (!lists) return -1;
+    if (!lists)
+        return -1;
     for (size_t s = 0; s < p->slots.size(); ++s)
     {
         auto pending = p->slots[s].pending.load(std::memory_order_acquire);
-        if (!pending) continue;
+        if (!pending)
+            continue;
         for (UINT i = 0; i < count; ++i)
-            if (lists[i] == pending) return static_cast<int>(i);
+            if (lists[i] == pending)
+                return static_cast<int>(i);
     }
     return -1;
 }
@@ -1967,8 +2040,8 @@ void Backend::Submitting(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* c
         return;
     auto& sl = p->slots[slot];
     if (p->frames <= 120)
-        p->Log("Neural submission: lists=" + std::to_string(n) + " queueType=" +
-               std::to_string(static_cast<UINT>(queue->GetDesc().Type)));
+        p->Log("Neural submission: lists=" + std::to_string(n) +
+               " queueType=" + std::to_string(static_cast<UINT>(queue->GetDesc().Type)));
     // Match the recorded list, not the swapchain's presentation queue. FG can
     // replace the latter, and the renderer may also migrate between queues.
     // Preserve a single ordered fence timeline across queue migration. A high
@@ -1998,7 +2071,6 @@ void Backend::Submitting(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* c
     // Bind the real queue here, but only wake HIP after ExecuteCommandLists.
     // A capture-wait kernel launched before D3D12 submission can occupy the GPU
     // while the capture it depends on is still queued on the CPU.
-
 }
 void Backend::Submitted(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* const* lists)
 {
@@ -2032,7 +2104,8 @@ void Backend::Submitted(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* co
     }
     // Notify uses this slot's recorded pass count. 0 = the runtime refused (no HIP job).
     const UINT passCount = (sl.passCount == Impl::Slot::kPassUnset) ? 0u : sl.passCount;
-    const auto notifyPass = [&](UINT i) {
+    const auto notifyPass = [&](UINT i)
+    {
         auto h = p->runtime[i];
         const bool matched = At<ID3D12CommandList*>(h, L->pendingList) == pending;
         if (matched)
@@ -2070,8 +2143,8 @@ void Backend::Submitted(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* co
         // All runtimes use HIP stream 0. Publish the next pass only once the previous
         // worker finished; otherwise its capture-wait kernel could block the first pass.
         auto start = GetTickCount64();
-        while (static_cast<UINT>(InterlockedCompareExchange(reinterpret_cast<volatile LONG*>(&At<UINT>(h, L->jobDone)), 0,
-                                                            0)) < sl.jobs[i])
+        while (static_cast<UINT>(InterlockedCompareExchange(reinterpret_cast<volatile LONG*>(&At<UINT>(h, L->jobDone)),
+                                                            0, 0)) < sl.jobs[i])
         {
             if (GetTickCount64() - start > 5000)
             {
@@ -2094,10 +2167,7 @@ void Backend::Submitted(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* co
     p->WaitAfterSubmitIfEveryFrame(slot);
     p->RetireSubmission(false, "Submitted");
 }
-bool Backend::GraphicsRestartNeeded(UINT activePasses) const
-{
-    return p->gfxRestart.NeedsRestart(activePasses);
-}
+bool Backend::GraphicsRestartNeeded(UINT activePasses) const { return p->gfxRestart.NeedsRestart(activePasses); }
 std::string Backend::Status() const
 {
     std::lock_guard guard(p->lock);
@@ -2116,8 +2186,11 @@ std::string Backend::Status() const
     // from pass DLL filenames alone.
     const std::string runtimeTag = L ? (std::string("AMD runtime ") + L->name + " | ") : std::string();
     if (!p->failed && p->lastSubmitted)
-        return runtimeTag + p->status + (p->rtgiStatus.empty() ? "" : " | " + p->rtgiStatus) + " | completed frames=" + std::to_string(p->completedFrames) +
-               (p->lastCompleted ? " last completion " + std::to_string((GetTickCount64() - p->lastCompleted) / 1000) + "s ago" : " no successful completion") +
+        return runtimeTag + p->status + (p->rtgiStatus.empty() ? "" : " | " + p->rtgiStatus) +
+               " | completed frames=" + std::to_string(p->completedFrames) +
+               (p->lastCompleted
+                    ? " last completion " + std::to_string((GetTickCount64() - p->lastCompleted) / 1000) + "s ago"
+                    : " no successful completion") +
                " | timeout events=" + std::to_string(reportedTimeouts) +
                " | skipped pending/GPU=" + std::to_string(p->pendingSkips) + "/" + std::to_string(p->fenceSkips);
     return runtimeTag + p->status;
@@ -2127,7 +2200,8 @@ void Backend::InvalidateHistory() { p->resetRequested.store(true); }
 bool Backend::Ready()
 {
     std::lock_guard guard(p->lock);
-    if (!p->fence) return false;
+    if (!p->fence)
+        return false;
     p->RetireSubmission(false, "Ready");
     const auto completed = p->fence->GetCompletedValue();
     return !p->failed && !p->AnySlotBusy() && completed != UINT64_MAX && completed >= p->LatestCompletion();
@@ -2136,7 +2210,8 @@ bool Backend::Shutdown()
 {
     std::lock_guard guard(p->lock);
     const AmdLayout* L = p->L;
-    if (!p->fence) return false;
+    if (!p->fence)
+        return false;
     p->RetireSubmission(false, "Shutdown");
 #ifdef AMD_RETIRE_DIAGNOSTICS
     p->diagnostics.Flush(p->directory, L ? L->name : "uninitialized", "shutdown");

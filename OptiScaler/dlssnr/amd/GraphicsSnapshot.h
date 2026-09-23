@@ -155,8 +155,7 @@ struct RootDomain
     }
 
     // Partial writes must merge by DWORD offset, not replace the whole slot.
-    bool MergeConstants(std::uint32_t index, const std::uint32_t* src, std::uint32_t count,
-                        std::uint32_t destOffset)
+    bool MergeConstants(std::uint32_t index, const std::uint32_t* src, std::uint32_t count, std::uint32_t destOffset)
     {
         if (index >= kMaxRootParams || !src || count == 0)
             return false;
@@ -216,8 +215,7 @@ struct GraphicsSnapshot
             valid = handles[i] != 0;
         if (valid && count == 2 && handles[0] == handles[1])
             valid = false;
-        const auto newState = !valid ? BindState::Unknown :
-            (count ? BindState::KnownValue : BindState::KnownUnset);
+        const auto newState = !valid ? BindState::Unknown : (count ? BindState::KnownValue : BindState::KnownUnset);
         bool same = valid && heapState == newState && heapCount == count;
         if (same && count == 1)
             same = heaps[0] == handles[0];
@@ -280,8 +278,8 @@ struct GraphicsSnapshot
 
     // The hook expands/copies every descriptor before reporting. A contiguous
     // input cannot be reconstructed here without a device descriptor increment.
-    void SetRenderTargets(std::uint32_t numRTVs, const std::uint64_t* rtvHandles, bool singleHandleRange,
-                          bool hasDsv, std::uint64_t dsvHandle, std::shared_ptr<void> owner = {})
+    void SetRenderTargets(std::uint32_t numRTVs, const std::uint64_t* rtvHandles, bool singleHandleRange, bool hasDsv,
+                          std::uint64_t dsvHandle, std::shared_ptr<void> owner = {})
     {
         om = OmBinding {};
         if (numRTVs == 0 && !hasDsv)
@@ -289,8 +287,8 @@ struct GraphicsSnapshot
             om.state = BindState::KnownUnset;
             return;
         }
-        if (numRTVs > kMaxRTVs || (numRTVs && !rtvHandles) ||
-            (singleHandleRange && numRTVs > 1) || (hasDsv && !dsvHandle))
+        if (numRTVs > kMaxRTVs || (numRTVs && !rtvHandles) || (singleHandleRange && numRTVs > 1) ||
+            (hasDsv && !dsvHandle))
         {
             om.state = BindState::Unknown;
             return;
@@ -481,16 +479,14 @@ inline void DescribeAdmissionGates(const GraphicsSnapshot& s, bool generationKno
 {
     if (!buf || !bufSize)
         return;
-    auto st = [](BindState v) {
-        return v == BindState::KnownValue ? "V" : (v == BindState::KnownUnset ? "U" : "?");
-    };
-    std::snprintf(buf, bufSize,
-                  "gen=%d inelig=%d gRoot=%s cRoot=%s heap=%s pso=%s vp=%s sc=%s topo=%s om=%s pred=%s rp=%d susp=%d q=%d why=%d",
-                  generationKnown ? 1 : 0, ineligible ? 1 : 0, st(s.graphics.signatureState),
-                  st(s.compute.signatureState), st(s.heapState), st(s.psoState), st(s.viewportState),
-                  st(s.scissorState), st(s.topologyState), st(s.om.state),
-                  s.predication.IsDisabled() ? "off" : "on", s.renderPassActive ? 1 : 0,
-                  s.renderPassSuspended ? 1 : 0, s.queryActive ? 1 : 0, static_cast<int>(s.ineligibleWhy));
+    auto st = [](BindState v) { return v == BindState::KnownValue ? "V" : (v == BindState::KnownUnset ? "U" : "?"); };
+    std::snprintf(
+        buf, bufSize,
+        "gen=%d inelig=%d gRoot=%s cRoot=%s heap=%s pso=%s vp=%s sc=%s topo=%s om=%s pred=%s rp=%d susp=%d q=%d why=%d",
+        generationKnown ? 1 : 0, ineligible ? 1 : 0, st(s.graphics.signatureState), st(s.compute.signatureState),
+        st(s.heapState), st(s.psoState), st(s.viewportState), st(s.scissorState), st(s.topologyState), st(s.om.state),
+        s.predication.IsDisabled() ? "off" : "on", s.renderPassActive ? 1 : 0, s.renderPassSuspended ? 1 : 0,
+        s.queryActive ? 1 : 0, static_cast<int>(s.ineligibleWhy));
 }
 
 inline AdmissionResult CanAdmitGraphics(const ListTracker& t)

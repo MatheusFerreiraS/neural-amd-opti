@@ -85,11 +85,10 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     // their place so every descriptor in the table is valid.
     // One compute pass. The public entry below drives three of these plus the model.
     bool DispatchPass(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants,
-                  ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
-                  ID3D12Resource* InMotion,
-                  // Vestigial. Fed to the slot the removed edit accumulator read its history from;
-                  // nothing reads it now and every caller passes nullptr. Kept only so the binding
-                  // table keeps its shape -- not evidence that temporal accumulation exists.
-                  ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget,
-                  ID3D12Resource* OutKeep);
+                      ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
+                      ID3D12Resource* InMotion,
+                      // Vestigial. Fed to the slot the removed edit accumulator read its history from;
+                      // nothing reads it now and every caller passes nullptr. Kept only so the binding
+                      // table keeps its shape -- not evidence that temporal accumulation exists.
+                      ID3D12Resource* InPrevEdit, ID3D12Resource* OutTarget, ID3D12Resource* OutKeep);
 };

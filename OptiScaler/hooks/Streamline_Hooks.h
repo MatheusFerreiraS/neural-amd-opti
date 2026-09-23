@@ -136,8 +136,7 @@ struct RRTaggedD3D12ResourceSnapshot
 
 struct RRD3D12SignalTagSnapshot
 {
-    std::array<RRTaggedD3D12ResourceSnapshot,
-               static_cast<size_t>(RRTaggedSignal::Count)> resources {};
+    std::array<RRTaggedD3D12ResourceSnapshot, static_cast<size_t>(RRTaggedSignal::Count)> resources {};
     uint64_t generation = 0;
     uint32_t activeEvaluationFrame = UINT32_MAX;
     uint32_t activeEvaluationViewport = UINT32_MAX;
@@ -320,8 +319,7 @@ class StreamlineHooks
     static void resetRRSignalTagDiagnostics();
     static void logRRSignalTagDiagnostics(uint32_t renderWidth, uint32_t renderHeight);
     static const char* getRRTaggedSignalName(RRTaggedSignal signal);
-    static const char* getRRCheckerboardAssessment(RRTaggedSignal signal,
-                                                   const RRTaggedResourceDiagnostic& diagnostic,
+    static const char* getRRCheckerboardAssessment(RRTaggedSignal signal, const RRTaggedResourceDiagnostic& diagnostic,
                                                    uint32_t renderWidth, uint32_t renderHeight);
     static bool isRRPreferredTagFormat(RRTaggedSignal signal, DXGI_FORMAT format);
     static const char* getRRPreferredTagFormat(RRTaggedSignal signal);
@@ -339,15 +337,15 @@ class StreamlineHooks
 
     static std::mutex rrSignalTagMutex;
     static RRSignalTagDiagnostics rrSignalTagDiagnostics;
-    static std::array<Microsoft::WRL::ComPtr<ID3D12Resource>,
-                      static_cast<size_t>(RRTaggedSignal::Count)> rrTaggedD3D12Resources;
+    static std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, static_cast<size_t>(RRTaggedSignal::Count)>
+        rrTaggedD3D12Resources;
     static SLTagInventoryDiagnostics slTagInventoryDiagnostics;
     static RRNGXPointerDiagnostics rrNGXPointerDiagnostics;
 
-    static void probeRRResourceTag(const sl::ResourceTag& tag, uint32_t frameIndex,
-                                   uint32_t viewport, RRTagSource source);
-    static void probeSLResourceTag(const sl::ResourceTag& tag, uint32_t frameIndex,
-                                   uint32_t viewport, RRTagSource source);
+    static void probeRRResourceTag(const sl::ResourceTag& tag, uint32_t frameIndex, uint32_t viewport,
+                                   RRTagSource source);
+    static void probeSLResourceTag(const sl::ResourceTag& tag, uint32_t frameIndex, uint32_t viewport,
+                                   RRTagSource source);
 
     // System caps
     inline static SystemCaps* systemCaps = nullptr;

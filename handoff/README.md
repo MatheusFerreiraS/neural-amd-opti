@@ -151,6 +151,12 @@ build otherwise links vcpkg's freetype import library instead of the static
 added had this dependency; Cyberpunk 2077 hid it because a `freetype.dll` sits in its folder. Check with
 `dumpbin /dependents`: `freetype.dll` must not appear.
 
+The `clang-format Check` workflow runs clang-format **20** over `OptiScaler/` (except
+`OptiScaler/include/`) on every push and pull request. Visual Studio ships a newer clang-format
+that breaks some lines differently, so format with the same version before pushing:
+`pip install clang-format==20.1.8`, then `clang-format -i --style=file <files>`. Regenerated shader
+headers under `precompile/` need it too; the upstream ones are formatted the same way.
+
 The binary is produced as `x64/Release/OptiScaler.dll` and then **moved** by a
 post-build step into `x64/Release/a/` together with the rest of the package. Look for
 it there, not in `x64/Release/`.

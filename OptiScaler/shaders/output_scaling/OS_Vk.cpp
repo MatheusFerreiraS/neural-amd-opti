@@ -48,9 +48,7 @@ OS_Vk::OS_Vk(std::string InName, VkDevice InDevice, VkPhysicalDevice InPhysicalD
     // 1. Create Base Resources
     CreateSampler(VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
-    uint32_t constantSize = (ActiveScaler() == Scaler::FSR1)
-                                ? sizeof(UpscaleShaderConstants)
-                                : sizeof(Constants);
+    uint32_t constantSize = (ActiveScaler() == Scaler::FSR1) ? sizeof(UpscaleShaderConstants) : sizeof(Constants);
     CreateConstantBuffer(constantSize);
 
     // 2. Setup Layouts & Pools
@@ -138,8 +136,8 @@ bool OS_Vk::Dispatch(VkCommandBuffer InCmdList, const VkImageInfo& InResourceVie
     const uint32_t dstH = nr ? OutResourceView.Height : State::Instance().currentFeature->DisplayHeight();
 
     // Update Constants
-    FsrEasuCon(fsr1Constants.const0, fsr1Constants.const1, fsr1Constants.const2, fsr1Constants.const3,
-               srcW, srcH, srcW, srcH, dstW, dstH);
+    FsrEasuCon(fsr1Constants.const0, fsr1Constants.const1, fsr1Constants.const2, fsr1Constants.const3, srcW, srcH, srcW,
+               srcH, dstW, dstH);
 
     constants.srcWidth = srcW;
     constants.srcHeight = srcH;

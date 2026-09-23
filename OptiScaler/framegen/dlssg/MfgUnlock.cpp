@@ -7,7 +7,6 @@
 #include <scanner/scanner.h>
 #include <misc/IdentifyGpu.h>
 
-
 namespace
 {
 // mov ebx,1 / mov r8d,3 / cmp edi,0x1b0 / cmovl r8d,ebx. The two counts and the architecture
@@ -34,8 +33,6 @@ constexpr std::string_view kAdvertisePattern309 = "81 FD B0 01 00 00 0F 8C ? ? ?
 //     cmp   eax, 0x1b0
 //     setae al
 constexpr std::string_view kValidatePattern309 = "3D B0 01 00 00 0F 93 C0";
-
-
 
 // scanner::GetAddress only walks sections marked executable. Fatbins are data, so they need their own
 // search. Returns 0 unless exactly one non-executable section holds the sequence, once.
@@ -151,9 +148,8 @@ bool PatchAdvertise(HMODULE module)
     const uint8_t count[] = { kMaxGeneratedFrames };
     const uint8_t nop[] = { 0x0F, 0x1F, 0x40, 0x00 };
 
-    LOG_INFO("MFG unlock: advertise at {:X}, count {} -> {}, cmovl {} -> {}", address,
-             *(const uint8_t*) countAt, kMaxGeneratedFrames, Hex((const uint8_t*) cmovAt, sizeof(nop)),
-             Hex(nop, sizeof(nop)));
+    LOG_INFO("MFG unlock: advertise at {:X}, count {} -> {}, cmovl {} -> {}", address, *(const uint8_t*) countAt,
+             kMaxGeneratedFrames, Hex((const uint8_t*) cmovAt, sizeof(nop)), Hex(nop, sizeof(nop)));
 
     return WriteBytes(countAt, count, sizeof(count)) && WriteBytes(cmovAt, nop, sizeof(nop));
 }
@@ -194,7 +190,6 @@ bool PatchValidate(HMODULE module)
 
     return WriteBytes(branchAt, nop, sizeof(nop)) && WriteBytes(countAt, count, sizeof(count));
 }
-
 
 // Gives Ada the Blackwell kernels the module already carries.
 //
@@ -298,19 +293,18 @@ unsigned int RewriteBlackwellKernels(HMODULE module)
             if (at == bodyEnd)
                 continue;
 
-            if (!WriteBytes(reinterpret_cast<uintptr_t>(at), reinterpret_cast<const uint8_t*>(to),
-                            sizeof(to) - 1))
+            if (!WriteBytes(reinterpret_cast<uintptr_t>(at), reinterpret_cast<const uint8_t*>(to), sizeof(to) - 1))
                 continue;
 
             const uint32_t ada89 = kArchAda;
             const uint32_t parked = kArchParked;
 
-            WriteBytes(reinterpret_cast<uintptr_t>(blackwell + kImageArch),
-                       reinterpret_cast<const uint8_t*>(&ada89), sizeof(ada89));
+            WriteBytes(reinterpret_cast<uintptr_t>(blackwell + kImageArch), reinterpret_cast<const uint8_t*>(&ada89),
+                       sizeof(ada89));
 
             for (uint8_t* image : ada)
-                WriteBytes(reinterpret_cast<uintptr_t>(image + kImageArch),
-                           reinterpret_cast<const uint8_t*>(&parked), sizeof(parked));
+                WriteBytes(reinterpret_cast<uintptr_t>(image + kImageArch), reinterpret_cast<const uint8_t*>(&parked),
+                           sizeof(parked));
 
             ++rewritten;
         }

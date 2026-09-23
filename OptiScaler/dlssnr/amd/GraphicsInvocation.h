@@ -23,10 +23,10 @@ inline thread_local InvocationState* g_graphicsInvocation = nullptr;
 class ScopedGraphicsInvocation
 {
     InvocationState* previous_;
+
   public:
     InvocationState state;
-    explicit ScopedGraphicsInvocation(std::uint64_t listId)
-        : previous_(g_graphicsInvocation)
+    explicit ScopedGraphicsInvocation(std::uint64_t listId) : previous_(g_graphicsInvocation)
     {
         state.listId = listId;
         g_graphicsInvocation = &state;
@@ -67,10 +67,11 @@ inline thread_local NativeDrawObservation* g_nativeDrawObservation = nullptr;
 class ScopedNativeDrawObservation
 {
     NativeDrawObservation* previous_;
+
   public:
     NativeDrawObservation observation;
     ScopedNativeDrawObservation(std::uint64_t listId, std::uintptr_t begin, std::uintptr_t end,
-                               NativeDispatchCallSites sites = {})
+                                NativeDispatchCallSites sites = {})
         : previous_(g_nativeDrawObservation), observation { listId, begin, end }
     {
         observation.dispatchSites = sites;
@@ -113,22 +114,29 @@ inline void ObserveNativeDraw(std::uint64_t listId, std::uintptr_t returnAddress
 inline void ObserveNativeDispatch(std::uint64_t listId, std::uintptr_t returnAddress)
 {
     auto* o = g_nativeDrawObservation;
-    if (!o) return;
+    if (!o)
+        return;
     ++o->dispatchHook;
-    if (o->listId != listId) return;
+    if (o->listId != listId)
+        return;
     ++o->dispatchSameList;
     if (!o->callerBegin || returnAddress < o->callerBegin || returnAddress >= o->callerEnd)
     {
-        if (!o->dispatchMismatchReturn) o->dispatchMismatchReturn = returnAddress;
+        if (!o->dispatchMismatchReturn)
+            o->dispatchMismatchReturn = returnAddress;
         return;
     }
     ++o->dispatchWait;
     // New wait has init/finish Dispatch calls too. Only the two spin
     // call sites establish that the helper recorded original wait.
-    if (returnAddress == o->dispatchSites.init) ++o->dispatchInit;
-    else if (returnAddress == o->dispatchSites.fallback) ++o->dispatchFallback;
-    else if (returnAddress == o->dispatchSites.slices) ++o->dispatchSlices;
-    else if (returnAddress == o->dispatchSites.finish) ++o->dispatchFinish;
+    if (returnAddress == o->dispatchSites.init)
+        ++o->dispatchInit;
+    else if (returnAddress == o->dispatchSites.fallback)
+        ++o->dispatchFallback;
+    else if (returnAddress == o->dispatchSites.slices)
+        ++o->dispatchSlices;
+    else if (returnAddress == o->dispatchSites.finish)
+        ++o->dispatchFinish;
 }
 
 // A creates its graphics PSO during staging initialization. A pass first
@@ -138,10 +146,12 @@ inline void ObserveNativeDispatch(std::uint64_t listId, std::uintptr_t returnAdd
 class GraphicsRestartState
 {
     std::atomic<std::uint32_t> missingPso_ { 0 };
+
   public:
     void OnRecorded(std::uint32_t pass, bool hasGraphicsPso)
     {
-        if (pass >= 3) return;
+        if (pass >= 3)
+            return;
         const auto bit = std::uint32_t(1) << pass;
         if (hasGraphicsPso)
             missingPso_.fetch_and(~bit, std::memory_order_relaxed);
@@ -150,7 +160,8 @@ class GraphicsRestartState
     }
     bool NeedsRestart(std::uint32_t activePasses) const
     {
-        if (activePasses > 3) activePasses = 3;
+        if (activePasses > 3)
+            activePasses = 3;
         const auto activeMask = (std::uint32_t(1) << activePasses) - 1;
         return (missingPso_.load(std::memory_order_relaxed) & activeMask) != 0;
     }
@@ -163,6 +174,7 @@ class GraphicsStartupGate
 {
     bool waiting_ = false, recorded_ = false;
     std::uint64_t started_ = 0;
+
   public:
     bool ShouldDefer(bool requested, bool armed, std::uint64_t now, std::uint64_t waitMs = 2000)
     {
@@ -178,4 +190,4 @@ class GraphicsStartupGate
     void MarkRecorded() { recorded_ = true; }
     bool HasRecorded() const { return recorded_; }
 };
-}
+} // namespace AmdPreSr::GraphicsSnap

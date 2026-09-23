@@ -22,8 +22,8 @@
 
 std::mutex StreamlineHooks::rrSignalTagMutex {};
 RRSignalTagDiagnostics StreamlineHooks::rrSignalTagDiagnostics {};
-std::array<Microsoft::WRL::ComPtr<ID3D12Resource>,
-           static_cast<size_t>(RRTaggedSignal::Count)> StreamlineHooks::rrTaggedD3D12Resources {};
+std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, static_cast<size_t>(RRTaggedSignal::Count)>
+    StreamlineHooks::rrTaggedD3D12Resources {};
 SLTagInventoryDiagnostics StreamlineHooks::slTagInventoryDiagnostics {};
 RRNGXPointerDiagnostics StreamlineHooks::rrNGXPointerDiagnostics {};
 
@@ -36,8 +36,7 @@ class ScopedRRActiveEvaluationFrame
 {
   public:
     ScopedRRActiveEvaluationFrame(uint32_t frame, uint32_t viewport) noexcept
-        : m_previousFrame(g_rrActiveEvaluationFrame),
-          m_previousViewport(g_rrActiveEvaluationViewport)
+        : m_previousFrame(g_rrActiveEvaluationFrame), m_previousViewport(g_rrActiveEvaluationViewport)
     {
         g_rrActiveEvaluationFrame = frame;
         g_rrActiveEvaluationViewport = viewport;
@@ -53,13 +52,7 @@ class ScopedRRActiveEvaluationFrame
     uint32_t m_previousFrame;
     uint32_t m_previousViewport;
 };
-}
-
-
-
-
-
-
+} // namespace
 
 static bool TryGetRRTaggedSignal(sl::BufferType type, RRTaggedSignal& signal)
 {
@@ -123,10 +116,8 @@ static bool TryGetRRTaggedSignal(sl::BufferType type, RRTaggedSignal& signal)
 
 static bool IsRRCheckerboardInput(RRTaggedSignal signal)
 {
-    return signal == RRTaggedSignal::DiffuseNoisy ||
-           signal == RRTaggedSignal::SpecularNoisy ||
-           signal == RRTaggedSignal::ShadowNoisy ||
-           signal == RRTaggedSignal::AmbientOcclusionNoisy;
+    return signal == RRTaggedSignal::DiffuseNoisy || signal == RRTaggedSignal::SpecularNoisy ||
+           signal == RRTaggedSignal::ShadowNoisy || signal == RRTaggedSignal::AmbientOcclusionNoisy;
 }
 
 static const char* GetRRTagSourceName(RRTagSource source)
@@ -146,76 +137,74 @@ static const char* GetRRTagSourceName(RRTagSource source)
 
 const char* StreamlineHooks::getSLBufferTypeName(sl::BufferType type)
 {
-    static constexpr std::array<const char*, 68> names {
-        "Depth",
-        "MotionVectors",
-        "HUDLessColor",
-        "ScalingInputColor",
-        "ScalingOutputColor",
-        "Normals",
-        "Roughness",
-        "Albedo",
-        "SpecularAlbedo",
-        "IndirectAlbedo",
-        "SpecularMotionVectors",
-        "DisocclusionMask",
-        "Emissive",
-        "Exposure",
-        "NormalRoughness",
-        "DiffuseHitNoisy",
-        "DiffuseHitDenoised",
-        "SpecularHitNoisy",
-        "SpecularHitDenoised",
-        "ShadowNoisy",
-        "ShadowDenoised",
-        "AmbientOcclusionNoisy",
-        "AmbientOcclusionDenoised",
-        "UIColorAndAlpha",
-        "ShadowHint",
-        "ReflectionHint",
-        "ParticleHint",
-        "TransparencyHint",
-        "AnimatedTextureHint",
-        "BiasCurrentColorHint",
-        "RaytracingDistance",
-        "ReflectionMotionVectors",
-        "Position",
-        "InvalidDepthMotionHint",
-        "Alpha",
-        "OpaqueColor",
-        "ReactiveMaskHint",
-        "TransparencyAndCompositionMaskHint",
-        "ReflectedAlbedo",
-        "ColorBeforeParticles",
-        "ColorBeforeTransparency",
-        "ColorBeforeFog",
-        "SpecularHitDistance",
-        "SpecularRayDirectionHitDistance",
-        "SpecularRayDirection",
-        "DiffuseHitDistance",
-        "DiffuseRayDirectionHitDistance",
-        "DiffuseRayDirection",
-        "HiResDepth",
-        "LinearDepth",
-        "BidirectionalDistortionField",
-        "TransparencyLayer",
-        "TransparencyLayerOpacity",
-        "Backbuffer",
-        "NoWarpMask",
-        "ColorAfterParticles",
-        "ColorAfterTransparency",
-        "ColorAfterFog",
-        "ScreenSpaceSubsurfaceScatteringGuide",
-        "ColorBeforeScreenSpaceSubsurfaceScattering",
-        "ColorAfterScreenSpaceSubsurfaceScattering",
-        "ScreenSpaceRefractionGuide",
-        "ColorBeforeScreenSpaceRefraction",
-        "ColorAfterScreenSpaceRefraction",
-        "DepthOfFieldGuide",
-        "ColorBeforeDepthOfField",
-        "ColorAfterDepthOfField",
-        "ScalingOutputAlpha"
-    };
+    static constexpr std::array<const char*, 68> names { "Depth",
+                                                         "MotionVectors",
+                                                         "HUDLessColor",
+                                                         "ScalingInputColor",
+                                                         "ScalingOutputColor",
+                                                         "Normals",
+                                                         "Roughness",
+                                                         "Albedo",
+                                                         "SpecularAlbedo",
+                                                         "IndirectAlbedo",
+                                                         "SpecularMotionVectors",
+                                                         "DisocclusionMask",
+                                                         "Emissive",
+                                                         "Exposure",
+                                                         "NormalRoughness",
+                                                         "DiffuseHitNoisy",
+                                                         "DiffuseHitDenoised",
+                                                         "SpecularHitNoisy",
+                                                         "SpecularHitDenoised",
+                                                         "ShadowNoisy",
+                                                         "ShadowDenoised",
+                                                         "AmbientOcclusionNoisy",
+                                                         "AmbientOcclusionDenoised",
+                                                         "UIColorAndAlpha",
+                                                         "ShadowHint",
+                                                         "ReflectionHint",
+                                                         "ParticleHint",
+                                                         "TransparencyHint",
+                                                         "AnimatedTextureHint",
+                                                         "BiasCurrentColorHint",
+                                                         "RaytracingDistance",
+                                                         "ReflectionMotionVectors",
+                                                         "Position",
+                                                         "InvalidDepthMotionHint",
+                                                         "Alpha",
+                                                         "OpaqueColor",
+                                                         "ReactiveMaskHint",
+                                                         "TransparencyAndCompositionMaskHint",
+                                                         "ReflectedAlbedo",
+                                                         "ColorBeforeParticles",
+                                                         "ColorBeforeTransparency",
+                                                         "ColorBeforeFog",
+                                                         "SpecularHitDistance",
+                                                         "SpecularRayDirectionHitDistance",
+                                                         "SpecularRayDirection",
+                                                         "DiffuseHitDistance",
+                                                         "DiffuseRayDirectionHitDistance",
+                                                         "DiffuseRayDirection",
+                                                         "HiResDepth",
+                                                         "LinearDepth",
+                                                         "BidirectionalDistortionField",
+                                                         "TransparencyLayer",
+                                                         "TransparencyLayerOpacity",
+                                                         "Backbuffer",
+                                                         "NoWarpMask",
+                                                         "ColorAfterParticles",
+                                                         "ColorAfterTransparency",
+                                                         "ColorAfterFog",
+                                                         "ScreenSpaceSubsurfaceScatteringGuide",
+                                                         "ColorBeforeScreenSpaceSubsurfaceScattering",
+                                                         "ColorAfterScreenSpaceSubsurfaceScattering",
+                                                         "ScreenSpaceRefractionGuide",
+                                                         "ColorBeforeScreenSpaceRefraction",
+                                                         "ColorAfterScreenSpaceRefraction",
+                                                         "DepthOfFieldGuide",
+                                                         "ColorBeforeDepthOfField",
+                                                         "ColorAfterDepthOfField",
+                                                         "ScalingOutputAlpha" };
 
     return type < names.size() ? names[type] : "Unknown/custom";
 }
@@ -336,8 +325,7 @@ bool StreamlineHooks::isRRPreferredTagFormat(RRTaggedSignal signal, DXGI_FORMAT 
     case RRTaggedSignal::SpecularHitDistance:
         return format == DXGI_FORMAT_R16_FLOAT || format == DXGI_FORMAT_R32_FLOAT;
     case RRTaggedSignal::SpecularRayDirectionHitDistance:
-        return format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
-               format == DXGI_FORMAT_R32G32B32A32_FLOAT;
+        return format == DXGI_FORMAT_R16G16B16A16_FLOAT || format == DXGI_FORMAT_R32G32B32A32_FLOAT;
     case RRTaggedSignal::LinearDepth:
         return format == DXGI_FORMAT_R32_FLOAT || format == DXGI_FORMAT_R16_FLOAT;
     case RRTaggedSignal::DiffuseNoisy:
@@ -356,9 +344,9 @@ bool StreamlineHooks::isRRPreferredTagFormat(RRTaggedSignal signal, DXGI_FORMAT 
     }
 }
 
-const char* StreamlineHooks::getRRCheckerboardAssessment(
-    RRTaggedSignal signal, const RRTaggedResourceDiagnostic& diagnostic,
-    uint32_t renderWidth, uint32_t renderHeight)
+const char* StreamlineHooks::getRRCheckerboardAssessment(RRTaggedSignal signal,
+                                                         const RRTaggedResourceDiagnostic& diagnostic,
+                                                         uint32_t renderWidth, uint32_t renderHeight)
 {
     if (!diagnostic.observed)
         return "not-observed";
@@ -412,11 +400,9 @@ SLConstantsSnapshot StreamlineHooks::getSLConstantsSnapshot()
 {
     std::scoped_lock lock(setConstantsMutex);
     const auto& state = State::Instance();
-    return {
-        .constants = state.slLastConstants,
-        .frameIndex = state.slLastConstantsFrame,
-        .viewport = state.slLastConstantsViewport
-    };
+    return { .constants = state.slLastConstants,
+             .frameIndex = state.slLastConstantsFrame,
+             .viewport = state.slLastConstantsViewport };
 }
 
 void StreamlineHooks::resetRRSignalTagDiagnostics()
@@ -429,25 +415,14 @@ void StreamlineHooks::resetRRSignalTagDiagnostics()
 static bool HasResourceMetadataChanged(const RRTaggedResourceDiagnostic& previous,
                                        const RRTaggedResourceDiagnostic& next)
 {
-    return
-        !previous.observed ||
-        previous.present != next.present ||
-        previous.debugName != next.debugName ||
-        previous.nativeWidth != next.nativeWidth ||
-        previous.nativeHeight != next.nativeHeight ||
-        previous.effectiveWidth != next.effectiveWidth ||
-        previous.effectiveHeight != next.effectiveHeight ||
-        previous.extentLeft != next.extentLeft ||
-        previous.extentTop != next.extentTop ||
-        previous.format != next.format ||
-        previous.dimension != next.dimension ||
-        previous.resourceFlags != next.resourceFlags ||
-        previous.mipLevels != next.mipLevels ||
-        previous.arraySize != next.arraySize ||
-        previous.sampleCount != next.sampleCount ||
-        previous.state != next.state ||
-        previous.lifecycle != next.lifecycle ||
-        previous.viewport != next.viewport;
+    return !previous.observed || previous.present != next.present || previous.debugName != next.debugName ||
+           previous.nativeWidth != next.nativeWidth || previous.nativeHeight != next.nativeHeight ||
+           previous.effectiveWidth != next.effectiveWidth || previous.effectiveHeight != next.effectiveHeight ||
+           previous.extentLeft != next.extentLeft || previous.extentTop != next.extentTop ||
+           previous.format != next.format || previous.dimension != next.dimension ||
+           previous.resourceFlags != next.resourceFlags || previous.mipLevels != next.mipLevels ||
+           previous.arraySize != next.arraySize || previous.sampleCount != next.sampleCount ||
+           previous.state != next.state || previous.lifecycle != next.lifecycle || previous.viewport != next.viewport;
 }
 
 static std::string GetD3D12DebugObjectName(ID3D12Object* object)
@@ -479,9 +454,8 @@ static std::string GetD3D12DebugObjectName(ID3D12Object* object)
     return {};
 }
 
-static RRTaggedResourceDiagnostic CaptureSLResourceTag(
-    const sl::ResourceTag& tag, uint32_t frameIndex, uint32_t viewport,
-    RRTagSource source)
+static RRTaggedResourceDiagnostic CaptureSLResourceTag(const sl::ResourceTag& tag, uint32_t frameIndex,
+                                                       uint32_t viewport, RRTagSource source)
 {
     RRTaggedResourceDiagnostic result {};
     result.observed = true;
@@ -512,9 +486,8 @@ static RRTaggedResourceDiagnostic CaptureSLResourceTag(
     result.usesExtent = static_cast<bool>(tag.extent);
     result.extentLeft = tag.extent.left;
     result.extentTop = tag.extent.top;
-    result.effectiveWidth = result.usesExtent
-        ? tag.extent.width
-        : static_cast<uint32_t>(std::min<uint64_t>(desc.Width, UINT32_MAX));
+    result.effectiveWidth =
+        result.usesExtent ? tag.extent.width : static_cast<uint32_t>(std::min<uint64_t>(desc.Width, UINT32_MAX));
     result.effectiveHeight = result.usesExtent ? tag.extent.height : desc.Height;
     return result;
 }
@@ -525,12 +498,10 @@ SLTagInventoryDiagnostics StreamlineHooks::getSLTagInventoryDiagnostics()
     return slTagInventoryDiagnostics;
 }
 
-void StreamlineHooks::probeSLResourceTag(
-    const sl::ResourceTag& tag, uint32_t frameIndex, uint32_t viewport,
-    RRTagSource source)
+void StreamlineHooks::probeSLResourceTag(const sl::ResourceTag& tag, uint32_t frameIndex, uint32_t viewport,
+                                         RRTagSource source)
 {
-    RRTaggedResourceDiagnostic next =
-        CaptureSLResourceTag(tag, frameIndex, viewport, source);
+    RRTaggedResourceDiagnostic next = CaptureSLResourceTag(tag, frameIndex, viewport, source);
     bool shouldLog = false;
 
     {
@@ -555,11 +526,9 @@ void StreamlineHooks::probeSLResourceTag(
         if (entry->resource.updateCount == 0)
             entry->resource.updateCount = 1;
 
-        std::sort(
-            slTagInventoryDiagnostics.resources.begin(), slTagInventoryDiagnostics.resources.end(),
-            [](const SLTaggedResourceInventoryEntry& left, const SLTaggedResourceInventoryEntry& right) {
-                return left.type < right.type;
-            });
+        std::sort(slTagInventoryDiagnostics.resources.begin(), slTagInventoryDiagnostics.resources.end(),
+                  [](const SLTaggedResourceInventoryEntry& left, const SLTaggedResourceInventoryEntry& right)
+                  { return left.type < right.type; });
         ++slTagInventoryDiagnostics.generation;
     }
 
@@ -568,60 +537,55 @@ void StreamlineHooks::probeSLResourceTag(
 
     if (!next.present)
     {
-        LOG_INFO("[SL_TAG_INVENTORY] {} type={} ({}) frame={} cleared",
-                 GetRRTagSourceName(source), tag.type, getSLBufferTypeName(tag.type), frameIndex);
+        LOG_INFO("[SL_TAG_INVENTORY] {} type={} ({}) frame={} cleared", GetRRTagSourceName(source), tag.type,
+                 getSLBufferTypeName(tag.type), frameIndex);
         return;
     }
 
     const auto formatName = magic_enum::enum_name(next.format);
-    LOG_INFO(
-        "[SL_TAG_INVENTORY] {} type={} ({}) frame={} ptr={}, debugName='{}', native={}x{}, effective={}x{}, "
-        "extent=[{},{}], format={}({}), dimension={}, mips={}, arrays={}, samples={}, "
-        "resourceFlags={:#x}, state={:#x}",
-        GetRRTagSourceName(source), tag.type, getSLBufferTypeName(tag.type), frameIndex,
-        next.resourceAddress, next.debugName, next.nativeWidth, next.nativeHeight,
-        next.effectiveWidth, next.effectiveHeight, next.extentLeft, next.extentTop,
-        formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(next.format),
-        static_cast<uint32_t>(next.dimension), next.mipLevels, next.arraySize, next.sampleCount,
-        static_cast<uint32_t>(next.resourceFlags), next.state);
+    LOG_INFO("[SL_TAG_INVENTORY] {} type={} ({}) frame={} ptr={}, debugName='{}', native={}x{}, effective={}x{}, "
+             "extent=[{},{}], format={}({}), dimension={}, mips={}, arrays={}, samples={}, "
+             "resourceFlags={:#x}, state={:#x}",
+             GetRRTagSourceName(source), tag.type, getSLBufferTypeName(tag.type), frameIndex, next.resourceAddress,
+             next.debugName, next.nativeWidth, next.nativeHeight, next.effectiveWidth, next.effectiveHeight,
+             next.extentLeft, next.extentTop, formatName.empty() ? "UNKNOWN" : formatName,
+             static_cast<uint32_t>(next.format), static_cast<uint32_t>(next.dimension), next.mipLevels, next.arraySize,
+             next.sampleCount, static_cast<uint32_t>(next.resourceFlags), next.state);
 }
 
 void StreamlineHooks::logSLTagInventoryDiagnostics(uint32_t renderWidth, uint32_t renderHeight)
 {
     const auto diagnostics = getSLTagInventoryDiagnostics();
-    LOG_INFO("[SL_TAG_INVENTORY] snapshot: generation={}, observedTypes={}, render={}x{}",
-             diagnostics.generation, diagnostics.resources.size(), renderWidth, renderHeight);
+    LOG_INFO("[SL_TAG_INVENTORY] snapshot: generation={}, observedTypes={}, render={}x{}", diagnostics.generation,
+             diagnostics.resources.size(), renderWidth, renderHeight);
 
     for (const auto& entry : diagnostics.resources)
     {
         const auto& diagnostic = entry.resource;
         if (!diagnostic.present)
         {
-            LOG_INFO("[SL_TAG_INVENTORY] snapshot type={} ({}): cleared, updates={}",
-                     entry.type, getSLBufferTypeName(entry.type), diagnostic.updateCount);
+            LOG_INFO("[SL_TAG_INVENTORY] snapshot type={} ({}): cleared, updates={}", entry.type,
+                     getSLBufferTypeName(entry.type), diagnostic.updateCount);
             continue;
         }
 
         const auto formatName = magic_enum::enum_name(diagnostic.format);
-        const bool fullResolution =
-            renderWidth != 0 && renderHeight != 0 &&
-            diagnostic.effectiveWidth == renderWidth && diagnostic.effectiveHeight == renderHeight;
+        const bool fullResolution = renderWidth != 0 && renderHeight != 0 && diagnostic.effectiveWidth == renderWidth &&
+                                    diagnostic.effectiveHeight == renderHeight;
         const bool halfWidthCandidate =
-            renderWidth != 0 && renderHeight != 0 &&
-            diagnostic.effectiveHeight == renderHeight &&
+            renderWidth != 0 && renderHeight != 0 && diagnostic.effectiveHeight == renderHeight &&
             static_cast<uint64_t>(diagnostic.effectiveWidth) * 2u + 1u >= renderWidth &&
             static_cast<uint64_t>(diagnostic.effectiveWidth) * 2u <= static_cast<uint64_t>(renderWidth) + 1u;
 
-        LOG_INFO(
-            "[SL_TAG_INVENTORY] snapshot type={} ({}): ptr={}, debugName='{}', effective={}x{}, native={}x{}, "
-            "format={}({}), state={:#x}, updates={}, resolutionClass={}",
-            entry.type, getSLBufferTypeName(entry.type), diagnostic.resourceAddress,
-            diagnostic.debugName,
-            diagnostic.effectiveWidth, diagnostic.effectiveHeight,
-            diagnostic.nativeWidth, diagnostic.nativeHeight,
-            formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(diagnostic.format),
-            diagnostic.state, diagnostic.updateCount,
-            fullResolution ? "full-resolution" : halfWidthCandidate ? "half-width-candidate" : "other");
+        LOG_INFO("[SL_TAG_INVENTORY] snapshot type={} ({}): ptr={}, debugName='{}', effective={}x{}, native={}x{}, "
+                 "format={}({}), state={:#x}, updates={}, resolutionClass={}",
+                 entry.type, getSLBufferTypeName(entry.type), diagnostic.resourceAddress, diagnostic.debugName,
+                 diagnostic.effectiveWidth, diagnostic.effectiveHeight, diagnostic.nativeWidth, diagnostic.nativeHeight,
+                 formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(diagnostic.format),
+                 diagnostic.state, diagnostic.updateCount,
+                 fullResolution       ? "full-resolution"
+                 : halfWidthCandidate ? "half-width-candidate"
+                                      : "other");
     }
 }
 
@@ -658,8 +622,7 @@ void StreamlineHooks::probeRRNGXPointerParameters(const NVSDK_NGX_Parameter& par
 
     uint32_t allocationType = NGX_AllocTypes::Unknown;
     if (parameters.Get(NGX_AllocTypes::AllocKey.data(), &allocationType) != NVSDK_NGX_Result_Success ||
-        (allocationType != NGX_AllocTypes::InternDynamic &&
-         allocationType != NGX_AllocTypes::InternPersistent))
+        (allocationType != NGX_AllocTypes::InternDynamic && allocationType != NGX_AllocTypes::InternPersistent))
     {
         std::scoped_lock lock(rrSignalTagMutex);
         rrNGXPointerDiagnostics.tableInspectable = false;
@@ -710,33 +673,27 @@ void StreamlineHooks::probeRRNGXPointerParameters(const NVSDK_NGX_Parameter& par
     }
 
     std::sort(nextEntries.begin(), nextEntries.end(),
-              [](const RRNGXPointerDiagnostic& left, const RRNGXPointerDiagnostic& right) {
-                  return left.name < right.name;
-              });
+              [](const RRNGXPointerDiagnostic& left, const RRNGXPointerDiagnostic& right)
+              { return left.name < right.name; });
 
     std::vector<RRNGXPointerDiagnostic> changedEntries;
     {
         std::scoped_lock lock(rrSignalTagMutex);
         for (auto& next : nextEntries)
         {
-            const auto previous = std::find_if(
-                rrNGXPointerDiagnostics.parameters.begin(), rrNGXPointerDiagnostics.parameters.end(),
-                [&next](const RRNGXPointerDiagnostic& candidate) { return candidate.name == next.name; });
+            const auto previous =
+                std::find_if(rrNGXPointerDiagnostics.parameters.begin(), rrNGXPointerDiagnostics.parameters.end(),
+                             [&next](const RRNGXPointerDiagnostic& candidate) { return candidate.name == next.name; });
 
             if (previous != rrNGXPointerDiagnostics.parameters.end())
             {
                 next.updateCount = previous->updateCount + 1;
                 const bool changed =
-                    previous->kind != next.kind ||
-                    previous->present != next.present ||
-                    previous->nativeWidth != next.nativeWidth ||
-                    previous->nativeHeight != next.nativeHeight ||
-                    previous->format != next.format ||
-                    previous->dimension != next.dimension ||
-                    previous->resourceFlags != next.resourceFlags ||
-                    previous->mipLevels != next.mipLevels ||
-                    previous->arraySize != next.arraySize ||
-                    previous->sampleCount != next.sampleCount;
+                    previous->kind != next.kind || previous->present != next.present ||
+                    previous->nativeWidth != next.nativeWidth || previous->nativeHeight != next.nativeHeight ||
+                    previous->format != next.format || previous->dimension != next.dimension ||
+                    previous->resourceFlags != next.resourceFlags || previous->mipLevels != next.mipLevels ||
+                    previous->arraySize != next.arraySize || previous->sampleCount != next.sampleCount;
                 if (changed)
                     changedEntries.push_back(next);
             }
@@ -756,20 +713,18 @@ void StreamlineHooks::probeRRNGXPointerParameters(const NVSDK_NGX_Parameter& par
     {
         if (entry.kind != RRNGXPointerKind::D3D12Resource || !entry.present)
         {
-            LOG_INFO("[RR_NGX_INVENTORY] key='{}', kind={}, ptr={}, present={}",
-                     entry.name, GetNGXPointerKindName(entry.kind), entry.address, entry.present);
+            LOG_INFO("[RR_NGX_INVENTORY] key='{}', kind={}, ptr={}, present={}", entry.name,
+                     GetNGXPointerKindName(entry.kind), entry.address, entry.present);
             continue;
         }
 
         const auto formatName = magic_enum::enum_name(entry.format);
-        LOG_INFO(
-            "[RR_NGX_INVENTORY] key='{}', kind={}, ptr={}, size={}x{}, format={}({}), "
-            "dimension={}, mips={}, arrays={}, samples={}, resourceFlags={:#x}",
-            entry.name, GetNGXPointerKindName(entry.kind), entry.address,
-            entry.nativeWidth, entry.nativeHeight,
-            formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(entry.format),
-            static_cast<uint32_t>(entry.dimension), entry.mipLevels, entry.arraySize,
-            entry.sampleCount, static_cast<uint32_t>(entry.resourceFlags));
+        LOG_INFO("[RR_NGX_INVENTORY] key='{}', kind={}, ptr={}, size={}x{}, format={}({}), "
+                 "dimension={}, mips={}, arrays={}, samples={}, resourceFlags={:#x}",
+                 entry.name, GetNGXPointerKindName(entry.kind), entry.address, entry.nativeWidth, entry.nativeHeight,
+                 formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(entry.format),
+                 static_cast<uint32_t>(entry.dimension), entry.mipLevels, entry.arraySize, entry.sampleCount,
+                 static_cast<uint32_t>(entry.resourceFlags));
     }
 }
 
@@ -783,20 +738,17 @@ void StreamlineHooks::logRRNGXPointerDiagnostics()
     {
         if (entry.kind != RRNGXPointerKind::D3D12Resource || !entry.present)
         {
-            LOG_INFO("[RR_NGX_INVENTORY] snapshot key='{}': kind={}, ptr={}, present={}, updates={}",
-                     entry.name, GetNGXPointerKindName(entry.kind), entry.address,
-                     entry.present, entry.updateCount);
+            LOG_INFO("[RR_NGX_INVENTORY] snapshot key='{}': kind={}, ptr={}, present={}, updates={}", entry.name,
+                     GetNGXPointerKindName(entry.kind), entry.address, entry.present, entry.updateCount);
             continue;
         }
 
         const auto formatName = magic_enum::enum_name(entry.format);
-        LOG_INFO(
-            "[RR_NGX_INVENTORY] snapshot key='{}': kind={}, ptr={}, size={}x{}, "
-            "format={}({}), dimension={}, updates={}",
-            entry.name, GetNGXPointerKindName(entry.kind), entry.address,
-            entry.nativeWidth, entry.nativeHeight,
-            formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(entry.format),
-            static_cast<uint32_t>(entry.dimension), entry.updateCount);
+        LOG_INFO("[RR_NGX_INVENTORY] snapshot key='{}': kind={}, ptr={}, size={}x{}, "
+                 "format={}({}), dimension={}, updates={}",
+                 entry.name, GetNGXPointerKindName(entry.kind), entry.address, entry.nativeWidth, entry.nativeHeight,
+                 formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(entry.format),
+                 static_cast<uint32_t>(entry.dimension), entry.updateCount);
     }
 }
 
@@ -807,16 +759,14 @@ void StreamlineHooks::resetRRInputInventoryDiagnostics()
     rrNGXPointerDiagnostics = {};
 }
 
-void StreamlineHooks::probeRRResourceTag(
-    const sl::ResourceTag& tag, uint32_t frameIndex, uint32_t viewport,
-    RRTagSource source)
+void StreamlineHooks::probeRRResourceTag(const sl::ResourceTag& tag, uint32_t frameIndex, uint32_t viewport,
+                                         RRTagSource source)
 {
     RRTaggedSignal signal;
     if (!TryGetRRTaggedSignal(tag.type, signal))
         return;
 
-    RRTaggedResourceDiagnostic next =
-        CaptureSLResourceTag(tag, frameIndex, viewport, source);
+    RRTaggedResourceDiagnostic next = CaptureSLResourceTag(tag, frameIndex, viewport, source);
 
     RRTaggedResourceDiagnostic previous {};
     bool shouldLog = false;
@@ -834,11 +784,10 @@ void StreamlineHooks::probeRRResourceTag(
         // returns. A local ResourceTag passed directly to EvaluateFeature remains
         // inside its declaring call, however, and is retained only until the local
         // overlay is restored when that evaluation returns.
-        retainedResource = next.present &&
-                (next.lifecycle != sl::ResourceLifecycle::eOnlyValidNow ||
-                 source == RRTagSource::EvaluateFeature)
-            ? reinterpret_cast<ID3D12Resource*>(next.resourceAddress)
-            : nullptr;
+        retainedResource = next.present && (next.lifecycle != sl::ResourceLifecycle::eOnlyValidNow ||
+                                            source == RRTagSource::EvaluateFeature)
+                               ? reinterpret_cast<ID3D12Resource*>(next.resourceAddress)
+                               : nullptr;
         ++rrSignalTagDiagnostics.generation;
     }
 
@@ -847,32 +796,29 @@ void StreamlineHooks::probeRRResourceTag(
 
     if (!next.present)
     {
-        LOG_INFO("[RR_TAG_DIAG] {} {} frame={} cleared",
-                 GetRRTagSourceName(source), getRRTaggedSignalName(signal), frameIndex);
+        LOG_INFO("[RR_TAG_DIAG] {} {} frame={} cleared", GetRRTagSourceName(source), getRRTaggedSignalName(signal),
+                 frameIndex);
         return;
     }
 
     const auto formatName = magic_enum::enum_name(next.format);
     const auto lifecycleName = magic_enum::enum_name(next.lifecycle);
-    LOG_INFO(
-        "[RR_TAG_DIAG] {} {} frame={} ptr={}, debugName='{}', native={}x{}, effective={}x{}, "
-        "extent=[{},{}], format={}({}), dimension={}, mips={}, arrays={}, samples={}, "
-        "resourceFlags={:#x}, state={:#x}, lifecycle={}, preferredFormat={} ({})",
-        GetRRTagSourceName(source), getRRTaggedSignalName(signal), frameIndex,
-        next.resourceAddress, next.debugName, next.nativeWidth, next.nativeHeight,
-        next.effectiveWidth, next.effectiveHeight, next.extentLeft, next.extentTop,
-        formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(next.format),
-        static_cast<uint32_t>(next.dimension), next.mipLevels, next.arraySize, next.sampleCount,
-        static_cast<uint32_t>(next.resourceFlags), next.state,
-        lifecycleName.empty() ? "UNKNOWN" : lifecycleName,
-        isRRPreferredTagFormat(signal, next.format), getRRPreferredTagFormat(signal));
+    LOG_INFO("[RR_TAG_DIAG] {} {} frame={} ptr={}, debugName='{}', native={}x{}, effective={}x{}, "
+             "extent=[{},{}], format={}({}), dimension={}, mips={}, arrays={}, samples={}, "
+             "resourceFlags={:#x}, state={:#x}, lifecycle={}, preferredFormat={} ({})",
+             GetRRTagSourceName(source), getRRTaggedSignalName(signal), frameIndex, next.resourceAddress,
+             next.debugName, next.nativeWidth, next.nativeHeight, next.effectiveWidth, next.effectiveHeight,
+             next.extentLeft, next.extentTop, formatName.empty() ? "UNKNOWN" : formatName,
+             static_cast<uint32_t>(next.format), static_cast<uint32_t>(next.dimension), next.mipLevels, next.arraySize,
+             next.sampleCount, static_cast<uint32_t>(next.resourceFlags), next.state,
+             lifecycleName.empty() ? "UNKNOWN" : lifecycleName, isRRPreferredTagFormat(signal, next.format),
+             getRRPreferredTagFormat(signal));
 }
 
 void StreamlineHooks::logRRSignalTagDiagnostics(uint32_t renderWidth, uint32_t renderHeight)
 {
     const RRSignalTagDiagnostics diagnostics = getRRSignalTagDiagnostics();
-    LOG_INFO("[RR_TAG_DIAG] snapshot: generation={}, render={}x{}",
-             diagnostics.generation, renderWidth, renderHeight);
+    LOG_INFO("[RR_TAG_DIAG] snapshot: generation={}, render={}x{}", diagnostics.generation, renderWidth, renderHeight);
 
     for (size_t i = 0; i < diagnostics.resources.size(); ++i)
     {
@@ -880,33 +826,28 @@ void StreamlineHooks::logRRSignalTagDiagnostics(uint32_t renderWidth, uint32_t r
         const auto& diagnostic = diagnostics.resources[i];
         if (!diagnostic.observed)
         {
-            LOG_INFO("[RR_TAG_DIAG] snapshot {}: not observed",
-                     getRRTaggedSignalName(signal));
+            LOG_INFO("[RR_TAG_DIAG] snapshot {}: not observed", getRRTaggedSignalName(signal));
             continue;
         }
 
         if (!diagnostic.present)
         {
-            LOG_INFO("[RR_TAG_DIAG] snapshot {}: cleared, updates={}",
-                     getRRTaggedSignalName(signal), diagnostic.updateCount);
+            LOG_INFO("[RR_TAG_DIAG] snapshot {}: cleared, updates={}", getRRTaggedSignalName(signal),
+                     diagnostic.updateCount);
             continue;
         }
 
         const auto formatName = magic_enum::enum_name(diagnostic.format);
-        LOG_INFO(
-            "[RR_TAG_DIAG] snapshot {}: ptr={}, debugName='{}', effective={}x{}, native={}x{}, "
-            "format={}({}), state={:#x}, updates={}, checkerboard={}, preferredFormat={} ({})",
-            getRRTaggedSignalName(signal), diagnostic.resourceAddress,
-            diagnostic.debugName,
-            diagnostic.effectiveWidth, diagnostic.effectiveHeight,
-            diagnostic.nativeWidth, diagnostic.nativeHeight,
-            formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(diagnostic.format),
-            diagnostic.state, diagnostic.updateCount,
-            getRRCheckerboardAssessment(signal, diagnostic, renderWidth, renderHeight),
-            isRRPreferredTagFormat(signal, diagnostic.format), getRRPreferredTagFormat(signal));
+        LOG_INFO("[RR_TAG_DIAG] snapshot {}: ptr={}, debugName='{}', effective={}x{}, native={}x{}, "
+                 "format={}({}), state={:#x}, updates={}, checkerboard={}, preferredFormat={} ({})",
+                 getRRTaggedSignalName(signal), diagnostic.resourceAddress, diagnostic.debugName,
+                 diagnostic.effectiveWidth, diagnostic.effectiveHeight, diagnostic.nativeWidth, diagnostic.nativeHeight,
+                 formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(diagnostic.format),
+                 diagnostic.state, diagnostic.updateCount,
+                 getRRCheckerboardAssessment(signal, diagnostic, renderWidth, renderHeight),
+                 isRRPreferredTagFormat(signal, diagnostic.format), getRRPreferredTagFormat(signal));
     }
 }
-
 
 static bool IsSL1AndDLSSGActive()
 {
@@ -1187,8 +1128,8 @@ sl::Result StreamlineHooks::hkslGetFeatureRequirements(sl::Feature feature, sl::
         return sl::Result::eOk;
 
     auto result = o_slGetFeatureRequirements(feature, requirements);
-    LOG_INFO("slGetFeatureRequirements: feature {} result: {} flags: {} driverReq: {}", (int) feature,
-             (int) result, (int) requirements.flags, requirements.driverVersionRequired.toStr());
+    LOG_INFO("slGetFeatureRequirements: feature {} result: {} flags: {} driverReq: {}", (int) feature, (int) result,
+             (int) requirements.flags, requirements.driverVersionRequired.toStr());
     return result;
 }
 
@@ -1210,7 +1151,8 @@ static sl::Result dummy_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::
                                         const sl::DLSSGOptions* options)
 {
     state.numFramesActuallyPresented = 1; // TODO: can do better
-    if(state.structVersion >= 2) {
+    if (state.structVersion >= 2)
+    {
         state.numFramesToGenerateMax = 1;
         state.bIsVsyncSupportAvailable = sl::Boolean::eTrue;
     }
@@ -1304,12 +1246,8 @@ sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const
     {
         if (renderApi == sl::RenderAPI::eD3D12)
         {
-            probeSLResourceTag(
-                tags[i], UINT32_MAX, static_cast<uint32_t>(viewport),
-                RRTagSource::SetTag);
-            probeRRResourceTag(
-                tags[i], UINT32_MAX, static_cast<uint32_t>(viewport),
-                RRTagSource::SetTag);
+            probeSLResourceTag(tags[i], UINT32_MAX, static_cast<uint32_t>(viewport), RRTagSource::SetTag);
+            probeRRResourceTag(tags[i], UINT32_MAX, static_cast<uint32_t>(viewport), RRTagSource::SetTag);
         }
 
         const auto typeEnum = (BufferType) tags[i].type;
@@ -1409,12 +1347,10 @@ sl::Result StreamlineHooks::hkslSetTagForFrame(const sl::FrameToken& frame, cons
     {
         if (renderApi == sl::RenderAPI::eD3D12)
         {
-            probeSLResourceTag(
-                resources[i], static_cast<uint32_t>(frame),
-                static_cast<uint32_t>(viewport), RRTagSource::SetTagForFrame);
-            probeRRResourceTag(
-                resources[i], static_cast<uint32_t>(frame),
-                static_cast<uint32_t>(viewport), RRTagSource::SetTagForFrame);
+            probeSLResourceTag(resources[i], static_cast<uint32_t>(frame), static_cast<uint32_t>(viewport),
+                               RRTagSource::SetTagForFrame);
+            probeRRResourceTag(resources[i], static_cast<uint32_t>(frame), static_cast<uint32_t>(viewport),
+                               RRTagSource::SetTagForFrame);
         }
 
         const auto typeEnum = (BufferType) resources[i].type;
@@ -1457,18 +1393,15 @@ sl::Result StreamlineHooks::hkslEvaluateFeature(sl::Feature feature, const sl::F
     {
         for (uint32_t i = 0; i < numInputs; ++i)
         {
-            if (inputs[i] != nullptr &&
-                inputs[i]->structType == sl::ViewportHandle::s_structType)
+            if (inputs[i] != nullptr && inputs[i]->structType == sl::ViewportHandle::s_structType)
             {
-                activeViewport = static_cast<uint32_t>(
-                    *reinterpret_cast<const sl::ViewportHandle*>(inputs[i]));
+                activeViewport = static_cast<uint32_t>(*reinterpret_cast<const sl::ViewportHandle*>(inputs[i]));
                 break;
             }
         }
     }
 
-    const ScopedRRActiveEvaluationFrame activeEvaluationFrame(
-        static_cast<uint32_t>(frame), activeViewport);
+    const ScopedRRActiveEvaluationFrame activeEvaluationFrame(static_cast<uint32_t>(frame), activeViewport);
     LOG_DEBUG("frameIndex: {}", static_cast<uint32_t>(frame));
 
     // ResourceTag inputs to slEvaluateFeature are local to this evaluation and
@@ -1514,12 +1447,10 @@ sl::Result StreamlineHooks::hkslEvaluateFeature(sl::Feature feature, const sl::F
 
                 if (renderApi == sl::RenderAPI::eD3D12)
                 {
-                    probeSLResourceTag(
-                        *tag, static_cast<uint32_t>(frame), activeViewport,
-                        RRTagSource::EvaluateFeature);
-                    probeRRResourceTag(
-                        *tag, static_cast<uint32_t>(frame), activeViewport,
-                        RRTagSource::EvaluateFeature);
+                    probeSLResourceTag(*tag, static_cast<uint32_t>(frame), activeViewport,
+                                       RRTagSource::EvaluateFeature);
+                    probeRRResourceTag(*tag, static_cast<uint32_t>(frame), activeViewport,
+                                       RRTagSource::EvaluateFeature);
                 }
 
                 if (State::Instance().activeFgInput == FGInput::DLSSG &&
@@ -1553,10 +1484,8 @@ sl::Result StreamlineHooks::hkslEvaluateFeature(sl::Feature feature, const sl::F
             const auto& diagnostic = rrSignalTagDiagnostics.resources[i];
             const bool belongsToEvaluation =
                 diagnostic.viewport == activeViewport &&
-                (diagnostic.frameIndex == UINT32_MAX ||
-                 diagnostic.frameIndex == static_cast<uint32_t>(frame));
-            if (belongsToEvaluation &&
-                diagnostic.lifecycle == sl::ResourceLifecycle::eValidUntilEvaluate &&
+                (diagnostic.frameIndex == UINT32_MAX || diagnostic.frameIndex == static_cast<uint32_t>(frame));
+            if (belongsToEvaluation && diagnostic.lifecycle == sl::ResourceLifecycle::eValidUntilEvaluate &&
                 rrTaggedD3D12Resources[i])
             {
                 // The declared lifetime ends as this evaluation returns. Keep
@@ -2250,8 +2179,8 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
         result != sl::Result::eOk)
     {
         LOG_INFO("DLSSG options: requested={} forwarded={} generatedFrames={} result={}",
-                 static_cast<int>(options.mode), static_cast<int>(newOptions.mode),
-                 newOptions.numFramesToGenerate, static_cast<int>(result));
+                 static_cast<int>(options.mode), static_cast<int>(newOptions.mode), newOptions.numFramesToGenerate,
+                 static_cast<int>(result));
         loggedMode = static_cast<int>(newOptions.mode);
         loggedCount = newOptions.numFramesToGenerate;
     }
@@ -2273,7 +2202,8 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
 
         // We might be feeding a newer struct to an older SL but that seems to work just fine for this Get function
         result = o_slDLSSGGetState(viewport, dynamic_cast<sl::DLSSGState&>(newState), options);
-        if(result != sl::Result::eOk) return result;
+        if (result != sl::Result::eOk)
+            return result;
 
         // Copy back data to game's struct
         memcpy(&state, &newState, 56); // struct ver 1 size
@@ -2304,7 +2234,8 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
     else
     {
         result = o_slDLSSGGetState(viewport, state, options);
-        if(result != sl::Result::eOk) return result;
+        if (result != sl::Result::eOk)
+            return result;
         State::Instance().dlssgGameDMFGSupported = state.bIsDynamicMFGSupported == sl::eTrue;
 
         // The wrapper's ceiling, replaced by the unlocked count.

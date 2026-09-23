@@ -915,8 +915,8 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers(UINT BufferCount
 
     State::Instance().scChanged = true;
 
-    if (!_composition && Config::Instance()->OverrideVsync.value_or_default() && !State::Instance().SCExclusiveFullscreen &&
-        State::Instance().currentFG == nullptr)
+    if (!_composition && Config::Instance()->OverrideVsync.value_or_default() &&
+        !State::Instance().SCExclusiveFullscreen && State::Instance().currentFG == nullptr)
     {
         LOG_DEBUG("Overriding flags");
         SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
@@ -1362,8 +1362,8 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
 
     State::Instance().scChanged = true;
 
-    if (!_composition && Config::Instance()->OverrideVsync.value_or_default() && !State::Instance().SCExclusiveFullscreen &&
-        State::Instance().currentFG == nullptr)
+    if (!_composition && Config::Instance()->OverrideVsync.value_or_default() &&
+        !State::Instance().SCExclusiveFullscreen && State::Instance().currentFG == nullptr)
     {
         LOG_DEBUG("Overriding flags");
         SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;

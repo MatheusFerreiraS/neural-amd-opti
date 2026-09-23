@@ -28,12 +28,13 @@ inline std::string Utf8(const std::wstring& value)
 {
     if (value.empty())
         return {};
-    const int size = WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0,
-                                         nullptr, nullptr);
+    const int size =
+        WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
     if (!size)
         return "<path conversion failed>";
     std::string result(size, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), size, nullptr, nullptr);
+    WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), result.data(), size, nullptr,
+                        nullptr);
     return result;
 }
 
@@ -124,7 +125,8 @@ inline std::vector<std::wstring> PathDirectories(std::wstring_view value)
 template <typename Api, typename Log> HMODULE SelectModule(Api& api, Log&& log)
 {
     DWORD lastError = ERROR_MOD_NOT_FOUND;
-    auto attempt = [&](const wchar_t* candidate, const char* source, DWORD flags) {
+    auto attempt = [&](const wchar_t* candidate, const char* source, DWORD flags)
+    {
         // Load captures GetLastError before path conversion, logging or another Win32 call.
         const auto loaded = api.Load(candidate, flags);
         if (loaded.module)
@@ -142,7 +144,8 @@ template <typename Api, typename Log> HMODULE SelectModule(Api& api, Log&& log)
         return module;
 
     std::vector<std::wstring> tried;
-    auto explicitPath = [&](const std::filesystem::path& directory, const char* source) -> HMODULE {
+    auto explicitPath = [&](const std::filesystem::path& directory, const char* source) -> HMODULE
+    {
         auto candidate = (directory / L"amdhip64_7.dll").lexically_normal().make_preferred().native();
         for (const auto& previous : tried)
             if (CompareStringOrdinal(previous.c_str(), -1, candidate.c_str(), -1, TRUE) == CSTR_EQUAL)

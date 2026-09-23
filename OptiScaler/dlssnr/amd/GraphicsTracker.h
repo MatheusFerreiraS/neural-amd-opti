@@ -82,30 +82,41 @@ class Tracker
     }
 
     void ReportGraphicsRootSignature(uint64_t listId, uint64_t sig, bool fromRestore = false)
-    { Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.graphics.SetSignature(sig); }); }
-    void ReportComputeRootSignature(uint64_t listId, uint64_t sig, bool fromRestore = false)
-    { Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.compute.SetSignature(sig); }); }
-    void ReportRootTable(uint64_t listId, bool graphics, uint32_t index, uint64_t handle,
-                         bool fromRestore = false)
-    { Mutate(listId, fromRestore, [&](ListTracker& t) { Domain(t, graphics).SetTable(index, handle); }); }
-    void ReportRootConstants(uint64_t listId, bool graphics, uint32_t index, const uint32_t* src,
-                             uint32_t count, uint32_t destOffset, bool fromRestore = false)
     {
-        Mutate(listId, fromRestore, [&](ListTracker& t) {
-            if (!Domain(t, graphics).MergeConstants(index, src, count, destOffset))
-                t.MarkIneligible();
-        });
+        Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.graphics.SetSignature(sig); });
     }
-    void ReportRootConstant(uint64_t listId, bool graphics, uint32_t index, uint32_t value,
-                            uint32_t destOffset, bool fromRestore = false)
-    { ReportRootConstants(listId, graphics, index, &value, 1, destOffset, fromRestore); }
-    void ReportRootGpuVa(uint64_t listId, bool graphics, uint32_t index, RootEntryType type,
-                         uint64_t va, bool fromRestore = false)
-    { Mutate(listId, fromRestore, [&](ListTracker& t) { Domain(t, graphics).SetGpuVa(index, type, va); }); }
+    void ReportComputeRootSignature(uint64_t listId, uint64_t sig, bool fromRestore = false)
+    {
+        Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.compute.SetSignature(sig); });
+    }
+    void ReportRootTable(uint64_t listId, bool graphics, uint32_t index, uint64_t handle, bool fromRestore = false)
+    {
+        Mutate(listId, fromRestore, [&](ListTracker& t) { Domain(t, graphics).SetTable(index, handle); });
+    }
+    void ReportRootConstants(uint64_t listId, bool graphics, uint32_t index, const uint32_t* src, uint32_t count,
+                             uint32_t destOffset, bool fromRestore = false)
+    {
+        Mutate(listId, fromRestore,
+               [&](ListTracker& t)
+               {
+                   if (!Domain(t, graphics).MergeConstants(index, src, count, destOffset))
+                       t.MarkIneligible();
+               });
+    }
+    void ReportRootConstant(uint64_t listId, bool graphics, uint32_t index, uint32_t value, uint32_t destOffset,
+                            bool fromRestore = false)
+    {
+        ReportRootConstants(listId, graphics, index, &value, 1, destOffset, fromRestore);
+    }
+    void ReportRootGpuVa(uint64_t listId, bool graphics, uint32_t index, RootEntryType type, uint64_t va,
+                         bool fromRestore = false)
+    {
+        Mutate(listId, fromRestore, [&](ListTracker& t) { Domain(t, graphics).SetGpuVa(index, type, va); });
+    }
 
     // Known ExecuteIndirect signatures reset only their named root arguments.
-    void ReportIndirectRootConstants(uint64_t listId, bool graphics, uint32_t index,
-                                     uint32_t destOffset, uint32_t count)
+    void ReportIndirectRootConstants(uint64_t listId, bool graphics, uint32_t index, uint32_t destOffset,
+                                     uint32_t count)
     {
         const uint32_t zeros[kMaxRootConstants] {};
         if (count > kMaxRootConstants)
@@ -114,71 +125,97 @@ class Tracker
             ReportRootConstants(listId, graphics, index, zeros, count, destOffset);
     }
     void ReportIndirectRootGpuVa(uint64_t listId, bool graphics, uint32_t index, RootEntryType type)
-    { ReportRootGpuVa(listId, graphics, index, type, 0); }
+    {
+        ReportRootGpuVa(listId, graphics, index, type, 0);
+    }
 
     void ReportHeaps(uint64_t listId, uint32_t count, const uint64_t* handles, bool fromRestore = false)
-    { Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.SetHeaps(count, handles); }); }
-    void ReportPso(uint64_t listId, uint64_t pso, bool fromRestore = false)
-    { Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.SetPso(pso); }); }
-    void ReportViewports(uint64_t listId, const Viewport* v, uint32_t count, bool fromRestore = false)
-    { Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.SetViewports(v, count); }); }
-    void ReportScissors(uint64_t listId, const ScissorRect* r, uint32_t count, bool fromRestore = false)
-    { Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.SetScissors(r, count); }); }
-    void ReportTopology(uint64_t listId, uint32_t topology, bool fromRestore = false)
-    { Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.SetTopology(topology); }); }
-    void ReportRenderTargets(uint64_t listId, uint32_t numRTVs, const uint64_t* rtvHandles,
-                             bool singleHandleRange, bool hasDsv, uint64_t dsvHandle,
-                             bool fromRestore = false, std::shared_ptr<void> owner = {})
     {
-        Mutate(listId, fromRestore, [&](ListTracker& t) {
-            t.snap.SetRenderTargets(numRTVs, rtvHandles, singleHandleRange, hasDsv, dsvHandle, std::move(owner));
-        });
+        Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.SetHeaps(count, handles); });
+    }
+    void ReportPso(uint64_t listId, uint64_t pso, bool fromRestore = false)
+    {
+        Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.SetPso(pso); });
+    }
+    void ReportViewports(uint64_t listId, const Viewport* v, uint32_t count, bool fromRestore = false)
+    {
+        Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.SetViewports(v, count); });
+    }
+    void ReportScissors(uint64_t listId, const ScissorRect* r, uint32_t count, bool fromRestore = false)
+    {
+        Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.SetScissors(r, count); });
+    }
+    void ReportTopology(uint64_t listId, uint32_t topology, bool fromRestore = false)
+    {
+        Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.SetTopology(topology); });
+    }
+    void ReportRenderTargets(uint64_t listId, uint32_t numRTVs, const uint64_t* rtvHandles, bool singleHandleRange,
+                             bool hasDsv, uint64_t dsvHandle, bool fromRestore = false,
+                             std::shared_ptr<void> owner = {})
+    {
+        Mutate(
+            listId, fromRestore, [&](ListTracker& t)
+            { t.snap.SetRenderTargets(numRTVs, rtvHandles, singleHandleRange, hasDsv, dsvHandle, std::move(owner)); });
     }
     void ReportOmUnknown(uint64_t listId, bool fromRestore = false)
-    { Mutate(listId, fromRestore, [](ListTracker& t) { t.snap.om = OmBinding {}; }); }
+    {
+        Mutate(listId, fromRestore, [](ListTracker& t) { t.snap.om = OmBinding {}; });
+    }
     void ReportPredication(uint64_t listId, uint64_t resource, uint64_t byteOffset, uint32_t operation,
                            bool fromRestore = false)
-    { Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.SetPredication(resource, byteOffset, operation); }); }
+    {
+        Mutate(listId, fromRestore, [&](ListTracker& t) { t.snap.SetPredication(resource, byteOffset, operation); });
+    }
     void MarkIneligible(uint64_t listId, IneligibleWhy why = IneligibleWhy::Other)
-    { Mutate(listId, false, [&](ListTracker& t) { t.MarkIneligible(why); }); }
+    {
+        Mutate(listId, false, [&](ListTracker& t) { t.MarkIneligible(why); });
+    }
 
     void OnBeginQuery(uint64_t listId, uint64_t heap, uint32_t type, uint32_t index)
     {
-        Mutate(listId, false, [&](ListTracker& t) {
-            t.activeQueries.emplace(heap, type, index);
-            t.snap.queryActive = true;
-        });
+        Mutate(listId, false,
+               [&](ListTracker& t)
+               {
+                   t.activeQueries.emplace(heap, type, index);
+                   t.snap.queryActive = true;
+               });
     }
     void OnEndQuery(uint64_t listId, uint64_t heap, uint32_t type, uint32_t index, bool timestamp = false)
     {
         if (timestamp)
             return; // TIMESTAMP has no BeginQuery and cannot close another query.
-        Mutate(listId, false, [&](ListTracker& t) {
-            t.activeQueries.erase({ heap, type, index });
-            t.snap.queryActive = !t.activeQueries.empty();
-        });
+        Mutate(listId, false,
+               [&](ListTracker& t)
+               {
+                   t.activeQueries.erase({ heap, type, index });
+                   t.snap.queryActive = !t.activeQueries.empty();
+               });
     }
 
     void OnBeginRenderPass(uint64_t listId, bool suspending = false, bool resuming = false)
     {
-        Mutate(listId, false, [&](ListTracker& t) {
-            (void)resuming; // Resume may originate from a different command list.
-            t.snap.renderPassActive = true;
-            t.snap.renderPassSuspended = false;
-            t.renderPassWillSuspend = suspending;
-            t.snap.om = OmBinding {};
-        });
+        Mutate(listId, false,
+               [&](ListTracker& t)
+               {
+                   (void) resuming; // Resume may originate from a different command list.
+                   t.snap.renderPassActive = true;
+                   t.snap.renderPassSuspended = false;
+                   t.renderPassWillSuspend = suspending;
+                   t.snap.om = OmBinding {};
+               });
     }
     void OnEndRenderPass(uint64_t listId)
     {
-        Mutate(listId, false, [](ListTracker& t) {
-            t.snap.renderPassActive = false;
-            t.snap.renderPassSuspended = t.renderPassWillSuspend;
-            t.renderPassWillSuspend = false;
-            // BeginRenderPass sets its own OM. A subsequent explicit OM bind is
-            // needed to reconstruct the legacy state without guessing.
-            t.snap.om = OmBinding {};
-        });
+        Mutate(listId, false,
+               [](ListTracker& t)
+               {
+                   t.snap.renderPassActive = false;
+                   t.snap.renderPassSuspended = t.renderPassWillSuspend;
+                   t.renderPassWillSuspend = false;
+                   // BeginRenderPass sets its own OM. A subsequent explicit OM bind is
+                   // needed to reconstruct the legacy state without guessing.
+                   t.snap.om = OmBinding {};
+               });
     }
     bool IsRenderPassUnsafe(uint64_t listId) const
     {
@@ -222,7 +259,7 @@ class Tracker
 
   private:
     static RootDomain& Domain(ListTracker& t, bool graphics) { return graphics ? t.snap.graphics : t.snap.compute; }
-    template<class Fn> void Mutate(uint64_t listId, bool fromRestore, Fn&& fn)
+    template <class Fn> void Mutate(uint64_t listId, bool fromRestore, Fn&& fn)
     {
         std::unique_lock lock(mutex_);
         if (!enabled_ || (!fromRestore && suppress_.contains(listId)))
@@ -254,12 +291,21 @@ class ScopedCaptureSuppression
 {
   public:
     explicit ScopedCaptureSuppression(uint64_t listId, bool enabled = true)
-        : ScopedCaptureSuppression(GraphicsTracker(), listId, enabled) {}
+        : ScopedCaptureSuppression(GraphicsTracker(), listId, enabled)
+    {
+    }
     ScopedCaptureSuppression(Tracker& tracker, uint64_t listId, bool enabled = true)
-        : tracker_(tracker), listId_(listId), pushed_(enabled && tracker.PushSuppress(listId)) {}
-    ~ScopedCaptureSuppression() { if (pushed_) tracker_.PopSuppress(listId_); }
+        : tracker_(tracker), listId_(listId), pushed_(enabled && tracker.PushSuppress(listId))
+    {
+    }
+    ~ScopedCaptureSuppression()
+    {
+        if (pushed_)
+            tracker_.PopSuppress(listId_);
+    }
     ScopedCaptureSuppression(const ScopedCaptureSuppression&) = delete;
     ScopedCaptureSuppression& operator=(const ScopedCaptureSuppression&) = delete;
+
   private:
     Tracker& tracker_;
     uint64_t listId_;

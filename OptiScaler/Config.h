@@ -416,7 +416,6 @@ class Config
     // default. See dlssnr/design/frame-hold.md.
     CustomOptional<bool> DlssNrHoldFrame { false };
 
-
     // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
     // light source, whatever the model returns.
     CustomOptional<float> DlssNrMaxRatio { 2.0f };
@@ -436,7 +435,6 @@ class Config
     //
     // The slider is the supported control until the loop is broken. This stays as an opt-in so the
     // behaviour can still be looked at.
-
 
     // Take the white point from the game's own exposure texture instead of measuring or guessing.
     // Off by default until it has been seen to work in more than one game.
@@ -577,8 +575,8 @@ class Config
 
     CustomOptional<bool> DlssNrScanMeter { false };
 
-    CustomOptional<float> DlssNrScanAnchorValue { 0.0f };       // legacy single anchor, migrated then unused
-    CustomOptional<float> DlssNrScanAnchorWhitePoint { 0.0f };  // legacy single anchor, migrated then unused
+    CustomOptional<float> DlssNrScanAnchorValue { 0.0f };      // legacy single anchor, migrated then unused
+    CustomOptional<float> DlssNrScanAnchorWhitePoint { 0.0f }; // legacy single anchor, migrated then unused
 
     // The multi-point anchor table, serialised as "scan:white;scan:white;..." ascending. See
     // dlssnr/design/multi-point-anchoring.md. Replaces the single pair above; a pre-existing single
@@ -592,12 +590,6 @@ class Config
     // says which. Rather than guess and be silently wrong in half the games, this is one click: if
     // the picture moves the wrong way, flip it.
     CustomOptional<bool> DlssNrScanInverted { false };
-
-
-
-
-
-
 
     // The trim on an exposure-derived white point, kept apart from the manual divisor on purpose.
     //
@@ -645,17 +637,9 @@ class Config
     // folder is cleared at the start of each run, so it holds one session's worth and never grows.
     CustomOptional<bool> DlssNrAutoCapture { true };
 
-
-
-
-
     // Multiplies the (auto or manual) white point before the encode: what the model considers "white".
     // Higher means highlights sit lower on the curve and the model treats them as less extreme.
     CustomOptional<float> DlssNrWhitePointScale { 1.0f };
-
-
-
-
 
     // --- end DLSS 5 Neural Rendering -------------------------------------------------------------
 

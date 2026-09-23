@@ -283,20 +283,37 @@ ID3D12Resource* RtgiNative::Record(ID3D12GraphicsCommandList* cmd, const Frame& 
     p->cmd = cmd;
     p->table = 0;
     Impl::Texture colour { frame.colour, frame.colourState }, depth { frame.depth, frame.depthState };
-    struct Constants {
+    struct Constants
+    {
         UINT w, h, reverse, quality;
         float farPlane, tanHalf, thickness, fade;
         float lighting, occlusion, ambient, mix;
         UINT inspect, denoiser;
         float smoothness, pad;
         float contact, saturation, radius, pad2;
-    } c { frame.width, frame.height, UINT(frame.depthInverted), cfg.quality,
-          cfg.farPlane, std::tan(cfg.fov * .00872664626f), cfg.thickness, cfg.fade,
-          cfg.lighting, cfg.occlusion, cfg.ambient, cfg.mix, cfg.inspect, cfg.denoiser, cfg.smoothness, 0, cfg.contact, cfg.saturation, cfg.radius, 0 };
-    p->Run("GatherCS", c.w, c.h, 8, &c, 20,
-           { { 0, { &colour } }, { 1, { &depth } } }, { { 0, { &p->trace } } });
-    p->Run("ResolveCS", c.w, c.h, 8, &c, 20,
-           { { 0, { &colour } }, { 1, { &depth } }, { 2, { &p->trace } } }, { { 0, { &p->output } } });
+    } c { frame.width,
+          frame.height,
+          UINT(frame.depthInverted),
+          cfg.quality,
+          cfg.farPlane,
+          std::tan(cfg.fov * .00872664626f),
+          cfg.thickness,
+          cfg.fade,
+          cfg.lighting,
+          cfg.occlusion,
+          cfg.ambient,
+          cfg.mix,
+          cfg.inspect,
+          cfg.denoiser,
+          cfg.smoothness,
+          0,
+          cfg.contact,
+          cfg.saturation,
+          cfg.radius,
+          0 };
+    p->Run("GatherCS", c.w, c.h, 8, &c, 20, { { 0, { &colour } }, { 1, { &depth } } }, { { 0, { &p->trace } } });
+    p->Run("ResolveCS", c.w, c.h, 8, &c, 20, { { 0, { &colour } }, { 1, { &depth } }, { 2, { &p->trace } } },
+           { { 0, { &p->output } } });
     p->State(p->output, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     p->State(colour, frame.colourState);
     p->State(depth, frame.depthState);

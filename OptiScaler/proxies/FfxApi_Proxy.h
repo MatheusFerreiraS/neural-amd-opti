@@ -237,8 +237,8 @@ class FfxApiProxy
         versionQuery.header.type = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
         versionQuery.createDescType = type;
 
-        // Newer effects like FSR Ray Regen seem to require a D3D12 device if an ffxContext 
-        // hasn't already been created. Depending on init/hook order, this can be slightly 
+        // Newer effects like FSR Ray Regen seem to require a D3D12 device if an ffxContext
+        // hasn't already been created. Depending on init/hook order, this can be slightly
         // inconvenient, as features like NVSDK_NGX_D3D12_GetFeatureRequirements() run before
         // the device is created/captured.
         versionQuery.device = State::Instance().currentD3D12Device;
@@ -283,7 +283,10 @@ class FfxApiProxy
 
     static bool IsFGReady(bool = false) { return (main_dx12.dll && !main_dx12.isLoader) || fg_dx12.dll != nullptr; }
     // Returns true if the FSR upscaler module is loaded
-    static bool IsSRReady(bool = false) { return (main_dx12.dll && !main_dx12.isLoader) || upscaling_dx12.dll != nullptr; }
+    static bool IsSRReady(bool = false)
+    {
+        return (main_dx12.dll && !main_dx12.isLoader) || upscaling_dx12.dll != nullptr;
+    }
     static bool IsDenoiserReady(bool = false) { return IsSRReady() && denoiser_dx12.dll != nullptr; }
     static bool IsRadianceReady() { return (main_dx12.dll && !main_dx12.isLoader) || radiance_dx12.dll != nullptr; }
 
@@ -523,10 +526,7 @@ class FfxApiProxy
     }
 
     // This is the guard for every path that can instantiate or dispatch FSR-RR.
-    static bool IsDenoiserApiImplementedDx12()
-    {
-        return DenoiserApiGenerationDx12() == FfxDenoiserApiGeneration::V1_2;
-    }
+    static bool IsDenoiserApiImplementedDx12() { return DenoiserApiGenerationDx12() == FfxDenoiserApiGeneration::V1_2; }
 
     static ffxReturnCode_t D3D12_CreateContext(ffxContext* context, ffxCreateContextDescHeader* desc,
                                                const ffxAllocationCallbacks* memCb)
@@ -580,8 +580,7 @@ class FfxApiProxy
                 break;
 
             LOG_DEBUG("Creating with upscaling_dx12");
-            const ffxReturnCode_t result =
-                recordContextType(upscaling_dx12.CreateContext(context, desc, memCb));
+            const ffxReturnCode_t result = recordContextType(upscaling_dx12.CreateContext(context, desc, memCb));
             LOG_DEBUG("Created with upscaling_dx12: {:X}", (size_t) *context);
             return result;
         }

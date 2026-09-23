@@ -39,7 +39,8 @@ struct LookSettings
     float colourSeparation = 0, shadowDepth = .2f, antiHalo = .901f, flatAreaProtection = 0;
     float tone = 0, exposureEV = 1, contrast = 1, saturation = 1, highlightCompression = 0;
 };
-struct RtgiSettings {
+struct RtgiSettings
+{
     bool enabled = false;
     UINT quality = 2, denoiser = 1, inspect = 0;
     float mix = 1, lighting = 5, occlusion = 1, ambient = 1;
@@ -86,7 +87,7 @@ class Backend
     // Must run immediately AFTER real queue submission, including non-upscale lists.
     void Submitted(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
     bool Ready();
-    bool Shutdown(); // call before loader-lock teardown, after all submissions
+    bool Shutdown();          // call before loader-lock teardown, after all submissions
     void InvalidateHistory(); // applied at the next safe recording boundary
     std::string Status() const;
     // Lock-free menu snapshot, restricted to the currently configured passes.

@@ -191,8 +191,7 @@ NvAPI_Status __cdecl NvAPI_GPU_GetMemoryInfo(NvPhysicalGpuHandle hPhysicalGpu,
     return OK();
 }
 
-NvAPI_Status __cdecl NvAPI_GPU_GetMemoryInfoEx(NvPhysicalGpuHandle hPhysicalGpu,
-                                               NV_GPU_MEMORY_INFO_EX_V1* pMemoryInfo)
+NvAPI_Status __cdecl NvAPI_GPU_GetMemoryInfoEx(NvPhysicalGpuHandle hPhysicalGpu, NV_GPU_MEMORY_INFO_EX_V1* pMemoryInfo)
 {
     if (!pMemoryInfo)
         return ERROR_VALUE(NVAPI_INVALID_ARGUMENT);

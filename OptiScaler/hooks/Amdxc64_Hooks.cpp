@@ -125,8 +125,7 @@ void Amdxc64Hooks::Init()
                                 L"amd_fidelityfx_denoiser_dx12.dll");
 
     if (moduleAmdxc64 == nullptr &&
-        (!Config::Instance()->Fsr4DoNotLoadAmdxc64.value_or_default() ||
-         denoiserDllDeployed) &&
+        (!Config::Instance()->Fsr4DoNotLoadAmdxc64.value_or_default() || denoiserDllDeployed) &&
         !Config::Instance()->LoadCustomAmdxc64OnRdna2.value_or_default())
     {
         for (const auto& [luid, path] : Util::GetDriverStore())

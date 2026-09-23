@@ -190,7 +190,8 @@ NVSDK_NGX_Result Nvngx_DllProxy::D3D12_EvaluateFeature(ID3D12GraphicsCommandList
         InParameters->Get("DLSSG.MultiFrameCount", &count);
         if (count != lastCount || result != lastResult)
         {
-            LOG_INFO("DLSSG replacement evaluate: generatedFrames={} result={:X}", count, static_cast<unsigned>(result));
+            LOG_INFO("DLSSG replacement evaluate: generatedFrames={} result={:X}", count,
+                     static_cast<unsigned>(result));
             lastCount = count;
             lastResult = result;
         }

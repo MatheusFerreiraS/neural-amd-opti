@@ -556,10 +556,8 @@ class ResTrack_Dx12
                                                 D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor);
     static void hkResourceBarrier(ID3D12GraphicsCommandList* This, UINT NumBarriers,
                                   const D3D12_RESOURCE_BARRIER* pBarriers);
-    static void hkSetPipelineState(ID3D12GraphicsCommandList* This,
-                                   ID3D12PipelineState* pPipelineState);
-    static HRESULT hkReset(ID3D12GraphicsCommandList* This,
-                           ID3D12CommandAllocator* pAllocator,
+    static void hkSetPipelineState(ID3D12GraphicsCommandList* This, ID3D12PipelineState* pPipelineState);
+    static HRESULT hkReset(ID3D12GraphicsCommandList* This, ID3D12CommandAllocator* pAllocator,
                            ID3D12PipelineState* pInitialState);
     static void hkSetMarker(ID3D12GraphicsCommandList* This, UINT Metadata, const void* pData, UINT Size);
     static void hkBeginEvent(ID3D12GraphicsCommandList* This, UINT Metadata, const void* pData, UINT Size);
@@ -585,15 +583,12 @@ class ResTrack_Dx12
     static void hkCreateUnorderedAccessView(ID3D12Device* This, ID3D12Resource* pResource,
                                             ID3D12Resource* pCounterResource, D3D12_UNORDERED_ACCESS_VIEW_DESC* pDesc,
                                             D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
-    static HRESULT hkCreateGraphicsPipelineState(
-        ID3D12Device* This, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc,
-        REFIID riid, void** ppPipelineState);
-    static HRESULT hkCreateComputePipelineState(
-        ID3D12Device* This, const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc,
-        REFIID riid, void** ppPipelineState);
-    static HRESULT hkCreatePipelineState(
-        ID3D12Device2* This, const D3D12_PIPELINE_STATE_STREAM_DESC* pDesc,
-        REFIID riid, void** ppPipelineState);
+    static HRESULT hkCreateGraphicsPipelineState(ID3D12Device* This, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc,
+                                                 REFIID riid, void** ppPipelineState);
+    static HRESULT hkCreateComputePipelineState(ID3D12Device* This, const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc,
+                                                REFIID riid, void** ppPipelineState);
+    static HRESULT hkCreatePipelineState(ID3D12Device2* This, const D3D12_PIPELINE_STATE_STREAM_DESC* pDesc,
+                                         REFIID riid, void** ppPipelineState);
 
     static void hkExecuteCommandLists(ID3D12CommandQueue* This, UINT NumCommandLists,
                                       ID3D12CommandList* const* ppCommandLists);

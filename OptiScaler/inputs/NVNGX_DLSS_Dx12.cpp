@@ -1338,8 +1338,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     // EvaluateAfterUpscale declines by itself on a frame the pipeline stage already handled, so every
     // call site is covered rather than this one.
     if (optiResult == NVSDK_NGX_Result_Success && feature != NVSDK_NGX_Feature_FrameGeneration && !preNr.substituted)
-        DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr,
-                                     feature == NVSDK_NGX_Feature_RayReconstruction);
+        DlssNr::EvaluateAfterUpscale(InCmdList, InParameters, nullptr, feature == NVSDK_NGX_Feature_RayReconstruction);
 
     return optiResult;
 }

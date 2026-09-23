@@ -270,9 +270,10 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain)
         if (AmdPresentExperimental::IsTarget() && Config::Instance()->DlssNrEnabled.value_or_default())
         {
             AmdPreSr::Settings settings;
-            settings.toneChannels=true;
-            settings.tone=Config::Instance()->AmdNeuralLightingStrength.value_or_default();
-            AmdPresentExperimental::Render(pSwapChain, (ID3D12CommandQueue*)currentSCCommandQueue, Util::DllPath().parent_path(), settings);
+            settings.toneChannels = true;
+            settings.tone = Config::Instance()->AmdNeuralLightingStrength.value_or_default();
+            AmdPresentExperimental::Render(pSwapChain, (ID3D12CommandQueue*) currentSCCommandQueue,
+                                           Util::DllPath().parent_path(), settings);
         }
 
         if (!MenuOverlayBase::IsInited())
