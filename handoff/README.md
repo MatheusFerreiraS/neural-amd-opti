@@ -47,6 +47,14 @@ Two GitHub releases, both built by `tools/PACKAGE_RELEASE.ps1`:
 The build reports itself as `0.1.1-amd-nr`, and the packager writes
 `dist/OptiScaler-0.1.1-amd-nr.zip`.
 
+The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer)
+(v0.4.0 and later) installs this build as its OptiScaler route. Its payload manifest pins the
+`v0.1.1-amd-nr` release zip by URL and SHA-256, and every file it extracts from it by hash. It
+takes the runtime 0.3.1 (`b108d640…`) from the Hugging Face dataset `zmodelerlover/amd-nr`,
+never from this repository. Never replace an asset on a published tag: every installer would
+refuse the new bytes. A new release is a new tag, and then new pins in that installer's
+`payload/payload.json` (its `handoffs/HANDOFF-2026-09-23.md` has the steps).
+
 ---
 
 ## 2. How the merge was done (reproducible)
