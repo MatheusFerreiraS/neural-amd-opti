@@ -1,35 +1,38 @@
 # NR backend selector
 
-Tracked ADR for the lmxxf graft. Plan: `exports/lmxxf-main-backend-integration-plan-20260919.md`
-(gitignored). Progress: `exports/lmxxf-backend-progress-20260920*.md`.
+How OptiScaler picks one of the two AMD NR runtimes, and how the lmxxf backend records its work.
+Both runtimes ship since 0.2.0-amd-nr.
 
-## Status (2026-09-20o; tip `8751305`, not pushed)
+## Choosing the runtime
 
-| Item | Now |
+`[DlssNr] NrBackend` is read once at launch (`Selector.cpp`). Each backend installs its own D3D12
+hooks when the device is created, so the menu's "NR runtime" combo applies on the next launch.
+
+| `NrBackend` | Active backend |
 |---|---|
-| Branch | `work/lmxxf-backend` off `main @ 2792909` (1.8.6 Daniel). **Not pushed.** |
-| Default ini `NrBackend` | **daniel** (missing / empty / `auto` / unknown → daniel) |
-| `LmxxfWired()` | **`true` for local E only** (`Kind.h`). Revert before push/default. |
-| Active lmxxf | Only when **Wired ∧** `[DlssNr] NrBackend=lmxxf` → `ActiveKind==Lmxxf` → `LmxxfBackend` |
-| `NrBackend=lmxxf` while Wired false | Logged once, falls back to Daniel |
-| `NrBackend=off` | No AMD Record; original colour to SR |
-| HasFiles / ECL / New wait / menu | Unchanged (HasFiles still expects Daniel `dlssnr_amd_pass1.dll`) |
-| `hip_ready` | Still **0** in QueryCapabilities — trust OptiScaler.log, not the menu bit |
-| `third_party/lmxxf` | Vendored @ `68dc099` + local C ABI runtime |
-| `submission/` | List1–10 proxy, Create/CL1 hooks when `SubmissionHooksWanted()`, continuation seed + admission reject + Execute-decay book |
+| `daniel` | `DanielBackend`, runtime `dlssnr_amd_pass1-3.dll` |
+| `lmxxf` | `LmxxfBackend`, runtime `LmxxfNrRuntime.dll` |
+| `off` or `none` | None: no AMD Record, the original colour goes to SR |
+| `auto`, empty or missing | lmxxf when `LmxxfNrRuntime.dll` sits beside OptiScaler and `dlssnr_amd_pass1.dll` does not, otherwise daniel |
+| Anything else | daniel |
 
-Do not change `main`'s release default until **G3∧G4∧G5**.
+`AmdBridge::HasFiles` looks for the active backend's runtime DLL. The `submission/` hooks are armed
+only while lmxxf is the active backend (`SubmissionHooksWanted`).
 
-## Local E (燕云)
-
-- GameDir: `...\yysls_medium\Engine\Binaries\Win64r - NR`, proxy `winmm.dll`
-- Deploy notes: `exports/lmxxf-yysls-E-deploy.md`, progress `20260920o`
-- Smoke: 燕云 only (no 鬼武者). Acceptance = playable + no device-removed + explainable logs — not “FSR proved NR output” (that is G3/F).
+`LmxxfBackend::Record` refuses frames after the upscale (`afterUpscale`), so lmxxf runs only before
+Super Resolution. This is a local change on top of TheAutomatic's lmxxf files.
 
 ## Toolchain
 
-`LmxxfNrRuntime.dll` is MinGW. OptiScaler (MSVC) talks through `LmxxfNrApi.h` only.
-Modules: `lmxxf-modules` beside the DLL (or `LMXXF_MODULES_DIR`). Weights: `LMXXF_WEIGHTS_DIR` tiled assets (**not** 0.24.2 `HIP/`).
+`LmxxfNrRuntime.dll` is MinGW, built by `tools\build-lmxxf-runtime.cmd exports\lmxxf-runtime` from
+`lmxxf_runtime/` and the vendored source in `third_party/lmxxf` (pinned in its `UPSTREAM.md`).
+OptiScaler (MSVC) talks to it through `LmxxfNrApi.h` only. `tools/PACKAGE_RELEASE.ps1` ships it with
+the gfx1201 modules and the top-level shaders.
+
+- Modules: `lmxxf-modules` beside the DLL (or `LMXXF_MODULES_DIR`).
+- Weights, never shipped: the first of `native-game-tiled-assets\`, `lmxxf-weights\` and the folder
+  named in `lmxxf-weights-dir.txt`, all beside OptiScaler, then `LMXXF_WEIGHTS_DIR`. These are the
+  tiled assets; the 0.24.2 `HIP/` folder is never read.
 
 ## Record sandwich (fail-closed)
 
@@ -54,12 +57,16 @@ and `ResetHistory` failures are also logged at their call sites. This preserves
 the original error when the runtime subsequently reports only a poisoned session.
 `PendingListIndex` stays **-1** (Daniel-only batch isolation); lmxxf intentionally does not use it.
 
-## Admission / continuation (plans C–D)
+## Admission and continuation
 
-- Min G1 reject: open query at the cut / invalid query scope / predication / enhanced barrier / open split barrier / aliasing / render pass / RTAS / meta / root·sample overflow → Split fails → ordinary SR. Completed queries and timestamp EndQuery remain eligible.
+- Split refused on: open query at the cut / invalid query scope / predication / enhanced barrier / open split barrier / aliasing / render pass / RTAS / meta / root·sample overflow → ordinary SR. Completed queries and timestamp EndQuery remain eligible.
 - Continuation seed: viewport/scissor/topology/PSO/rootsig/heaps/blend/stencil/OM + IA/SO/VRS/strip-cut/view-mask + RootBindState + sample positions + depth bounds.
-- `ResourceStateBook::ApplyExecuteDecay` updates **our book** only (M3); does not rewrite game barriers. Live proof needs debug layer (plan E).
+- `ResourceStateBook::ApplyExecuteDecay` updates **our book** only; it does not rewrite game barriers.
 
-## Review notes (post-`ebd6072` → `8751305`)
+## Known limits
 
-See `exports/lmxxf-review-8751305.md`. Open E risks: query-whole-list reject, RootBindState 64 caps, decay bookkeeping-only, CL1 wrap whenever hooks armed, outdated menu `hip_ready`.
+- `QueryCapabilities` always reports `hip_ready=0`. Whether HIP loaded is in `OptiScaler.log`.
+- `RootBindState` tracks up to 64 root parameters and 64 root constants; past that the split is refused.
+- Execute decay has not been checked against the D3D12 debug layer in a live game.
+- While the hooks are armed, lists created with `CreateCommandList1` are wrapped as well.
+- A render resolution above 1080p needs `LmxxfFitLarge` and can hitch.

@@ -397,8 +397,9 @@ were added there; `Enabled=false` is unchanged.
 `OptiScaler-DLSSNR-PreSR-Multipass-main/` maps to this repo's root; `tools/`, `tests/` and
 `third_party/` stay at the root. The next sync diffs from `c127e04b`. Their lmxxf files
 (`dlssnr/backend/`, `dlssnr/submission/`, `lmxxf_runtime/`) are best taken whole from upstream,
-then re-apply the one local change (`LmxxfBackend::Record` refuses `afterUpscale` frames) and
-run clang-format. `third_party/lmxxf/` is vendored MIT source plus gfx1201 modules;
+then re-apply the local changes (`LmxxfBackend::Record` refuses `afterUpscale` frames; the
+comments in `backend/Kind.h` and both folders' `README.md` describe this repository) and run
+clang-format. `third_party/lmxxf/` is vendored MIT source plus gfx1201 modules;
 `tools/build-lmxxf-runtime.cmd exports\lmxxf-runtime` builds `LmxxfNrRuntime.dll`, and the
 packager ships it with the modules and the top-level `*.hlsl`. The weights
 (`native-game-tiled-assets\`) are never shipped.

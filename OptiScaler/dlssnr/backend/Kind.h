@@ -10,7 +10,8 @@ enum class Kind
     Off,
 };
 
-// Case-insensitive. Missing, empty, "auto", and unknown values are Daniel.
+// Case-insensitive. Missing, empty, "auto", and unknown values are Daniel here; ActiveKindFromConfig
+// resolves "auto" against the runtimes present.
 inline Kind ParseKind(std::string_view raw)
 {
     auto eq = [](std::string_view a, std::string_view b)
@@ -37,8 +38,8 @@ inline Kind ParseKind(std::string_view raw)
     return Kind::Daniel;
 }
 
-// First increment: no LmxxfNrRuntime. Off stays Off; everything else is Daniel.
-inline bool LmxxfWired() { return true; } // LOCAL E trial only — do not push/default
+// lmxxf is available whenever NrBackend asks for it.
+inline bool LmxxfWired() { return true; }
 
 inline Kind ActiveKind(Kind requested)
 {
