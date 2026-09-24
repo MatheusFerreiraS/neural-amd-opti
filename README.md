@@ -49,8 +49,9 @@ OptiScaler's copy.
 4. In game, press **Ins**, open the **Neural** tab and turn on **Enable NR**. In a game that uses
    Ray Reconstruction, set **Processing point** to **After the finished frame** (danielblnc only).
 
-The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer) installs
-the danielblnc route for DirectX 12 games in one step.
+The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer) (v0.5.0
+or later) does all of this in one step for DirectX 12 games, lmxxf weights included, and lets you
+pick which release goes in.
 
 ## Settings
 

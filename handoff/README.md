@@ -38,24 +38,26 @@ Everything is on `dlss-neural-rendering`. The work was committed on the branch `
 merge, then formatting), which pull request #1 merged into `dlss-neural-rendering`. Fixes since
 then are committed there directly.
 
-Two GitHub releases, both built by `tools/PACKAGE_RELEASE.ps1`:
+Three GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
 
 - `v0.1.0-amd-nr`: the FidelityFX upscaler, frame generation and denoiser never load from the
   package layout, so FSR falls back to FSR 2 and Ray Reconstruction is greyed out. Do not use it.
 - `v0.1.1-amd-nr`: that fixed (section 5, "FidelityFX modules load from the OptiScaler folder").
+- `v0.2.0-amd-nr`: the lmxxf runtime, effect strength, colour grade and XeSS multi frame
+  generation (section 5, "0.2.0").
 
-The build reports itself as `0.1.1-amd-nr`, and the packager writes
-`dist/OptiScaler-0.1.1-amd-nr.zip`. Work since then (the lmxxf runtime, effect strength, colour
-grade, XeSS multi frame generation) is committed on the branch but not released; see section 5,
-"After 0.1.1".
+The build reports itself as `0.2.0-amd-nr`, and the packager writes
+`dist/OptiScaler-0.2.0-amd-nr.zip`.
 
 The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer)
-(v0.4.0 and later) installs this build as its OptiScaler route. Its payload manifest pins the
-`v0.1.1-amd-nr` release zip by URL and SHA-256, and every file it extracts from it by hash. It
-takes the runtime 0.3.1 (`b108d640…`) from the Hugging Face dataset `zmodelerlover/amd-nr`,
+installs this build as its OptiScaler route. v0.4.0 knows only `v0.1.1-amd-nr`; v0.5.0 and later
+offer every version its payload manifest lists, newest first, and install `v0.2.0-amd-nr` with
+the lmxxf weights. The manifest pins each release zip by URL and SHA-256, and every file it
+extracts from it by hash. The runtime 0.3.1 (`b108d640…`) and the lmxxf weights
+(`native-game-tiled-assets.zip`) come from the Hugging Face dataset `zmodelerlover/amd-nr`,
 never from this repository. Never replace an asset on a published tag: every installer would
 refuse the new bytes. A new release is a new tag, and then new pins in that installer's
-`payload/payload.json` (its `handoffs/HANDOFF-2026-09-23.md` has the steps).
+`payload/payload.json` (its `handoffs/HANDOFF-v0.5.0-2026-09-23.md` has the steps).
 
 ---
 
@@ -388,7 +390,7 @@ available. Also `[FSR-RR] TaggedNormalRoughness` (**default off**, see section 7
 building a release, so it did not know the post-RR keys. `RRWorkingScale` and `RRPasses`
 were added there; `Enabled=false` is unchanged.
 
-### After 0.1.1 (committed, not released)
+### 0.2.0
 
 **Second NR runtime: lmxxf.** Ported from TheAutomatic's `release/1.9.0` up to `c127e04b`
 (tag `v1.9.1-alpha`, lmxxf upstream 0.29). The upstream folder
