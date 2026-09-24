@@ -1171,16 +1171,16 @@ void MenuCommon::ApplyThemeStyle()
 
     float luminance = Luminance(accent);
 
-    const ImVec4 bgDark = lightTheme ? ImVec4(0.80f, 0.82f, 0.86f, 1.00f) : ImVec4(0.09f, 0.09f, 0.10f, 1.00f);
-    const ImVec4 bgMid = lightTheme ? ImVec4(0.89f, 0.91f, 0.95f, 1.00f) : ImVec4(0.11f, 0.11f, 0.12f, 1.00f);
-    const ImVec4 bgLight = lightTheme ? ImVec4(0.96f, 0.97f, 0.99f, 1.00f) : ImVec4(0.14f, 0.14f, 0.15f, 1.00f);
+    const ImVec4 bgDark = lightTheme ? ImVec4(0.80f, 0.82f, 0.86f, 1.00f) : ImVec4(0.09f, 0.09f, 0.09f, 1.00f);
+    const ImVec4 bgMid = lightTheme ? ImVec4(0.89f, 0.91f, 0.95f, 1.00f) : ImVec4(0.11f, 0.11f, 0.11f, 1.00f);
+    const ImVec4 bgLight = lightTheme ? ImVec4(0.96f, 0.97f, 0.99f, 1.00f) : ImVec4(0.14f, 0.14f, 0.14f, 1.00f);
 
-    const ImVec4 textPrimary = lightTheme ? ImVec4(0.05f, 0.06f, 0.08f, 1.00f) : ImVec4(0.90f, 0.93f, 0.95f, 1.00f);
-    const ImVec4 textDim = lightTheme ? ImVec4(0.22f, 0.25f, 0.31f, 1.00f) : ImVec4(0.54f, 0.58f, 0.62f, 1.00f);
+    const ImVec4 textPrimary = lightTheme ? ImVec4(0.05f, 0.06f, 0.08f, 1.00f) : ImVec4(0.93f, 0.93f, 0.93f, 1.00f);
+    const ImVec4 textDim = lightTheme ? ImVec4(0.22f, 0.25f, 0.31f, 1.00f) : ImVec4(0.58f, 0.58f, 0.58f, 1.00f);
 
-    const ImVec4 borderCol = lightTheme ? ImVec4(0.35f, 0.40f, 0.50f, 1.00f) : ImVec4(0.24f, 0.24f, 0.26f, 1.00f);
-    const ImVec4 dimBg = lightTheme ? ImVec4(0.30f, 0.33f, 0.38f, 0.20f) : ImVec4(0.09f, 0.10f, 0.13f, 0.20f);
-    const ImVec4 modalDimBg = lightTheme ? ImVec4(0.22f, 0.24f, 0.28f, 0.55f) : ImVec4(0.04f, 0.04f, 0.07f, 0.55f);
+    const ImVec4 borderCol = lightTheme ? ImVec4(0.35f, 0.40f, 0.50f, 1.00f) : ImVec4(0.25f, 0.25f, 0.25f, 1.00f);
+    const ImVec4 dimBg = lightTheme ? ImVec4(0.30f, 0.33f, 0.38f, 0.20f) : ImVec4(0.09f, 0.09f, 0.09f, 0.20f);
+    const ImVec4 modalDimBg = lightTheme ? ImVec4(0.22f, 0.24f, 0.28f, 0.55f) : ImVec4(0.04f, 0.04f, 0.04f, 0.55f);
 
     // MenuBGColor: only background/surface tint.
     auto BgTint = [&](const ImVec4& base, float strength = 1.0f, float alpha = 1.0f)
@@ -1261,7 +1261,7 @@ void MenuCommon::ApplyThemeStyle()
     c[ImGuiCol_WindowBg] = BgTint(bgDark, 1.00f, Config::Instance()->MenuBGColorA.value_or_default());
     c[ImGuiCol_ChildBg] = BgTint(bgMid, 1.10f, minAlpha + 0.1f);
     c[ImGuiCol_PopupBg] =
-        lightTheme ? BgTint(bgLight, 0.90f) : BgTint(ImVec4(0.09f, 0.10f, 0.13f, 0.97f), 0.90f, 0.97f);
+        lightTheme ? BgTint(bgLight, 0.90f) : BgTint(ImVec4(0.09f, 0.09f, 0.09f, 0.97f), 0.90f, 0.97f);
     c[ImGuiCol_MenuBarBg] = BgTint(bgDark, 0.85f);
     c[ImGuiCol_DockingEmptyBg] = BgTint(bgDark, 0.75f);
 
@@ -8371,9 +8371,9 @@ void MenuCommon::RenderThemeSettings(RenderMenuContext& ctx)
 
         bool lightTheme = config->LightTheme.value_or_default();
 
-        const ImVec4 bgDark = lightTheme ? ImVec4(0.80f, 0.82f, 0.86f, 1.00f) : ImVec4(0.09f, 0.09f, 0.10f, 1.00f);
-        const ImVec4 bgMid = lightTheme ? ImVec4(0.89f, 0.91f, 0.95f, 1.00f) : ImVec4(0.11f, 0.11f, 0.12f, 1.00f);
-        const ImVec4 bgLight = lightTheme ? ImVec4(0.96f, 0.97f, 0.99f, 1.00f) : ImVec4(0.14f, 0.14f, 0.15f, 1.00f);
+        const ImVec4 bgDark = lightTheme ? ImVec4(0.80f, 0.82f, 0.86f, 1.00f) : ImVec4(0.09f, 0.09f, 0.09f, 1.00f);
+        const ImVec4 bgMid = lightTheme ? ImVec4(0.89f, 0.91f, 0.95f, 1.00f) : ImVec4(0.11f, 0.11f, 0.11f, 1.00f);
+        const ImVec4 bgLight = lightTheme ? ImVec4(0.96f, 0.97f, 0.99f, 1.00f) : ImVec4(0.14f, 0.14f, 0.14f, 1.00f);
 
         auto Mix = [](const ImVec4& a, const ImVec4& b, float t, float alpha = 1.0f)
         { return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, alpha); };
@@ -8403,7 +8403,7 @@ void MenuCommon::RenderThemeSettings(RenderMenuContext& ctx)
         ImVec4 colorGray = { 0.54f, 0.54f, 0.54f, 1.0f };
         ImVec4 colorYellow = { 1.00f, 0.89f, 0.00f, 1.0f };
         ImVec4 colorGreen = { 0.25f, 1.00f, 0.00f, 1.0f };
-        ImVec4 colorRed = { 1.00f, 0.00f, 0.00f, 1.0f };
+        ImVec4 colorRed = { 0.86f, 0.09f, 0.12f, 1.0f };
         ImVec4 colorOrange = { 1.00f, 0.52f, 0.00f, 1.0f };
         ImVec4 colorPurple = { 0.576f, 0.00f, 1.00f, 1.0f };
 

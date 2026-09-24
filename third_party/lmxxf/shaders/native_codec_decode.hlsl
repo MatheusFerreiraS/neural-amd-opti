@@ -153,6 +153,8 @@ void main(uint3 id:SV_DispatchThreadID) {
  float oy=Luminance(original),uy=Luminance(upgraded);
  float ratio=oy==0?1:clamp(uy/oy,0,4);
  float3 result=lerp(original*ratio,upgraded,ColorStrength);
+ // Above 1 the two blends extrapolate the model's edit (OptiScaler lets them reach 2): keep the result a colour.
+ if(TransferStrength>1||ColorStrength>1)result=max(ClampAp1(result),0);
  // Optional per-dispatch views; view 0 preserves the captured composition exactly.
  if(Reserved.x==1||Reserved.x==2){
 #if NATIVE_CODEC_FIT

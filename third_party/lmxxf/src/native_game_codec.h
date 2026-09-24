@@ -15,7 +15,7 @@ struct NativeCodecParameters {
  NativeCodecDebugView debug_view=NativeCodecDebugView::Final;
  float pre_exposure=1.f,exposure_scale=1.f;
  bool Valid()const{return std::isfinite(pre_exposure)&&pre_exposure>0&&std::isfinite(exposure_scale)&&exposure_scale>0&&ValidStrength();}
- bool ValidStrength()const{return std::isfinite(transfer_strength)&&std::isfinite(color_strength)&&transfer_strength>=0.f&&transfer_strength<=1.f&&color_strength>=0.f&&color_strength<=1.f&&uint32_t(debug_view)<=4;}
+ bool ValidStrength()const{return std::isfinite(transfer_strength)&&std::isfinite(color_strength)&&transfer_strength>=0.f&&transfer_strength<=2.f&&color_strength>=0.f&&color_strength<=2.f&&uint32_t(debug_view)<=4;}
 };
 // Validated mode1 math, fixed1080p float16 textures. Caller owns queue ordering.
 // This is a resource stage, not a game callback or a history-feedback policy.

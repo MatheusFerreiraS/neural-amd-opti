@@ -1040,9 +1040,9 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             {
                 debug_view = 4; // Tint
             }
-            if (transfer_strength < 0.0f || transfer_strength > 1.0f || color_strength < 0.0f || color_strength > 1.0f)
+            if (transfer_strength < 0.0f || transfer_strength > 2.0f || color_strength < 0.0f || color_strength > 2.0f)
                 return Fail(LMXXF_NR_INVALID_ARGUMENT,
-                            "PrepareFrame: transfer_strength and color_strength must be in [0, 1]");
+                            "PrepareFrame: transfer_strength and color_strength must be in [0, 2]");
 
             // Match upstream auto tier: <=1280x720 -> 720, <=1600x900 -> 900, else 1080.
             // Prefer CRT _putenv so MinGW std::getenv sees "auto" (SetEnvironmentVariable alone may not).

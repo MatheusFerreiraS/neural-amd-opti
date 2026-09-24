@@ -352,8 +352,8 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
     fi.color = frame.colour;
     fi.color_state = static_cast<uint32_t>(frame.colourState);
     fi.flags = LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW;
-    fi.transfer_strength = std::clamp(Config::Instance()->DlssNrTransferStrength.value_or_default(), 0.0f, 1.0f);
-    fi.color_strength = std::clamp(Config::Instance()->DlssNrColourStrength.value_or_default(), 0.0f, 1.0f);
+    fi.transfer_strength = std::clamp(Config::Instance()->DlssNrTransferStrength.value_or_default(), 0.0f, 2.0f);
+    fi.color_strength = std::clamp(Config::Instance()->DlssNrColourStrength.value_or_default(), 0.0f, 2.0f);
     fi.debug_view = Config::Instance()->DlssNrDebugView.value_or_default();
     fi.model_scale = settings.modelScale;
     fi.passes = settings.passes;
@@ -554,8 +554,8 @@ ID3D12Resource* LmxxfBackend::RecordDiagnostic(ID3D12GraphicsCommandList* cmd, c
                 fi.flags = LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW |
                            LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH;
                 fi.transfer_strength =
-                    std::clamp(Config::Instance()->DlssNrTransferStrength.value_or_default(), 0.0f, 1.0f);
-                fi.color_strength = std::clamp(Config::Instance()->DlssNrColourStrength.value_or_default(), 0.0f, 1.0f);
+                    std::clamp(Config::Instance()->DlssNrTransferStrength.value_or_default(), 0.0f, 2.0f);
+                fi.color_strength = std::clamp(Config::Instance()->DlssNrColourStrength.value_or_default(), 0.0f, 2.0f);
                 fi.debug_view = Config::Instance()->DlssNrDebugView.value_or_default();
                 fi.model_scale = 1.0f;
 

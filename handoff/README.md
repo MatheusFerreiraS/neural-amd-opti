@@ -504,6 +504,19 @@ strength 0.8, frame-to-frame residual change: still image 0.0043 to 0.0009, pann
 0.0020 at 1 pass and 0.0097 to 0.0036 at 3, quarter-pixel jitter 0.0083 to 0.0070 at 1 pass and
 0.0120 to 0.0094 at 3. The residual's size stays the same, and the cost does not show.
 
+**lmxxf detail and colour strength up to 2.** `DlssNrTransferStrength` and `DlssNrColourStrength`
+were held to 0..1 on lmxxf (menu, host, runtime and upstream's codec). They now reach 2, which the
+danielblnc page already allowed for its structure. In the decode shader both are blends between the
+original and the model's result, so above 1 they extrapolate: at 2 the model's edit is twice its
+size. The final colour is then clamped to the shader's own `ClampAp1` gamut and to zero, so an
+extrapolation cannot turn negative; up to 1 nothing changes (`UPSTREAM.md`, Patch E). In the harness,
+with both at 2 the residual was about four times its size at 1, and so was its frame-to-frame change.
+
+**Red theme.** The menu's default accent (`[Menu] AccentColorR/G/B`, `Config.h`) is red, 0.86 /
+0.09 / 0.12, where it was blue (0.00 / 0.40 / 0.77); the "Red" preset uses the same value and "Blue"
+still gives the old look. The dark theme's greys (backgrounds, text, borders, popups and dimming)
+lost their slight blue tint. The light theme is unchanged.
+
 **Neural tab in sections.** With an AMD runtime the tab keeps Enable NR, the runtime and the neural
 pass meter at the top, then one column of titled sections: for danielblnc Processing (placement,
 resolution, dynamic resolution), Scheduling (temporal stabilization, slots, wait mode), Effect and

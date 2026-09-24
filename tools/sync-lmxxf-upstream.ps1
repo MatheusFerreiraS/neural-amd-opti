@@ -811,6 +811,30 @@ if ($content -match '#include\s*"native_split\.h"') {
     Write-Host "  Applied patch: removed native_split.h in native_temporal_feed.h" -ForegroundColor Yellow
 }
 
+# Patch E: OptiScaler lets lmxxf's detail and colour strengths reach 2. The codec accepts them, and decode keeps
+# the extrapolated result a colour.
+$codecH = Join-Path $vendorRoot 'src\native_game_codec.h'
+$content = (Get-Content -LiteralPath $codecH -Raw).Replace(
+    'transfer_strength<=1.f&&color_strength>=0.f&&color_strength<=1.f',
+    'transfer_strength<=2.f&&color_strength>=0.f&&color_strength<=2.f')
+if (-not $content.Contains('color_strength<=2.f')) {
+    throw "Patch E failed: strength limit not found in native_game_codec.h"
+}
+[IO.File]::WriteAllText($codecH, $content, [Text.UTF8Encoding]::new($false))
+$decodeHlsl = Join-Path $vendorRoot 'shaders\native_codec_decode.hlsl'
+$content = Get-Content -LiteralPath $decodeHlsl -Raw
+if (-not $content.Contains('result=max(ClampAp1(result),0)')) {
+    $anchor = ' float3 result=lerp(original*ratio,upgraded,ColorStrength);'
+    if (-not $content.Contains($anchor)) {
+        throw "Patch E failed: blend line not found in native_codec_decode.hlsl"
+    }
+    $content = $content.Replace($anchor, $anchor +
+        "`n // Above 1 the two blends extrapolate the model's edit (OptiScaler lets them reach 2): keep the result a colour." +
+        "`n if(TransferStrength>1||ColorStrength>1)result=max(ClampAp1(result),0);")
+    [IO.File]::WriteAllText($decodeHlsl, $content, [Text.UTF8Encoding]::new($false))
+}
+Write-Host "  Applied patch: detail and colour strength up to 2 (codec and decode)" -ForegroundColor Yellow
+
 # 6. Update UPSTREAM.md with new commit and timestamp
 $upstreamMd = Join-Path $vendorRoot 'UPSTREAM.md'
 if (Test-Path $upstreamMd) {

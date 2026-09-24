@@ -93,6 +93,9 @@ Synced from `-UpstreamRef` (default `origin/main`) via `git archive`. Intent: au
 ### Patch D: `src/native_temporal_feed.h`
 Upstream includes `native_split.h` (the D3D12 network body) without using it. The sync script drops the include after every copy.
 
+### Patch E: detail and colour strength up to 2
+`NativeCodecParameters::ValidStrength` in `src/native_game_codec.h` accepts 0 to 2 instead of 0 to 1, and `shaders/native_codec_decode.hlsl` clamps the final result to its own `ClampAp1` gamut and to zero when either strength is above 1, where the blends extrapolate and could go negative. Up to 1 the output is unchanged. The sync script re-applies both after every copy.
+
 ## Shipping modules (`.hsaco`)
 
 Upstream **does not** publish `.hsaco` on git (`/release/` is gitignored; no GitHub release assets for modules).
