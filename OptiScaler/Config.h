@@ -342,6 +342,12 @@ class Config
     // Default false: missing/auto => false (Palworld: FitLarge+~2K Color same-frame can hitch ~2s/frame).
     // Opt-in with explicit true; applied to env on Config load / lmxxf backend start; installer writes flags.
     CustomOptional<bool> LmxxfFitLarge { false };
+    // Each lmxxf pass reads its own output from the previous frame, moved by the game's motion vectors.
+    CustomOptional<bool> LmxxfTemporal { true };
+    // With LmxxfTemporal: where the result differs from the previous frame's by less than the threshold (in 1/255),
+    // it is pulled toward it, by the strength at no difference. Strength 0 turns it off.
+    CustomOptional<float> LmxxfSmoothStrength { 0.8f };
+    CustomOptional<float> LmxxfSmoothThreshold { 10.0f };
     // Experimental dirty insert: request SpinDraw=1 even when freeze/admission fails.
     // No complete D3D12 graphics-state restore — risk matches the danielblnc runtime. Default 0.
     CustomOptional<int> AmdGraphicsUnsafe { 0 };

@@ -22,6 +22,16 @@ only while lmxxf is the active backend (`SubmissionHooksWanted`).
 `LmxxfBackend::Record` refuses frames after the upscale (`afterUpscale`), so lmxxf runs only before
 Super Resolution. This is a local change on top of TheAutomatic's lmxxf files.
 
+## Passes and temporal history
+
+`[DlssNr] Passes` (1 to 3) runs the network again on its own output inside the same HIP enqueue.
+With `LmxxfTemporal` each pass also gets its own output from the previous frame as the network's
+history, warped by the game's motion vectors: `TemporalChain` in `LmxxfNrRuntime.cpp` records the
+motion conversion, coordinates and one sampler per pass before the cut, and one history feed per pass
+after it. The flow is upstream's `native_game_frame.h` for one pass. `OutputSmooth` (upstream's
+`DLSS5_OUTPUT_SMOOTH`, `LmxxfSmoothStrength`/`LmxxfSmoothThreshold`) then pulls the last pass's
+output toward its warped history where they differ little, before it is shown or kept.
+
 ## Toolchain
 
 `LmxxfNrRuntime.dll` is MinGW, built by `tools\build-lmxxf-runtime.cmd exports\lmxxf-runtime` from

@@ -190,6 +190,12 @@ RunBeforeSR=true
 NrBackend=daniel
 ; lmxxf: fit a render resolution above 1080p onto the 1080 network. Can hitch at ~2K; off by default.
 LmxxfFitLarge=false
+; lmxxf: each pass reads its own result from the previous frame, moved by the game's motion vectors.
+LmxxfTemporal=true
+; lmxxf with LmxxfTemporal: where the result differs from the previous frame's by less than the
+; threshold (in 1/255), blend it toward that frame, by the strength at no difference. 0 turns it off.
+LmxxfSmoothStrength=0.8
+LmxxfSmoothThreshold=10
 AmdModelScale=1
 AmdDynamicScale=false
 AmdDynamicTargetFps=60
@@ -212,6 +218,7 @@ SkinStructure=1
 ; it); the AMD runtime does not supersample, so it stops at 1.0.
 ; RRPasses applies to the NVIDIA feature chain only -- the AMD backend runs one pass chain from
 ; Passes above, one runtime module per pass, capped at three by dlssnr_amd_pass1-3.dll.
+; lmxxf reads Passes too, 1 to 3: its network runs again on its own output, each pass at full cost.
 ; On the AMD backend this key alone chooses the placement (Ins menu: "Processing point"):
 ; false runs the model before Super Resolution, true after the finished frame. RunBeforeSR above
 ; is kept for the NVIDIA backend and is not consulted there.

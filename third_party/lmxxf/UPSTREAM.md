@@ -20,7 +20,7 @@ Local product / stability ownership. `tools/sync-lmxxf-upstream.ps1` **preserves
 
 | Path | Owner note | Sync default |
 |---|---|---|
-| `Development/HIP/hip_d3d12_bridge.h` | Queue drain / ClearOutput / zero-residual safeguards for `LmxxfNrRuntime` | **Preserve**; `-UpdateBridge` to overwrite + re-patch |
+| `Development/HIP/hip_d3d12_bridge.h` | Queue drain / ClearOutput / zero-residual safeguards and extra passes for `LmxxfNrRuntime` | **Preserve**; `-UpdateBridge` to overwrite + re-patch |
 | `src/native_rgb_reflect.h` | Drop unused `#include "native_split.h"` so codec builds without the D3D12 network body | **Preserve**; `-UpdateReflect` to overwrite + re-drop include |
 | `OptiScaler-…/dlssnr/backend/lmxxf_runtime/` (`LmxxfNrRuntime.cpp`, `LmxxfNrApi.h`, …) | OptiScaler bridge + C-ABI runtime (this product) | **Not in sync list** — never copied from upstream |
 | `third_party/lmxxf/modules/` + local `hip/SHA256SUMS` gfx1201 rows | Shipping COMGR `.hsaco` built here (upstream git has no hsaco) | Built/refreshed by sync modules path, not taken from upstream git |
@@ -43,6 +43,7 @@ Synced from `-UpstreamRef` (default `origin/main`) via `git archive`. Intent: au
 | `src/native_game_codec.h` | Scene encode / decode host |
 | `src/native_game_rgb_input.h`, `src/native_rgb_texture.h` | RGB IO |
 | `src/native_device_identity.h`, `src/native_pinned_resource.h`, `src/native_pso.h`, `src/native_shader_cache.h` | Supporting glue |
+| `src/native_temporal_feed.h`, `src/native_temporal_coordinates.h`, `src/native_temporal_sample.h` | Motion vectors to coordinates, history warp (Patch D drops an unused include from the feed) |
 | `shaders/*.hlsl` (top-level live glue only) | D3D12 glue; mirror-cleaned; `dx12-network/` not vendored |
 
 ## Excluded on purpose (not vendored)
@@ -52,7 +53,6 @@ Synced from `-UpstreamRef` (default `origin/main`) via `git archive`. Intent: au
 - `src/native_text_overlay.h`, `src/native_game_oneshot.h`, F6 overlay
 - `src/native_game_frame.h` (`ProcessSubmittedFrame` convenience host)
 - D3D12 network body (`native_split.h`, `native_actual_network70.h`, vit/c32/preblock, `shaders/dx12-network/`, etc.)
-- `src/native_temporal_*.h` (first product version is history off)
 - `Development/` notes, benchmarks, and `.ps1` experiments
 - Upstream `OptiScaler-DLSS5-AMD-*` packages, weights, and gitignored `.hsaco`
 - Magpie packaging
@@ -86,6 +86,12 @@ Synced from `-UpstreamRef` (default `origin/main`) via `git archive`. Intent: au
 5. **Runtime Opt-In and Consumer Queue Lifetime**:
    - `LMXXF_NR_CREATE_FLAG_ZERO_OUTPUT_FALLBACK` enables recovery in the C ABI; the default keeps strict enqueue errors.
    - Queue mismatch recovery drains both the original session queue and the target producer queue before HIP zeroing. The Runtime retains the consumer queue and drains it before frame reuse or destruction.
+6. **Extra passes**:
+   - `EnqueueAfterProducer` takes a pass count (`LmxxfNrFrameInfo::passes`, 1 to 3). Every pass but the last runs the network and then copies its RGB output rows into the RGBA input with `hipMemcpy2DAsync`, which keeps the input's alpha. The function is resolved from the loaded HIP runtime, so `hip_api.h` stays as upstream has it.
+   - `RecordPassInputCopy` gives each pass its own history buffer (`pass_history`, created on first use), and in that mode every pass but the last also copies its output into `pass_output` for `PassOutput`, which the runtime turns into the next frame's history. `RecordOutputReadable` makes those outputs readable along with the last one.
+
+### Patch D: `src/native_temporal_feed.h`
+Upstream includes `native_split.h` (the D3D12 network body) without using it. The sync script drops the include after every copy.
 
 ## Shipping modules (`.hsaco`)
 

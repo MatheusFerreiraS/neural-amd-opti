@@ -550,6 +550,9 @@ bool Config::Reload(std::filesystem::path iniPath)
                 const bool fit = LmxxfFitLarge.value_or_default();
                 _putenv(fit ? "DLSS5_FIT_LARGE=1" : "DLSS5_FIT_LARGE=0");
             }
+            LmxxfTemporal.set_from_config(readBool("DlssNr", "LmxxfTemporal"));
+            LmxxfSmoothStrength.set_from_config(readFloat("DlssNr", "LmxxfSmoothStrength"));
+            LmxxfSmoothThreshold.set_from_config(readFloat("DlssNr", "LmxxfSmoothThreshold"));
             AmdGraphicsUnsafe.set_from_config(readInt("DlssNr", "AmdGraphicsUnsafe"));
             AmdRtgiEnabled.set_from_config(readBool("AmdRtgi", "Enabled"));
             AmdRtgiQuality.set_from_config(readUInt("AmdRtgi", "Quality"));
@@ -1649,6 +1652,11 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "LmxxfDiagnostic",
                      Instance()->LmxxfDiagnostic.value_for_config().value_or("auto").c_str());
         ini.SetValue("DlssNr", "LmxxfFitLarge", GetBoolValue(Instance()->LmxxfFitLarge.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "LmxxfTemporal", GetBoolValue(Instance()->LmxxfTemporal.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "LmxxfSmoothStrength",
+                     GetFloatValue(Instance()->LmxxfSmoothStrength.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "LmxxfSmoothThreshold",
+                     GetFloatValue(Instance()->LmxxfSmoothThreshold.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdGraphicsUnsafe",
                      GetIntValue(Instance()->AmdGraphicsUnsafe.value_for_config()).c_str());
         ini.SetValue("AmdRtgi", "Enabled", GetBoolValue(Instance()->AmdRtgiEnabled.value_for_config()).c_str());

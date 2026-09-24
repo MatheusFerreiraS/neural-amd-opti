@@ -21,10 +21,16 @@ public:
  enum class Phase { Ready, InputRecorded, OutputRecordedPendingHip, HipQueued, OutputRecorded };
  Phase CurrentPhase()const{return phase;}
 private:
- Phase phase=Phase::Ready;bool recorded_temporal{};
+ Phase phase=Phase::Ready;
+ // Passes 2 and 3: their history inputs, and the outputs of the passes before the last, kept for the next frame's history.
+ // histories: bit k set when pass k+1 was given a history this frame. kept: earlier outputs kept this frame.
+ Shared pass_history[2],pass_output[2];U histories{},kept{},readable_kept{};
+ Shared&PassHistory(U k){Shared&s=k?pass_history[k-1]:history;if(!s.resource)Share(s,pixels*16);return s;}
  /* DLSS5_HIP_SPAN_PROBE=1 (diagnostic): hipEvents recorded after the input wait and before the output signal give the
     GPU span of one network enqueue; the previous frame's span and its CPU enqueue time are printed at the next Run. */
  Handle span_begin{},span_end{};bool span_probe{},span_pending{};double span_cpu{};
+ using Memcpy2DAsyncFn=int(*)(void*,size_t,const void*,size_t,size_t,size_t,int,Handle);Memcpy2DAsyncFn memcpy2d{};
+ Memcpy2DAsyncFn Memcpy2DAsync(){if(!memcpy2d&&!(memcpy2d=reinterpret_cast<Memcpy2DAsyncFn>(GetProcAddress(network->Runtime().dll,"hipMemcpy2DAsync"))))throw std::runtime_error("missing HIP export hipMemcpy2DAsync");return memcpy2d;}
  static void Check(HRESULT h,const char*what){if(FAILED(h))throw std::runtime_error(std::string(what)+" HRESULT="+std::to_string(unsigned(h)));}
  static void Barrier(ID3D12GraphicsCommandList*c,ID3D12Resource*r,D3D12_RESOURCE_STATES before,D3D12_RESOURCE_STATES after){if(before==after)return;D3D12_RESOURCE_BARRIER b{};b.Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;b.Transition={r,D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,before,after};c->ResourceBarrier(1,&b);}
  void Share(Shared&s,size_t bytes,bool uav=false){
@@ -71,7 +77,7 @@ public:
  ~D3D12Bridge(){
   if(!WaitForSubmittedWork())return;
   if(clear_cmd)clear_cmd->Release();if(clear_alloc)clear_alloc->Release();if(zero_upload)zero_upload->Release();
-  if(network){Release(input);Release(history);Release(output);if(semaphore)network->Runtime().hipDestroyExternalSemaphore(semaphore);delete network;}
+  if(network){Release(input);Release(history);Release(output);for(auto&s:pass_history)Release(s);for(auto&s:pass_output)Release(s);if(semaphore)network->Runtime().hipDestroyExternalSemaphore(semaphore);delete network;}
   if(fence_handle)CloseHandle(fence_handle);if(event)CloseHandle(event);if(fence)fence->Release();if(queue)queue->Release();if(device)device->Release();
  }
  void Create(ID3D12CommandQueue*q,Options options,const std::vector<float>&noise){
@@ -108,24 +114,33 @@ private:
   if(!c||c->GetType()!=queue->GetDesc().Type)throw std::runtime_error("bridge command list type mismatch");
   ID3D12Device*owner{};Check(c->GetDevice(IID_PPV_ARGS(&owner)),"command list device");bool same=NativeSameDevice(owner,device);owner->Release();if(!same)throw std::runtime_error("bridge command list device mismatch");
  }
- void RecordInput(ID3D12GraphicsCommandList*c,ID3D12Resource*rgba,ID3D12Resource*temporal,bool external){
-  Require(Phase::Ready);if(external&&network->GraphEnabled())throw std::runtime_error("staged bridge requires HIP graph off");ListContract(c);InputContract(rgba);if(temporal)InputContract(temporal);
-  phase=Phase::InputRecorded;recorded_temporal=temporal!=nullptr;
+ void RecordInput(ID3D12GraphicsCommandList*c,ID3D12Resource*rgba,ID3D12Resource*const*temporal,U count,U keep,bool external){
+  Require(Phase::Ready);if(external&&network->GraphEnabled())throw std::runtime_error("staged bridge requires HIP graph off");ListContract(c);InputContract(rgba);if(count>3||keep>2||keep>=count)throw std::runtime_error("bridge pass count");for(U k=0;k<count;k++)if(temporal[k])InputContract(temporal[k]);
+  phase=Phase::InputRecorded;histories=0;
   try{
    auto copy=[&](ID3D12Resource*src,Shared&dst){Barrier(c,src,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COPY_SOURCE);Barrier(c,dst.resource,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_DEST);c->CopyBufferRegion(dst.resource,0,src,0,pixels*16);Barrier(c,dst.resource,D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_COMMON);Barrier(c,src,D3D12_RESOURCE_STATE_COPY_SOURCE,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);};
-   copy(rgba,input);if(temporal)copy(temporal,history);if(readable)Barrier(c,output.resource,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON);readable=false;
+   copy(rgba,input);for(U k=0;k<count;k++)if(temporal[k]){copy(temporal[k],PassHistory(k));histories|=1u<<k;}
+   for(U k=0;k<keep;k++)if(!pass_output[k].resource)Share(pass_output[k],pixels*12,true);
+   if(readable){Barrier(c,output.resource,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON);for(U k=0;k<readable_kept;k++)Barrier(c,pass_output[k].resource,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_COMMON);}readable=false;kept=keep;
   }catch(...){failed=true;throw;}
  }
- void Enqueue(ID3D12CommandQueue*producer,U seed,bool temporal,bool external){
+ void Enqueue(ID3D12CommandQueue*producer,U seed,bool temporal,bool external,U passes=1){
   if(!network||failed)throw std::runtime_error("bridge unavailable");
   const bool output_recorded=phase==Phase::OutputRecordedPendingHip;
   if(phase!=Phase::InputRecorded&&!output_recorded)throw std::runtime_error("bridge stage order");
-  QueueContract(producer);if(temporal!=recorded_temporal)throw std::runtime_error("bridge temporal input mismatch");if(external&&network->GraphEnabled())throw std::runtime_error("staged bridge requires HIP graph off");
+  QueueContract(producer);if(temporal!=bool(histories&1u))throw std::runtime_error("bridge temporal input mismatch");if(external&&network->GraphEnabled())throw std::runtime_error("staged bridge requires HIP graph off");
   auto&api=network->Runtime();
   try{
    pending=true;Check(queue->Signal(fence,++value),"D3D input signal");hip_probe::WaitParams wait{};wait.params.fence.value=value;api.Check(api.hipWaitExternalSemaphoresAsync(&semaphore,&wait,1,network->Stream()),"HIP input wait");
    if(span_probe){if(span_pending){float ms=-1;int sync=api.hipEventSynchronize(span_end),status=api.hipEventElapsedTime(&ms,span_begin,span_end);fprintf(stderr,"hip_span gpu_ms=%.3f cpu_enqueue_ms=%.3f sync=%d status=%d\n",ms,span_cpu,sync,status);span_pending=false;}api.Check(api.hipEventRecord(span_begin,network->Stream()),"span begin");}
-   auto start=std::chrono::steady_clock::now();network->Enqueue(input.mapped,temporal?history.mapped:nullptr,output.mapped,seed);
+   auto start=std::chrono::steady_clock::now();
+   // Each extra pass runs the network on the previous output: its RGB rows go into the RGBA input, whose alpha stays.
+   for(U pass=0;pass<passes;pass++){
+    network->Enqueue(input.mapped,(histories>>pass&1)?PassHistory(pass).mapped:nullptr,output.mapped,seed);
+    if(pass+1==passes)break;
+    if(pass<kept)api.Check(api.hipMemcpyAsync(pass_output[pass].mapped,output.mapped,pixels*12,3,network->Stream()),"pass output");
+    api.Check(Memcpy2DAsync()(input.mapped,16,output.mapped,12,12,pixels,3,network->Stream()),"pass feedback");
+   }
    if(span_probe){span_cpu=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();api.Check(api.hipEventRecord(span_end,network->Stream()),"span end");span_pending=true;}
    hip_probe::SignalParams signal{};signal.params.fence.value=++value;api.Check(api.hipSignalExternalSemaphoresAsync(&semaphore,&signal,1,network->Stream()),"HIP output signal");Check(queue->Wait(fence,value),"D3D output wait");phase=output_recorded?Phase::OutputRecorded:Phase::HipQueued;
   }catch(...){failed=true;throw;}
@@ -147,14 +162,19 @@ public:
   try{api.Check(api.hipMemsetAsync(input.mapped,0,pixels*16,network->Stream()),"prepare input");network->Enqueue(input.mapped,nullptr,output.mapped,1);network->Synchronize();}
   catch(...){failed=true;throw;}
  }
- void RecordInputCopy(ID3D12GraphicsCommandList*c,ID3D12Resource*rgba,ID3D12Resource*temporal=nullptr){RecordInput(c,rgba,temporal,true);}
- void EnqueueAfterProducer(ID3D12CommandQueue*producer,U seed,bool temporal=false){Enqueue(producer,seed,temporal,true);}
+ void RecordInputCopy(ID3D12GraphicsCommandList*c,ID3D12Resource*rgba,ID3D12Resource*temporal=nullptr){RecordInput(c,rgba,&temporal,1,0,true);}
+ // Temporal passes: temporal[k] is pass k+1's warped history, or null when it has none this frame. Every pass but the
+ // last keeps its output for PassOutput, the source of the next frame's history.
+ void RecordPassInputCopy(ID3D12GraphicsCommandList*c,ID3D12Resource*rgba,ID3D12Resource*const*temporal,U passes){RecordInput(c,rgba,temporal,passes,passes-1,true);}
+ ID3D12Resource*PassOutput(U pass)const{return pass<kept?pass_output[pass].resource:output.resource;}
+ // temporal: whether pass 1 was given a history. passes: network runs, each on the previous output.
+ void EnqueueAfterProducer(ID3D12CommandQueue*producer,U seed,bool temporal=false,U passes=1){Enqueue(producer,seed,temporal,true,passes);}
  void RecordOutputReadable(ID3D12GraphicsCommandList*c){
   if(!network||failed)throw std::runtime_error("bridge unavailable");
   const bool before_enqueue=phase==Phase::InputRecorded;
   if(phase!=Phase::HipQueued&&!before_enqueue)throw std::runtime_error("bridge stage order");
   ListContract(c);
-  try{Barrier(c,output.resource,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);readable=true;phase=before_enqueue?Phase::OutputRecordedPendingHip:Phase::OutputRecorded;}catch(...){failed=true;throw;}
+  try{Barrier(c,output.resource,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);for(U k=0;k<kept;k++)Barrier(c,pass_output[k].resource,D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);readable=true;readable_kept=kept;phase=before_enqueue?Phase::OutputRecordedPendingHip:Phase::OutputRecorded;}catch(...){failed=true;throw;}
  }
  private:
  bool ClearOutputAsync() noexcept {
@@ -250,7 +270,7 @@ public:
  template<class Submission>void Run(Submission&submit,ID3D12Resource*rgba,ID3D12Resource*temporal,U seed){
   Require(Phase::Ready);QueueContract(submit.Queue());
   try{
-   submit.Submit([&](ID3D12GraphicsCommandList*c){RecordInput(c,rgba,temporal,false);});
+   submit.Submit([&](ID3D12GraphicsCommandList*c){RecordInput(c,rgba,&temporal,1,0,false);});
    Enqueue(submit.Queue(),seed,temporal!=nullptr,false);
    submit.Submit([&](ID3D12GraphicsCommandList*c){RecordOutputReadable(c);});
    NotifyOutputSubmitted(submit.Queue());

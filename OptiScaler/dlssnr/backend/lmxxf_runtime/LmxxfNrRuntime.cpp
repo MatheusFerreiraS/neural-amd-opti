@@ -11,6 +11,8 @@
 #include "native_game_rgb_input.h"
 #include "native_network_geometry.h"
 #include "native_rgb_texture.h"
+#include "native_temporal_feed.h"
+#include "native_temporal_sample.h"
 #include "hip_d3d12_bridge.h"
 
 #include <cstdio>
@@ -335,7 +337,115 @@ struct Job
     float transfer_strength = 1.0f;
     float color_strength = 1.0f;
     uint32_t debug_view = 0;
+    uint32_t passes = 1;
     bool codec_passthrough = false;
+    bool temporal = false;
+    UINT histories = 0; // bit k: pass k+1 was given a history this frame
+    float smoothThreshold = 0, smoothStrength = 0;
+    ID3D12Resource* motion = nullptr;
+    D3D12_RESOURCE_STATES motionState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    UINT motionWidth = 0, motionHeight = 0;
+    float motionScaleX = 0, motionScaleY = 0;
+};
+
+// Upstream's NativeOutputSmooth (native_game_frame.h, DLSS5_OUTPUT_SMOOTH), with buffers and parameters given per
+// frame.
+class OutputSmooth
+{
+    ID3D12RootSignature* root = nullptr;
+    ID3D12PipelineState* pso = nullptr;
+
+  public:
+    OutputSmooth() = default;
+    OutputSmooth(const OutputSmooth&) = delete;
+    ~OutputSmooth()
+    {
+        if (root)
+            root->Release();
+        if (pso)
+            pso->Release();
+    }
+    void Create(ID3D12Device* d, const std::wstring& dir)
+    {
+        D3D12_ROOT_PARAMETER p[3] {};
+        p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        p[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+        p[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        p[2].Constants = { 0, 0, 4 };
+        D3D12_ROOT_SIGNATURE_DESC rd {};
+        rd.NumParameters = 3;
+        rd.pParameters = p;
+        ID3DBlob *blob = nullptr, *error = nullptr;
+        HRESULT hr = D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error);
+        if (error)
+            error->Release();
+        if (SUCCEEDED(hr))
+            hr = d->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&root));
+        if (blob)
+            blob->Release();
+        if (FAILED(hr))
+            throw std::runtime_error("output smooth root");
+        blob = error = nullptr;
+        hr = CompileNativeShader(dir + L"\\native_output_smooth.hlsl", nullptr, "main", &blob, &error);
+        if (FAILED(hr))
+        {
+            const std::string m =
+                error ? std::string(static_cast<const char*>(error->GetBufferPointer()), error->GetBufferSize())
+                      : "output smooth compilation";
+            if (error)
+                error->Release();
+            throw std::runtime_error(m);
+        }
+        if (error)
+            error->Release();
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pd {};
+        pd.pRootSignature = root;
+        pd.CS = { blob->GetBufferPointer(), blob->GetBufferSize() };
+        hr = NativeCreateComputePipelineState(d, &pd, IID_PPV_ARGS(&pso));
+        blob->Release();
+        if (FAILED(hr))
+            throw std::runtime_error("output smooth pipeline");
+    }
+    // In place on rgb, the network's RGB output, which is readable before and after; warped must be readable.
+    void Record(ID3D12GraphicsCommandList* c, ID3D12Resource* rgb, ID3D12Resource* warped, float threshold,
+                float strength, UINT pixels)
+    {
+        UINT words[4] { 0, 0, pixels, 0 };
+        std::memcpy(words, &threshold, 4);
+        std::memcpy(words + 1, &strength, 4);
+        D3D12_RESOURCE_BARRIER b {};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition = { rgb, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+        c->ResourceBarrier(1, &b);
+        c->SetComputeRootSignature(root);
+        c->SetPipelineState(pso);
+        c->SetComputeRootShaderResourceView(0, warped->GetGPUVirtualAddress());
+        c->SetComputeRootUnorderedAccessView(1, rgb->GetGPUVirtualAddress());
+        c->SetComputeRoot32BitConstants(2, 4, words, 0);
+        c->Dispatch((pixels + 63) / 64, 1, 1);
+        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+        c->ResourceBarrier(1, &b);
+    }
+};
+
+// Per-pass history, as upstream's native_game_frame.h builds it for one pass: the game's motion vectors become
+// coordinates, and each pass's output from the previous frame is resampled at them before that pass reads it.
+struct TemporalChain
+{
+    NativeTemporalFeed feeds[3]; // feeds[0] also converts the motion vectors; the others only hold history
+    NativeTemporalCoordinates coordinates;
+    NativeTemporalSample samplers[3];
+    OutputSmooth smooth; // on the last pass's output, toward its warped history
+    UINT passesReady = 0;
+    bool valid[3] {}; // pass k's history holds its output from the previous frame
+    UINT motionTextureWidth = 0, motionTextureHeight = 0, motionWidth = 0, motionHeight = 0;
+    float scaleX = 0, scaleY = 0;
+    void Invalidate()
+    {
+        for (auto& v : valid)
+            v = false;
+    }
 };
 
 struct Session
@@ -359,6 +469,10 @@ struct Session
     NativeRgbTexture* rgbTex = nullptr;
     NativeGameCodec* decode = nullptr;
     ID3D12Resource* decodeDisplay = nullptr;
+    TemporalChain* temporal = nullptr;
+    std::string temporalError; // why the chain could not be built; frames then run without history
+    uint64_t lastFrameId = 0;
+    ULONGLONG lastFrameTick = 0;
     Job job {};
     DXGI_FORMAT colorFormat = DXGI_FORMAT_UNKNOWN;
 
@@ -385,6 +499,8 @@ struct Session
         delete bridge;
         bridge = nullptr;
         hipPrepared = false;
+        delete temporal;
+        temporal = nullptr;
         if (decodeDisplay)
         {
             decodeDisplay->Release();
@@ -469,6 +585,7 @@ struct Session
     {
         // Fail-closed intentional leak: GPU may still reference the whole chain.
         bridge = nullptr;
+        temporal = nullptr;
         decodeDisplay = nullptr;
         decode = nullptr;
         rgbTex = nullptr;
@@ -519,6 +636,8 @@ struct Session
         // Bridge dtor also synchronizes HIP / pending fence, then frees shared buffers.
         delete bridge;
         bridge = nullptr;
+        delete temporal;
+        temporal = nullptr;
         if (decodeDisplay)
         {
             decodeDisplay->Release();
@@ -582,6 +701,79 @@ void QueueContract(Session* s, ID3D12CommandQueue* q)
     }
     if (s->queue && !NativeSameDevice(q, s->queue))
         throw std::runtime_error("command queue does not match session queue");
+}
+
+// Builds or rebuilds the chain for this frame's motion vectors and creates the passes it lacks. Geometry and transform
+// follow upstream's native_game_frame.h, with the motion extent in the place of its render size.
+void EnsureTemporal(Session* s, const Job& j)
+{
+    const D3D12_RESOURCE_DESC md = j.motion->GetDesc();
+    if (md.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D)
+        throw std::runtime_error("motion vectors are not a 2D texture");
+    const UINT gridW = j.motionWidth ? j.motionWidth : j.width, gridH = j.motionHeight ? j.motionHeight : j.height;
+    TemporalChain* t = s->temporal;
+    if (t &&
+        (t->motionTextureWidth != UINT(md.Width) || t->motionTextureHeight != md.Height || t->motionWidth != gridW ||
+         t->motionHeight != gridH || t->scaleX != j.motionScaleX || t->scaleY != j.motionScaleY))
+    {
+        if (FAILED(s->DrainGpu()))
+            throw std::runtime_error("temporal rebuild: GPU drain failed");
+        delete t;
+        s->temporal = t = nullptr;
+    }
+    if (!_wgetenv(L"DLSS5_FAST_TEMPORAL"))
+        _wputenv(L"DLSS5_FAST_TEMPORAL=1");
+    const auto fit = s->encode->Geometry();
+    const auto ng = NativeCurrentNetworkGeometry();
+    const bool fresh = !t;
+    if (fresh)
+        t = new TemporalChain();
+    try
+    {
+        if (fresh)
+        {
+            // Raster value * scale = pixels of the motion extent; * fit / extent = pixels of the network surface.
+            const float sx = j.motionScaleX * float(fit.fit_width) / float(gridW);
+            const float sy = j.motionScaleY * float(fit.fit_height) / float(gridH);
+            t->feeds[0].Create(s->device, UINT(md.Width), md.Height, sx, sy, s->shaderDir);
+            const float rx = float(gridW) / float(fit.fit_width), ry = float(gridH) / float(fit.fit_height);
+            const float transform[6] = { -float(fit.x) * rx,
+                                         -float(fit.y) * ry,
+                                         fit.Adapted() ? float(ng.valid_width) * rx : float(gridW),
+                                         fit.Adapted() ? float(ng.valid_height) * ry : float(gridH),
+                                         1.f / float(ng.valid_width),
+                                         1.f / float(ng.valid_height) };
+            const float viewport[4] = { float(fit.x), float(fit.y), float(fit.fit_width), float(fit.fit_height) };
+            t->coordinates.Create(s->device, t->feeds[0].Motion(), ng.valid_width, ng.valid_height, ng.processing_width,
+                                  ng.processing_height, UINT(md.Width), md.Height, transform, s->shaderDir, true,
+                                  fit.Adapted() ? viewport : nullptr);
+            t->smooth.Create(s->device, s->shaderDir);
+            t->motionTextureWidth = UINT(md.Width);
+            t->motionTextureHeight = md.Height;
+            t->motionWidth = gridW;
+            t->motionHeight = gridH;
+            t->scaleX = j.motionScaleX;
+            t->scaleY = j.motionScaleY;
+        }
+        for (; t->passesReady < j.passes; ++t->passesReady)
+        {
+            const UINT k = t->passesReady;
+            if (k)
+                t->feeds[k].Create(s->device, 1, 1, 0.f, 0.f, s->shaderDir); // history only, motion never recorded
+            t->samplers[k].Create(s->device, t->feeds[k].History(), t->coordinates.Output(), ng.valid_width,
+                                  ng.valid_height, ng.processing_width * ng.processing_height, s->shaderDir, true);
+        }
+    }
+    catch (...)
+    {
+        // A fresh chain never reached the GPU. A live one may still be read by it, so it is leaked, as the
+        // session's fail-closed teardown does.
+        if (fresh)
+            delete t;
+        s->temporal = nullptr;
+        throw;
+    }
+    s->temporal = t;
 }
 
 template <class Fn> int32_t Guard(Fn&& fn)
@@ -764,7 +956,12 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 return Fail(LMXXF_NR_INVALID_ARGUMENT, "PrepareFrame: null argument");
             RequireSession(session);
             const uint32_t legacySize = 64;
-            if ((info->struct_size != sizeof(LmxxfNrFrameInfo) && info->struct_size != legacySize) ||
+            const uint32_t noPassesSize = offsetof(LmxxfNrFrameInfo, passes);
+            const uint32_t noTemporalSize = offsetof(LmxxfNrFrameInfo, motion);
+            const uint32_t noSmoothSize = offsetof(LmxxfNrFrameInfo, smooth_threshold);
+            if ((info->struct_size != sizeof(LmxxfNrFrameInfo) && info->struct_size != noSmoothSize &&
+                 info->struct_size != noTemporalSize && info->struct_size != noPassesSize &&
+                 info->struct_size != legacySize) ||
                 job->struct_size != sizeof(LmxxfNrJob))
                 return Fail(LMXXF_NR_INVALID_ARGUMENT, "PrepareFrame: struct_size mismatch");
             job->handle = nullptr;
@@ -791,8 +988,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                     return Fail(LMXXF_NR_UNAVAILABLE,
                                 "PrepareFrame: previous frame consumer not yet submitted (bridge not Ready)");
             }
-            const uint32_t allowedFlags =
-                LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW | LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH;
+            const uint32_t allowedFlags = LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW |
+                                          LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH | LMXXF_NR_FRAME_FLAG_TEMPORAL;
             if ((info->flags & ~allowedFlags) != 0)
                 return Fail(LMXXF_NR_INVALID_ARGUMENT, "PrepareFrame: unknown flags");
             if (session->shaderDir.empty())
@@ -804,7 +1001,14 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             float color_strength = 1.0f;
             uint32_t debug_view = 0;
             float model_scale = 1.0f;
-            if (info->struct_size >= sizeof(LmxxfNrFrameInfo))
+            uint32_t passes = 1;
+            if (info->struct_size >= noTemporalSize)
+                passes = std::clamp(info->passes, 1u, 3u);
+            const bool temporal = info->struct_size >= noSmoothSize && (info->flags & LMXXF_NR_FRAME_FLAG_TEMPORAL) &&
+                                  info->motion && !(info->flags & LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH);
+            const bool smooth = temporal && info->struct_size >= sizeof(LmxxfNrFrameInfo) &&
+                                info->smooth_threshold > 0.f && info->smooth_strength > 0.f;
+            if (info->struct_size >= noPassesSize)
             {
                 if (info->flags & LMXXF_NR_FRAME_FLAG_STRENGTH)
                 {
@@ -985,9 +1189,50 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             session->job.transfer_strength = transfer_strength;
             session->job.color_strength = color_strength;
             session->job.debug_view = debug_view;
+            session->job.passes = passes;
             session->job.codec_passthrough = (info->flags & LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH) != 0;
             session->colorFormat = cfmt;
             session->job.seed = 1;
+
+            // History is one frame old only when this frame directly follows the last one prepared.
+            const ULONGLONG now = GetTickCount64();
+            const bool continuous = info->frame_id == session->lastFrameId + 1 && now - session->lastFrameTick < 250;
+            session->lastFrameId = info->frame_id;
+            session->lastFrameTick = now;
+            if (temporal && session->temporalError.empty())
+            {
+                session->job.temporal = true;
+                session->job.motion = static_cast<ID3D12Resource*>(info->motion);
+                session->job.motionState = static_cast<D3D12_RESOURCE_STATES>(info->motion_state);
+                session->job.motionWidth = info->motion_width;
+                session->job.motionHeight = info->motion_height;
+                session->job.motionScaleX = info->motion_scale_x;
+                session->job.motionScaleY = info->motion_scale_y;
+                if (smooth)
+                {
+                    session->job.smoothThreshold = std::min(info->smooth_threshold, 1.f);
+                    session->job.smoothStrength = std::min(info->smooth_strength, 1.f);
+                }
+                try
+                {
+                    EnsureTemporal(session, session->job);
+                }
+                catch (const std::exception& ex)
+                {
+                    session->temporalError = ex.what();
+                    session->job.temporal = false;
+                    OutputDebugStringA(("lmxxf: temporal history off: " + session->temporalError + "\n").c_str());
+                }
+            }
+            else if (session->temporal)
+            {
+                if (FAILED(session->DrainGpu()))
+                    return Fail(LMXXF_NR_UNAVAILABLE, "PrepareFrame: temporal off; GPU drain failed");
+                delete session->temporal;
+                session->temporal = nullptr;
+            }
+            if (session->temporal && (info->reset || !continuous))
+                session->temporal->Invalidate();
             session->job.state = LMXXF_NR_JOB_PREPARED;
             job->handle = &session->job;
             if (!session->decode)
@@ -1002,53 +1247,86 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
 int32_t RecordInputs(void* context, void* job, void* command_list)
 {
     auto* session = static_cast<Session*>(context);
-    return GuardSession(session,
-                        [&]
-                        {
-                            if (!session)
-                                return Fail(LMXXF_NR_INVALID_ARGUMENT, "RecordInputs: null context");
-                            if (!session->hipPrepared)
-                                return Fail(LMXXF_NR_NOT_IMPLEMENTED, "RecordInputs is not wired (HIP/codec next)");
-                            RequireSession(session);
-                            auto* list = static_cast<ID3D12GraphicsCommandList*>(command_list);
-                            auto* j = static_cast<Job*>(job ? job : &session->job);
-                            if (!list || !j)
-                                return Fail(LMXXF_NR_INVALID_ARGUMENT, "RecordInputs: need job and command list");
-                            if (j->state != LMXXF_NR_JOB_PREPARED)
-                                return Fail(LMXXF_NR_INVALID_ARGUMENT, "RecordInputs: job not in PREPARED state");
-                            ListContract(session, list);
+    return GuardSession(
+        session,
+        [&]
+        {
+            if (!session)
+                return Fail(LMXXF_NR_INVALID_ARGUMENT, "RecordInputs: null context");
+            if (!session->hipPrepared)
+                return Fail(LMXXF_NR_NOT_IMPLEMENTED, "RecordInputs is not wired (HIP/codec next)");
+            RequireSession(session);
+            auto* list = static_cast<ID3D12GraphicsCommandList*>(command_list);
+            auto* j = static_cast<Job*>(job ? job : &session->job);
+            if (!list || !j)
+                return Fail(LMXXF_NR_INVALID_ARGUMENT, "RecordInputs: need job and command list");
+            if (j->state != LMXXF_NR_JOB_PREPARED)
+                return Fail(LMXXF_NR_INVALID_ARGUMENT, "RecordInputs: job not in PREPARED state");
+            ListContract(session, list);
 
-                            session->encode->Record(list, { j->colorState }, 1.f);
-                            if (j->codec_passthrough)
-                            {
-                                // Bypass HIP: Copy encoder output directly to rgbTex output so decoder receives it as
-                                // neural input.
-                                ID3D12Resource* src = session->encode->Output();
-                                ID3D12Resource* dst = session->rgbTex->Output();
-                                D3D12_RESOURCE_BARRIER barriers[2] {};
-                                barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                                barriers[0].Transition = { src, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                                                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                                           D3D12_RESOURCE_STATE_COPY_SOURCE };
-                                barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                                barriers[1].Transition = { dst, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                                                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                                           D3D12_RESOURCE_STATE_COPY_DEST };
-                                list->ResourceBarrier(2, barriers);
-                                list->CopyResource(dst, src);
-                                std::swap(barriers[0].Transition.StateBefore, barriers[0].Transition.StateAfter);
-                                std::swap(barriers[1].Transition.StateBefore, barriers[1].Transition.StateAfter);
-                                list->ResourceBarrier(2, barriers);
-                                j->state = LMXXF_NR_JOB_PRODUCER_SUBMITTED;
-                                SetError("");
-                                return static_cast<int32_t>(LMXXF_NR_OK);
-                            }
-                            session->rgbInput->Record(list, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                            session->bridge->RecordInputCopy(list, session->rgbInput->PostBase(), nullptr);
-                            j->state = LMXXF_NR_JOB_PRODUCER_SUBMITTED;
-                            SetError("");
-                            return static_cast<int32_t>(LMXXF_NR_OK);
-                        });
+            session->encode->Record(list, { j->colorState }, 1.f);
+            if (j->codec_passthrough)
+            {
+                // Bypass HIP: Copy encoder output directly to rgbTex output so decoder receives it as
+                // neural input.
+                ID3D12Resource* src = session->encode->Output();
+                ID3D12Resource* dst = session->rgbTex->Output();
+                D3D12_RESOURCE_BARRIER barriers[2] {};
+                barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barriers[0].Transition = { src, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                           D3D12_RESOURCE_STATE_COPY_SOURCE };
+                barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barriers[1].Transition = { dst, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                           D3D12_RESOURCE_STATE_COPY_DEST };
+                list->ResourceBarrier(2, barriers);
+                list->CopyResource(dst, src);
+                std::swap(barriers[0].Transition.StateBefore, barriers[0].Transition.StateAfter);
+                std::swap(barriers[1].Transition.StateBefore, barriers[1].Transition.StateAfter);
+                list->ResourceBarrier(2, barriers);
+                j->state = LMXXF_NR_JOB_PRODUCER_SUBMITTED;
+                SetError("");
+                return static_cast<int32_t>(LMXXF_NR_OK);
+            }
+            session->rgbInput->Record(list, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            j->histories = 0;
+            if (auto* t = j->temporal ? session->temporal : nullptr)
+            {
+                const D3D12_RESOURCE_STATES readable = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                D3D12_RESOURCE_BARRIER motionBarrier {};
+                motionBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                motionBarrier.Transition = { j->motion, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, j->motionState,
+                                             readable };
+                const bool moveMotion = !(j->motionState & readable);
+                if (moveMotion)
+                    list->ResourceBarrier(1, &motionBarrier);
+                t->feeds[0].RecordMotion(list, j->motion);
+                if (moveMotion)
+                {
+                    std::swap(motionBarrier.Transition.StateBefore, motionBarrier.Transition.StateAfter);
+                    list->ResourceBarrier(1, &motionBarrier);
+                }
+                t->coordinates.Record(list);
+                ID3D12Resource* histories[3] {};
+                for (UINT k = 0; k < j->passes; ++k)
+                {
+                    if (!t->valid[k])
+                        continue;
+                    t->samplers[k].Record(list);
+                    histories[k] = t->samplers[k].Output();
+                    j->histories |= 1u << k;
+                }
+                session->bridge->RecordPassInputCopy(list, session->rgbInput->PostBase(), histories, j->passes);
+            }
+            else
+            {
+                session->bridge->RecordInputCopy(list, session->rgbInput->PostBase(), nullptr);
+            }
+            j->state = LMXXF_NR_JOB_PRODUCER_SUBMITTED;
+            SetError("");
+            return static_cast<int32_t>(LMXXF_NR_OK);
+        });
 }
 
 int32_t EnqueueHip(void* context, void* job, void* command_queue)
@@ -1102,6 +1380,8 @@ int32_t EnqueueHip(void* context, void* job, void* command_queue)
                                 "EnqueueHip: producer or old session queue did not drain before fallback clear");
                 }
                 // A zero neural output makes the decode shader use original Color.
+                if (session->temporal)
+                    session->temporal->Invalidate();
                 const bool cleared = session->bridge && session->bridge->ClearOutput(targetQueue);
                 if (cleared)
                 {
@@ -1123,7 +1403,7 @@ int32_t EnqueueHip(void* context, void* job, void* command_queue)
             QueueContract(session, targetQueue);
             try
             {
-                session->bridge->EnqueueAfterProducer(targetQueue, j->seed, false);
+                session->bridge->EnqueueAfterProducer(targetQueue, j->seed, (j->histories & 1u) != 0, j->passes);
                 if (j->state == LMXXF_NR_JOB_PRODUCER_SUBMITTED)
                     j->state = LMXXF_NR_JOB_NR_COMPLETE;
                 SetError("");
@@ -1133,6 +1413,8 @@ int32_t EnqueueHip(void* context, void* job, void* command_queue)
             {
                 if (!session->zeroOutputFallback)
                     throw;
+                if (session->temporal)
+                    session->temporal->Invalidate();
                 const bool cleared = session->bridge && session->bridge->ClearOutput(targetQueue);
                 if (cleared)
                 {
@@ -1160,77 +1442,98 @@ int32_t EnqueueHip(void* context, void* job, void* command_queue)
 int32_t RecordOutputs(void* context, void* job, void* command_list)
 {
     auto* session = static_cast<Session*>(context);
-    return GuardSession(session,
-                        [&]
-                        {
-                            if (!session)
-                                return Fail(LMXXF_NR_INVALID_ARGUMENT, "RecordOutputs: null context");
-                            if (!session->hipPrepared)
-                                return Fail(LMXXF_NR_NOT_IMPLEMENTED, "RecordOutputs is not wired (HIP/codec next)");
-                            RequireSession(session);
-                            auto* list = static_cast<ID3D12GraphicsCommandList*>(command_list);
-                            auto* j = static_cast<Job*>(job ? job : &session->job);
-                            if (!list || !j)
-                                return Fail(LMXXF_NR_INVALID_ARGUMENT, "RecordOutputs: need job and command list");
-                            if (j->state != LMXXF_NR_JOB_NR_COMPLETE && j->state != LMXXF_NR_JOB_PRODUCER_SUBMITTED)
-                                return Fail(LMXXF_NR_INVALID_ARGUMENT,
-                                            "RecordOutputs: job not in NR_COMPLETE or PRODUCER_SUBMITTED state");
-                            ListContract(session, list);
+    return GuardSession(
+        session,
+        [&]
+        {
+            if (!session)
+                return Fail(LMXXF_NR_INVALID_ARGUMENT, "RecordOutputs: null context");
+            if (!session->hipPrepared)
+                return Fail(LMXXF_NR_NOT_IMPLEMENTED, "RecordOutputs is not wired (HIP/codec next)");
+            RequireSession(session);
+            auto* list = static_cast<ID3D12GraphicsCommandList*>(command_list);
+            auto* j = static_cast<Job*>(job ? job : &session->job);
+            if (!list || !j)
+                return Fail(LMXXF_NR_INVALID_ARGUMENT, "RecordOutputs: need job and command list");
+            if (j->state != LMXXF_NR_JOB_NR_COMPLETE && j->state != LMXXF_NR_JOB_PRODUCER_SUBMITTED)
+                return Fail(LMXXF_NR_INVALID_ARGUMENT,
+                            "RecordOutputs: job not in NR_COMPLETE or PRODUCER_SUBMITTED state");
+            ListContract(session, list);
 
-                            if (!j->codec_passthrough)
-                            {
-                                session->bridge->RecordOutputReadable(list);
-                                session->rgbTex->Record(list);
-                            }
-                            if (!session->decode)
-                                return Fail(LMXXF_NR_FAILED, "RecordOutputs: decode missing");
-                            NativeCodecParameters codecParams;
-                            codecParams.transfer_strength = j->transfer_strength;
-                            codecParams.color_strength = j->color_strength;
-                            codecParams.debug_view = static_cast<NativeCodecDebugView>(j->debug_view);
-                            session->decode->Record(list,
-                                                    { D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                                      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, j->colorState },
-                                                    1.f, codecParams);
-                            if (session->decode->BufferOutput())
-                            {
-                                if (!session->decodeDisplay)
-                                    return Fail(LMXXF_NR_FAILED, "RecordOutputs: decode display missing");
-                                ID3D12Resource* src = session->decode->Output();
-                                ID3D12Resource* dst = session->decodeDisplay;
-                                D3D12_RESOURCE_BARRIER barriers[2] {};
-                                barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                                barriers[0].Transition = { src, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                                                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                                           D3D12_RESOURCE_STATE_COPY_SOURCE };
-                                barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                                barriers[1].Transition = { dst, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                                                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                                           D3D12_RESOURCE_STATE_COPY_DEST };
-                                list->ResourceBarrier(2, barriers);
-                                D3D12_TEXTURE_COPY_LOCATION dstLoc {};
-                                dstLoc.pResource = dst;
-                                dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                                D3D12_TEXTURE_COPY_LOCATION srcLoc {};
-                                srcLoc.pResource = src;
-                                srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-                                const auto& geo = session->decode->Geometry();
-                                const DXGI_FORMAT fmt = NativeViewFormat(dst->GetDesc().Format);
-                                const bool bytes4 = NativeIsRgba8Unorm(fmt) || NativeIsR11G11B10(fmt);
-                                srcLoc.PlacedFootprint.Footprint.Format = fmt;
-                                srcLoc.PlacedFootprint.Footprint.Width = geo.width;
-                                srcLoc.PlacedFootprint.Footprint.Height = geo.height;
-                                srcLoc.PlacedFootprint.Footprint.Depth = 1;
-                                srcLoc.PlacedFootprint.Footprint.RowPitch = geo.RowPitch(bytes4 ? 4u : 8u);
-                                list->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
-                                std::swap(barriers[0].Transition.StateBefore, barriers[0].Transition.StateAfter);
-                                std::swap(barriers[1].Transition.StateBefore, barriers[1].Transition.StateAfter);
-                                list->ResourceBarrier(2, barriers);
-                            }
-                            j->state = LMXXF_NR_JOB_CONSUMER_COMPLETE;
-                            SetError("");
-                            return static_cast<int32_t>(LMXXF_NR_OK);
-                        });
+            if (!j->codec_passthrough)
+            {
+                session->bridge->RecordOutputReadable(list);
+                // Before the output is shown or becomes history, so the blend is recursive.
+                const UINT last = j->passes - 1;
+                if (j->temporal && session->temporal && j->smoothStrength > 0.f && (j->histories >> last & 1u))
+                {
+                    const auto ng = NativeCurrentNetworkGeometry();
+                    session->temporal->smooth.Record(list, session->bridge->Output(),
+                                                     session->temporal->samplers[last].Output(), j->smoothThreshold,
+                                                     j->smoothStrength, ng.valid_width * ng.valid_height);
+                }
+                session->rgbTex->Record(list);
+            }
+            if (auto* t = j->temporal ? session->temporal : nullptr)
+            {
+                for (UINT k = 0; k < 3; ++k)
+                {
+                    t->valid[k] = k < j->passes;
+                    if (!t->valid[k])
+                        continue;
+                    t->feeds[k].BindNetworkOutput(session->bridge->PassOutput(k));
+                    t->feeds[k].RecordHistory(list);
+                }
+            }
+            if (!session->decode)
+                return Fail(LMXXF_NR_FAILED, "RecordOutputs: decode missing");
+            NativeCodecParameters codecParams;
+            codecParams.transfer_strength = j->transfer_strength;
+            codecParams.color_strength = j->color_strength;
+            codecParams.debug_view = static_cast<NativeCodecDebugView>(j->debug_view);
+            session->decode->Record(list,
+                                    { D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, j->colorState },
+                                    1.f, codecParams);
+            if (session->decode->BufferOutput())
+            {
+                if (!session->decodeDisplay)
+                    return Fail(LMXXF_NR_FAILED, "RecordOutputs: decode display missing");
+                ID3D12Resource* src = session->decode->Output();
+                ID3D12Resource* dst = session->decodeDisplay;
+                D3D12_RESOURCE_BARRIER barriers[2] {};
+                barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barriers[0].Transition = { src, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                           D3D12_RESOURCE_STATE_COPY_SOURCE };
+                barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barriers[1].Transition = { dst, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                           D3D12_RESOURCE_STATE_COPY_DEST };
+                list->ResourceBarrier(2, barriers);
+                D3D12_TEXTURE_COPY_LOCATION dstLoc {};
+                dstLoc.pResource = dst;
+                dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                D3D12_TEXTURE_COPY_LOCATION srcLoc {};
+                srcLoc.pResource = src;
+                srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                const auto& geo = session->decode->Geometry();
+                const DXGI_FORMAT fmt = NativeViewFormat(dst->GetDesc().Format);
+                const bool bytes4 = NativeIsRgba8Unorm(fmt) || NativeIsR11G11B10(fmt);
+                srcLoc.PlacedFootprint.Footprint.Format = fmt;
+                srcLoc.PlacedFootprint.Footprint.Width = geo.width;
+                srcLoc.PlacedFootprint.Footprint.Height = geo.height;
+                srcLoc.PlacedFootprint.Footprint.Depth = 1;
+                srcLoc.PlacedFootprint.Footprint.RowPitch = geo.RowPitch(bytes4 ? 4u : 8u);
+                list->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+                std::swap(barriers[0].Transition.StateBefore, barriers[0].Transition.StateAfter);
+                std::swap(barriers[1].Transition.StateBefore, barriers[1].Transition.StateAfter);
+                list->ResourceBarrier(2, barriers);
+            }
+            j->state = LMXXF_NR_JOB_CONSUMER_COMPLETE;
+            SetError("");
+            return static_cast<int32_t>(LMXXF_NR_OK);
+        });
 }
 
 int32_t ExecuteAfterProducer(void* context, void* job, void* command_queue)
@@ -1251,6 +1554,8 @@ int32_t CancelUnsubmitted(void* context, void* job)
                                 j->state = LMXXF_NR_JOB_RETIRED;
                             if (session->bridge)
                                 session->bridge->CancelUnsubmitted();
+                            if (session->temporal)
+                                session->temporal->Invalidate();
                             SetError("");
                             return static_cast<int32_t>(LMXXF_NR_OK);
                         });
@@ -1295,6 +1600,8 @@ int32_t ResetHistory(void* context)
                         {
                             if (!session)
                                 return Fail(LMXXF_NR_INVALID_ARGUMENT, "null context");
+                            if (session->temporal)
+                                session->temporal->Invalidate();
                             SetError("");
                             return static_cast<int32_t>(LMXXF_NR_OK);
                         });
@@ -1333,9 +1640,13 @@ int32_t GetStatus(void* context, char* buf, uint32_t buf_chars)
             else if (session->hipPrepared && NativeNetworkGeometryResolved())
             {
                 auto geo = NativeCurrentNetworkGeometry();
-                std::snprintf(text, sizeof text, "lmxxf modules_ok=%u hip=1 net=%ux%u color_job=%ux%u weights=%u",
+                std::snprintf(text, sizeof text,
+                              "lmxxf modules_ok=%u hip=1 net=%ux%u color_job=%ux%u weights=%u temporal=%s",
                               static_cast<unsigned>(session->hsacoCount), geo.valid_width, geo.valid_height,
-                              session->job.width, session->job.height, session->weightsDir.empty() ? 0u : 1u);
+                              session->job.width, session->job.height, session->weightsDir.empty() ? 0u : 1u,
+                              session->temporal                ? "on"
+                              : session->temporalError.empty() ? "off"
+                                                               : session->temporalError.c_str());
             }
             else
             {

@@ -18,7 +18,7 @@ next launch) or `NrBackend` in `OptiScaler.ini`.
 | Weights | `dlssnr_on_amd_weights.bin` | `native-game-tiled-assets\` |
 | GPUs | RDNA3 and RDNA4 with HIP 7 | RDNA4 (gfx1201 modules) |
 | Where it runs | Before Super Resolution, or on the finished frame (the only choice for Ray Reconstruction titles) | Before Super Resolution, render resolution up to 1080p |
-| Controls | Passes 1-3, NR slots, wait mode, encoding (sRGB default), NR resolution with dynamic scaling, effect strength, lighting and structure | Detail and colour strength, debug view |
+| Controls | Passes 1-3, NR slots, wait mode, encoding (sRGB default), NR resolution with dynamic scaling, effect strength, lighting and structure | Passes 1-3, temporal history and smoothing, detail and colour strength, debug view |
 
 Neither runtime's weights are included; both are derived from NVIDIA's model.
 
@@ -67,6 +67,8 @@ All in `OptiScaler.ini`, section `[DlssNr]`, and in the **Neural** tab of the ov
 | `AmdSlots`, `AmdGraphicsWait` | Frames in flight and wait mode (danielblnc) |
 | `AmdDynamicScale`, `AmdDynamicTargetFps` | Lower the NR resolution while under the target frame rate |
 | `LmxxfFitLarge` | Let lmxxf take a render resolution above 1080p (can hitch; off by default) |
+| `LmxxfTemporal` | Each lmxxf pass reads its own result from the previous frame, moved by the game's motion vectors (on by default) |
+| `LmxxfSmoothStrength`, `LmxxfSmoothThreshold` | With temporal history, blend the result toward the previous frame's where they differ by less than the threshold (in 1/255): 0.8 and 10 by default, strength 0 is off |
 
 Multi frame generation reads `[XeFG]`: `InterpolationCount` (`auto` follows the game, 1 to 7 is
 2X to 8X), `UnlockMFG`, `MaxInterpolatedFrames` (default 7) and `ExtraPacing`.

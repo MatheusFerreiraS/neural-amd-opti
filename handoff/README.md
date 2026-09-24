@@ -453,6 +453,63 @@ already there. `XeFGProxy::PointXeLLLookupAtOurs` replaces that import in our `l
 lookup that returns OptiScaler's `libxell`. Tested in Cyberpunk: 2X to 8X switched live, Auto
 followed the game. Above 4X it needs VSync or a frame rate cap.
 
+### After 0.2.0
+
+**lmxxf multipass.** `[DlssNr] Passes` (1 to 3, the key the danielblnc runtime already reads)
+now reaches lmxxf through `LmxxfNrFrameInfo::passes`, and the lmxxf block of the menu has its own
+Passes slider. The extra passes stay inside the HIP work between the two halves of the game's
+list: `D3D12Bridge::Enqueue` runs the network, copies its RGB output into the RGBA input
+(`hipMemcpy2DAsync`, 12 to 16 bytes per pixel, alpha kept) and runs it again. The D3D12 side is
+unchanged: one cut, one fence wait, one decode. Decode compares the last output with the original
+proxy, so the effect compounds. The network keeps no state between calls in the product (no
+history, fixed seed, adaptive ViT off), which is why one session serves every pass where
+danielblnc needs one module per pass.
+
+Measured with a scratch harness on the development RX 9070 XT, 1920x1080 input (1080p network
+tier), after the first ~20 frames of GPU warm-up: HIP span 18.5 ms for 1 pass, 36.5 ms for 2,
+55 ms for 3. The copy between passes does not show in the numbers. The output moved by a mean of
+0.009 (max 0.08) from 1 to 2 passes and about the same from 2 to 3. The runtime still accepts a
+`LmxxfNrFrameInfo` without the field (80 bytes) and the 64-byte legacy one.
+
+**lmxxf temporal history per pass.** With several passes the residual flickered in motion: the
+product ran lmxxf without history, so each frame's answer stood alone and every extra pass fed that
+variation back in. `[DlssNr] LmxxfTemporal` (default on, "Temporal history" in the menu) gives each
+pass its own output from the previous frame, warped by the game's motion vectors, as the network's
+history input. It is upstream's own temporal path (`src/native_temporal_{feed,coordinates,sample}.h`,
+now vendored, fast variant), which upstream runs for one pass in its game host; the runtime keeps
+one feed and sampler per pass, and the bridge keeps every pass's output for the next frame. The
+motion vectors, their scale (NGX = FFX convention) and the reset flag cross the ABI in
+`LmxxfNrFrameInfo`; history is dropped on reset, on a frame without NR (the host counts every
+Evaluate in `frame_id`), after 250 ms without a frame, on a zeroed output and on a geometry change.
+
+Measured with the scratch harness (1080p tier, residual = output minus input, mean change from one
+frame to the next): with a quarter-pixel jitter on a still image, 0.0101 to 0.0082 at 1 pass,
+0.0131 to 0.0106 at 2, 0.0130 to 0.0118 at 3. Panning 2 px per frame: 0.0074 to 0.0069 at 1 pass,
+about even at 2 and 3; flipping the vectors' sign made it 17 to 45% worse, which confirms the sign
+and scale. On a still image without jitter the history loop itself moves the residual by about
+0.004 per frame, which is what upstream's `DLSS5_OUTPUT_SMOOTH` is for (below). In Cyberpunk the
+history alone already made the effect visibly steadier, one pass included. Cost at the 1080p tier: about 0.5 to 1.5 ms per frame; VRAM of about 70 MB per pass for
+the history and its warp, 60 MB more for each pass after the first (its bridge copy and the kept
+output), and 50 MB for the motion and coordinate buffers.
+
+**lmxxf output smoothing.** Upstream's `DLSS5_OUTPUT_SMOOTH` (`native_output_smooth.hlsl`, the
+host class `OutputSmooth` in `LmxxfNrRuntime.cpp`): where the last pass's output differs from its
+warped history by less than the threshold, it is blended toward it, by the strength at no
+difference. It runs in the consumer half before the output is shown or kept as history, so the
+blend is recursive, as upstream has it. `[DlssNr] LmxxfSmoothStrength` (default 0.8, 0 off) and
+`LmxxfSmoothThreshold` (default 10, in 1/255) are upstream's production values; both reach the
+runtime in `LmxxfNrFrameInfo` and apply live. Only the last pass is smoothed: the passes before it
+feed each other inside one HIP enqueue, where there is no D3D12 work. Same harness, threshold 10,
+strength 0.8, frame-to-frame residual change: still image 0.0043 to 0.0009, panning 0.0069 to
+0.0020 at 1 pass and 0.0097 to 0.0036 at 3, quarter-pixel jitter 0.0083 to 0.0070 at 1 pass and
+0.0120 to 0.0094 at 3. The residual's size stays the same, and the cost does not show.
+
+**Neural tab in sections.** With an AMD runtime the tab keeps Enable NR, the runtime and the neural
+pass meter at the top, then one column of titled sections: for danielblnc Processing (placement,
+resolution, dynamic resolution), Scheduling (temporal stabilization, slots, wait mode), Effect and
+Colour (grade, encoding, the appearance filter and the RTGI experiment); for lmxxf Temporal, Effect
+and Inspect. A two-column version was tried and dropped. The NVIDIA-chain page is unchanged.
+
 ---
 
 ## 6. Diagnostics playbook

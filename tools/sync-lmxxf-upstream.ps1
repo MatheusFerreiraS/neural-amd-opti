@@ -393,6 +393,9 @@ $archivePaths = @(
     'src/native_rgb_reflect.h',
     'src/native_rgb_texture.h',
     'src/native_shader_cache.h',
+    'src/native_temporal_coordinates.h',
+    'src/native_temporal_feed.h',
+    'src/native_temporal_sample.h',
     'shaders',
     'hip'
 )
@@ -446,7 +449,10 @@ $headerFiles = @(
     'src\native_pso.h',
     'src\native_rgb_reflect.h',
     'src\native_rgb_texture.h',
-    'src\native_shader_cache.h'
+    'src\native_shader_cache.h',
+    'src\native_temporal_coordinates.h',
+    'src\native_temporal_feed.h',
+    'src\native_temporal_sample.h'
 )
 
 foreach ($rel in $headerFiles) {
@@ -794,6 +800,15 @@ if (-not $UpdateReflect) {
         Write-Host "  Patch C: native_split.h already absent in refreshed reflect header" -ForegroundColor DarkYellow
     }
     Assert-ReflectLocalMarkers -reflectPath $reflectH -context '-UpdateReflect post-patch'
+}
+
+# Patch D: native_temporal_feed.h includes native_split.h (the D3D12 network body) without using it
+$feedH = Join-Path $vendorRoot 'src\native_temporal_feed.h'
+$content = Get-Content -LiteralPath $feedH -Raw
+if ($content -match '#include\s*"native_split\.h"') {
+    $content = $content -replace '#include\s*"native_split\.h"\r?\n?', ''
+    [IO.File]::WriteAllText($feedH, $content, [Text.UTF8Encoding]::new($false))
+    Write-Host "  Applied patch: removed native_split.h in native_temporal_feed.h" -ForegroundColor Yellow
 }
 
 # 6. Update UPSTREAM.md with new commit and timestamp

@@ -216,8 +216,8 @@ void RenderMenu(Config* config, float menuResScale)
         }
 
         // lmxxf picks its own network tier from the input size and runs only before Super
-        // Resolution, so none of the controls below reach it: resolution, passes, slots, wait
-        // mode, encoding and placement all belong to the danielblnc runtime.
+        // Resolution, so none of the controls below reach it: resolution, slots, wait mode,
+        // encoding and placement all belong to the danielblnc runtime.
         if (DlssNr::AmdBridge::HasFiles() && DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Lmxxf)
         {
             HGap(0.12f);
@@ -232,17 +232,44 @@ void RenderMenu(Config* config, float menuResScale)
                                    "\nmodel alone could keep up with. The game runs slower than that, because"
                                    "\nthe rest of the frame takes time too.");
 
+            ImGui::SeparatorText("Temporal");
+            bool temporal = config->LmxxfTemporal.value_or_default();
+            if (ImGui::Checkbox("Temporal history", &temporal))
+                config->LmxxfTemporal = temporal;
+            HelpMarker("Each pass also reads its own result from the previous frame, moved along the game's"
+                       "\nmotion vectors. Keeps the effect steadier in motion, most of all with several passes."
+                       "\nOff runs every frame on its own.");
+            ImGui::BeginDisabled(!temporal);
+            float smooth = config->LmxxfSmoothStrength.value_or_default();
+            if (ImGui::SliderFloat("Smoothing", &smooth, 0.0f, 1.0f, "%.2f"))
+                config->LmxxfSmoothStrength = smooth;
+            HelpMarker("Where the result differs little from the previous frame's, blends it toward that frame."
+                       "\nTakes out the small flicker the model leaves from frame to frame; real changes pass"
+                       "\nthrough. 0 turns it off. Higher values can leave a short trail.");
+            float threshold = config->LmxxfSmoothThreshold.value_or_default();
+            if (ImGui::SliderFloat("Smoothing threshold", &threshold, 1.0f, 32.0f, "%.0f / 255"))
+                config->LmxxfSmoothThreshold = threshold;
+            HelpMarker("Largest difference, in 1/255 of full brightness, that still counts as flicker.");
+            ImGui::EndDisabled();
+            ImGui::SeparatorText("Effect");
+            int passes = std::clamp(int(config->DlssNrPasses.value_or_default()), 1, 3);
+            if (ImGui::SliderInt("Passes", &passes, 1, 3))
+                config->DlssNrPasses = uint32_t(passes);
+            HelpMarker("Runs the model again on its own output, for a stronger effect."
+                       "\nEach pass adds the model's whole GPU time to every frame.");
             float transfer = config->DlssNrTransferStrength.value_or_default();
             if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 1.0f, "%.2f"))
                 config->DlssNrTransferStrength = transfer;
             float colour = config->DlssNrColourStrength.value_or_default();
             if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 1.0f, "%.2f"))
                 config->DlssNrColourStrength = colour;
+            ImGui::SeparatorText("Inspect");
             int debugView = std::clamp(int(config->DlssNrDebugView.value_or_default()), 0, 4);
             if (ImGui::Combo("Debug view", &debugView,
                              "Off\0What the model sees\0Model output alone\0Difference (x20)\0Tint\0"))
                 config->DlssNrDebugView = uint32_t(debugView);
 
+            ImGui::Spacing();
             ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
             ImGui::TextWrapped("Runs before Super Resolution only, so a game driving Ray Reconstruction"
                                " gets no NR. Built for a render resolution of 1080p or less.");
@@ -258,7 +285,11 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::TextDisabled("%s", haveVer ? ver : "pass1?");
             HelpMarker(haveVer ? "AMD NR runtime: danielblnc (DLSS-NR-on-AMD)."
                                : "AMD NR runtime: pass1 not identified yet.");
+        }
 
+        // Temporal stabilization, frame slots and the wait mode: how the danielblnc runtime schedules its work.
+        auto scheduling = [&]
+        {
             // Stored as [DlssNr] AmdEveryFrame, the key's original name, so existing INIs keep working.
             // It switches off the model's temporal history.
             bool noTemporal = config->AmdEveryFrame.value_or_default();
@@ -272,9 +303,8 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nrender thread also waits for the model every frame."
                        "\n\nChanging it restarts the model's history.");
 
-            // Slots first, then New wait — quantity next to the enable row, wait
-            // mode after it. Combo is a narrow digit control, not a full-width bar.
-            // Menu offers 2-5 only; the ini also accepts 1 (old single-slot path).
+            // A narrow digit combo rather than a full-width bar. The menu offers 2-5; the ini also
+            // accepts 1 (the old single-slot path).
             const int stored = std::clamp(config->AmdSlots.value_or_default(), 1, 5);
             const int shown = std::clamp(stored, 2, 5);
             char slotPreview[8] {};
@@ -319,14 +349,7 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nOnly the selected number is allocated. No restart needed.\n"
                        "\nThe ini also accepts 1 (the old single-slot path); this menu does not.");
             if (stored < 2)
-            {
-                // Own line under the slot control; New wait starts below it.
                 ImGui::TextDisabled("(ini has NR slots = 1: single-slot mode, not selectable here)");
-            }
-            else
-            {
-                HGap(0.65f);
-            }
 
             bool newWait = config->AmdGraphicsWait.value_or_default() != 0;
             const bool hooksArmed = D3D12Hooks::IsAmdGraphicsTrackerArmed();
@@ -352,10 +375,12 @@ void RenderMenu(Config* config, float menuResScale)
                     ImGui::CloseCurrentPopup();
                 ImGui::EndPopup();
             }
-        }
+        };
 
         if (AmdPresentExperimental::IsTarget())
         {
+            if (DlssNr::AmdBridge::HasFiles())
+                scheduling();
             ImGui::TextWrapped(
                 "Experimental final-image neural: synthetic motion/depth, no temporal history. Includes game HUD.");
             ImGui::TextUnformatted("One pass, 100% image resolution. Restart after resizing the output.");
@@ -374,6 +399,23 @@ void RenderMenu(Config* config, float menuResScale)
                                    "\nmodel alone could keep up with. The game runs slower than that, because"
                                    "\nthe rest of the frame takes time too.");
 
+            // Stage costly neural parameter edits in ImGui state. Keep rendering
+            // with the committed parameters until release/text-edit completion.
+            auto neuralSlider = [](const char* label, auto& option, float lo, float hi)
+            {
+                auto storage = ImGui::GetStateStorage();
+                const ImGuiID id = ImGui::GetID(label);
+                const ImGuiID activeId = id ^ 0x6e72534cu;
+                float value = storage->GetBool(activeId, false) ? storage->GetFloat(id) : option.value_or_default();
+                ImGui::SliderFloat(label, &value, lo, hi);
+                const bool active = ImGui::IsItemActive();
+                const bool commit = ImGui::IsItemDeactivatedAfterEdit();
+                storage->SetFloat(id, value);
+                storage->SetBool(activeId, active);
+                if (commit)
+                    option = value;
+            };
+            ImGui::SeparatorText("Processing");
             // Where the model sits, and what its resolution is a percentage OF. This line used to be
             // fixed text claiming "before Super Resolution" whichever placement was running, while
             // the switch that chose it sat in a branch this backend never reaches -- so the
@@ -411,49 +453,6 @@ void RenderMenu(Config* config, float menuResScale)
                                            "\nthe model is not running. Choose \"After the finished frame\".");
                 }
             }
-
-            // The stored value is 1 Linear, 2 sRGB, 3 Gamma 2.2, and the combo index is one below it.
-            // An old INI's 0 (Auto, which converted nothing) shows as Linear.
-            int encoding = std::clamp(config->AmdEncoding.value_or_default(), 1, 3) - 1;
-            if (ImGui::Combo("Encoding", &encoding, "Linear\0sRGB (default)\0Gamma 2.2\0"))
-                config->AmdEncoding = encoding + 1;
-            HelpMarker("sRGB and Gamma 2.2 decode the frame to linear light before the model and"
-                       "\nencode its answer back afterwards. Linear hands it over unchanged."
-                       "\n\nsRGB is the default: the steadiest in testing, and the one that held"
-                       "\nhighlights best. Some games may look better with another.");
-
-            // Only a runtime whose layout maps its Scale can take a strength.
-            {
-                const char* runtime = DlssNr::AmdBridge::RuntimeName();
-                bool hasScale = false;
-                for (const auto* layout : AmdPreSr::kAmdLayouts)
-                    if (runtime && std::strcmp(layout->name, runtime) == 0)
-                        hasScale = layout->scale != 0;
-                ImGui::BeginDisabled(!hasScale);
-                static float strength = 100.f;
-                static bool editingStrength = false;
-                if (!editingStrength)
-                    strength = config->AmdEffectStrength.value_or_default() * 100.f;
-                ImGui::SliderFloat("Effect strength", &strength, 0, 100, "%.0f%%");
-                editingStrength = ImGui::IsItemActive();
-                // Commit once on release: every change restarts the model's history.
-                if (ImGui::IsItemDeactivatedAfterEdit())
-                    config->AmdEffectStrength = strength / 100.f;
-                ImGui::EndDisabled();
-                HelpMarker("How much of the network's result reaches the frame. 100% is the"
-                           "\nruntime's own default; 0% leaves the frame as the game drew it while"
-                           "\nthe network still runs. Changing it restarts the model's history."
-                           "\n\nNeeds the danielblnc 0.3.1 runtime.");
-            }
-
-            int grade = std::clamp(config->AmdColourGrade.value_or_default(), 0, 2);
-            if (ImGui::Combo("Colour grade", &grade, "None\0Natural\0Cinematic\0"))
-                config->AmdColourGrade = grade;
-            HelpMarker("The colour grade NVIDIA applies after the network in its Model B and C,"
-                       "\nat NVIDIA's default strength."
-                       "\n\nNatural (Model B): exposure -0.1 EV, softer contrast, 10% less saturation."
-                       "\nCinematic (Model C): 15% less saturation."
-                       "\n\nColour only: the network itself runs the same either way.");
 
             // One slider, bound to whichever placement is live. The two keep separate values, so
             // switching back and forth does not make you retune each time.
@@ -495,22 +494,32 @@ void RenderMenu(Config* config, float menuResScale)
                 if (const auto status = DlssNr::AmdBridge::DynamicStatus(); !status.empty())
                     ImGui::TextDisabled("%s", status.c_str());
             }
-            // Stage costly neural parameter edits in ImGui state. Keep rendering
-            // with the committed parameters until release/text-edit completion.
-            auto neuralSlider = [](const char* label, auto& option, float lo, float hi)
+            ImGui::SeparatorText("Scheduling");
+            scheduling();
+            ImGui::SeparatorText("Effect");
+            // Only a runtime whose layout maps its Scale can take a strength.
             {
-                auto storage = ImGui::GetStateStorage();
-                const ImGuiID id = ImGui::GetID(label);
-                const ImGuiID activeId = id ^ 0x6e72534cu;
-                float value = storage->GetBool(activeId, false) ? storage->GetFloat(id) : option.value_or_default();
-                ImGui::SliderFloat(label, &value, lo, hi);
-                const bool active = ImGui::IsItemActive();
-                const bool commit = ImGui::IsItemDeactivatedAfterEdit();
-                storage->SetFloat(id, value);
-                storage->SetBool(activeId, active);
-                if (commit)
-                    option = value;
-            };
+                const char* runtime = DlssNr::AmdBridge::RuntimeName();
+                bool hasScale = false;
+                for (const auto* layout : AmdPreSr::kAmdLayouts)
+                    if (runtime && std::strcmp(layout->name, runtime) == 0)
+                        hasScale = layout->scale != 0;
+                ImGui::BeginDisabled(!hasScale);
+                static float strength = 100.f;
+                static bool editingStrength = false;
+                if (!editingStrength)
+                    strength = config->AmdEffectStrength.value_or_default() * 100.f;
+                ImGui::SliderFloat("Effect strength", &strength, 0, 100, "%.0f%%");
+                editingStrength = ImGui::IsItemActive();
+                // Commit once on release: every change restarts the model's history.
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                    config->AmdEffectStrength = strength / 100.f;
+                ImGui::EndDisabled();
+                HelpMarker("How much of the network's result reaches the frame. 100% is the"
+                           "\nruntime's own default; 0% leaves the frame as the game drew it while"
+                           "\nthe network still runs. Changing it restarts the model's history."
+                           "\n\nNeeds the danielblnc 0.3.1 runtime.");
+            }
             static int passes = 1;
             static bool editingPasses = false;
             if (!editingPasses)
@@ -522,61 +531,24 @@ void RenderMenu(Config* config, float menuResScale)
             neuralSlider("Lightning Strength", config->AmdNeuralLightingStrength, 0, 1);
             neuralSlider("AMD structure", config->DlssNrLocalStructure, 0, 2);
             neuralSlider("AMD character structure", config->DlssNrSkinStructure, 0, 2);
-            if (ImGui::TreeNode("Experimental"))
-            {
-                ImGui::PushID("RTGI");
-                bool enabled = config->AmdRtgiEnabled.value_or_default();
-                if (ImGui::Checkbox("Enable effect", &enabled))
-                    config->AmdRtgiEnabled = enabled;
-                auto slider = [](const char* label, auto& option, float lo, float hi)
-                {
-                    float value = option.value_or_default();
-                    if (ImGui::SliderFloat(label, &value, lo, hi))
-                        option = value;
-                };
-                int quality = config->AmdRtgiQuality.value_or_default();
-                if (ImGui::Combo("Quality", &quality, "Very low\0Low\0Medium\0High\0Ultra\0"))
-                    config->AmdRtgiQuality = uint32_t(quality);
-                int denoiser = config->AmdRtgiDenoiser.value_or_default();
-                if (ImGui::Combo("Denoiser", &denoiser, "Low\0Medium\0High\0"))
-                    config->AmdRtgiDenoiser = uint32_t(denoiser);
-                slider("Effect mix", config->AmdRtgiMix, 0, 1);
-                slider("Contact shading", config->AmdRtgiContact, 0, 2);
-                slider("Bounce saturation", config->AmdRtgiSaturation, 0, 2);
-                slider("Sample radius", config->AmdRtgiRadius, .25f, 3);
-                slider("Bounce lighting", config->AmdRtgiLighting, 0, 10);
-                slider("Ambient occlusion", config->AmdRtgiOcclusion, 0, 10);
-                slider("Ambient level", config->AmdRtgiAmbient, .25f, 1);
-                slider("Object thickness", config->AmdRtgiThickness, 0, 1);
-                slider("Smoothness", config->AmdRtgiSmoothness, 0, 1);
-                slider("Fade range", config->AmdRtgiFade, .001f, 1);
-                slider("Camera FOV", config->AmdRtgiFov, 20, 140);
-                slider("Depth range", config->AmdRtgiFarPlane, 10, 10000);
-                int inspect = config->AmdRtgiInspect.value_or_default();
-                if (ImGui::Combo("Inspect", &inspect, "Final image\0Lighting\0"))
-                    config->AmdRtgiInspect = uint32_t(inspect);
-                if (ImGui::Button("Reset to defaults"))
-                {
-                    config->AmdRtgiEnabled = false;
-                    config->AmdRtgiQuality = 2u;
-                    config->AmdRtgiDenoiser = 1u;
-                    config->AmdRtgiInspect = 0u;
-                    config->AmdRtgiContact = 0.0f;
-                    config->AmdRtgiSaturation = 1.0f;
-                    config->AmdRtgiRadius = 1.0f;
-                    config->AmdRtgiMix = 1.0f;
-                    config->AmdRtgiLighting = 5.0f;
-                    config->AmdRtgiOcclusion = 1.0f;
-                    config->AmdRtgiAmbient = 1.0f;
-                    config->AmdRtgiThickness = .1f;
-                    config->AmdRtgiSmoothness = .5f;
-                    config->AmdRtgiFade = .3f;
-                    config->AmdRtgiFov = 60.0f;
-                    config->AmdRtgiFarPlane = 600.0f;
-                }
-                ImGui::PopID();
-                ImGui::TreePop();
-            }
+            ImGui::SeparatorText("Colour");
+            int grade = std::clamp(config->AmdColourGrade.value_or_default(), 0, 2);
+            if (ImGui::Combo("Colour grade", &grade, "None\0Natural\0Cinematic\0"))
+                config->AmdColourGrade = grade;
+            HelpMarker("The colour grade NVIDIA applies after the network in its Model B and C,"
+                       "\nat NVIDIA's default strength."
+                       "\n\nNatural (Model B): exposure -0.1 EV, softer contrast, 10% less saturation."
+                       "\nCinematic (Model C): 15% less saturation."
+                       "\n\nColour only: the network itself runs the same either way.");
+            // The stored value is 1 Linear, 2 sRGB, 3 Gamma 2.2, and the combo index is one below it.
+            // An old INI's 0 (Auto, which converted nothing) shows as Linear.
+            int encoding = std::clamp(config->AmdEncoding.value_or_default(), 1, 3) - 1;
+            if (ImGui::Combo("Encoding", &encoding, "Linear\0sRGB (default)\0Gamma 2.2\0"))
+                config->AmdEncoding = encoding + 1;
+            HelpMarker("sRGB and Gamma 2.2 decode the frame to linear light before the model and"
+                       "\nencode its answer back afterwards. Linear hands it over unchanged."
+                       "\n\nsRGB is the default: the steadiest in testing, and the one that held"
+                       "\nhighlights best. Some games may look better with another.");
             if (ImGui::TreeNode("Appearance and tonemap"))
             {
                 bool lookEnabled = config->AmdLookEnabled.value_or_default();
@@ -654,6 +626,63 @@ void RenderMenu(Config* config, float menuResScale)
                 }
                 ImGui::TreePop();
             }
+            if (ImGui::TreeNode("Experimental"))
+            {
+                ImGui::PushID("RTGI");
+                bool enabled = config->AmdRtgiEnabled.value_or_default();
+                if (ImGui::Checkbox("Enable effect", &enabled))
+                    config->AmdRtgiEnabled = enabled;
+                auto slider = [](const char* label, auto& option, float lo, float hi)
+                {
+                    float value = option.value_or_default();
+                    if (ImGui::SliderFloat(label, &value, lo, hi))
+                        option = value;
+                };
+                int quality = config->AmdRtgiQuality.value_or_default();
+                if (ImGui::Combo("Quality", &quality, "Very low\0Low\0Medium\0High\0Ultra\0"))
+                    config->AmdRtgiQuality = uint32_t(quality);
+                int denoiser = config->AmdRtgiDenoiser.value_or_default();
+                if (ImGui::Combo("Denoiser", &denoiser, "Low\0Medium\0High\0"))
+                    config->AmdRtgiDenoiser = uint32_t(denoiser);
+                slider("Effect mix", config->AmdRtgiMix, 0, 1);
+                slider("Contact shading", config->AmdRtgiContact, 0, 2);
+                slider("Bounce saturation", config->AmdRtgiSaturation, 0, 2);
+                slider("Sample radius", config->AmdRtgiRadius, .25f, 3);
+                slider("Bounce lighting", config->AmdRtgiLighting, 0, 10);
+                slider("Ambient occlusion", config->AmdRtgiOcclusion, 0, 10);
+                slider("Ambient level", config->AmdRtgiAmbient, .25f, 1);
+                slider("Object thickness", config->AmdRtgiThickness, 0, 1);
+                slider("Smoothness", config->AmdRtgiSmoothness, 0, 1);
+                slider("Fade range", config->AmdRtgiFade, .001f, 1);
+                slider("Camera FOV", config->AmdRtgiFov, 20, 140);
+                slider("Depth range", config->AmdRtgiFarPlane, 10, 10000);
+                int inspect = config->AmdRtgiInspect.value_or_default();
+                if (ImGui::Combo("Inspect", &inspect, "Final image\0Lighting\0"))
+                    config->AmdRtgiInspect = uint32_t(inspect);
+                if (ImGui::Button("Reset to defaults"))
+                {
+                    config->AmdRtgiEnabled = false;
+                    config->AmdRtgiQuality = 2u;
+                    config->AmdRtgiDenoiser = 1u;
+                    config->AmdRtgiInspect = 0u;
+                    config->AmdRtgiContact = 0.0f;
+                    config->AmdRtgiSaturation = 1.0f;
+                    config->AmdRtgiRadius = 1.0f;
+                    config->AmdRtgiMix = 1.0f;
+                    config->AmdRtgiLighting = 5.0f;
+                    config->AmdRtgiOcclusion = 1.0f;
+                    config->AmdRtgiAmbient = 1.0f;
+                    config->AmdRtgiThickness = .1f;
+                    config->AmdRtgiSmoothness = .5f;
+                    config->AmdRtgiFade = .3f;
+                    config->AmdRtgiFov = 60.0f;
+                    config->AmdRtgiFarPlane = 600.0f;
+                }
+                ImGui::PopID();
+                ImGui::TreePop();
+            }
+
+            ImGui::Spacing();
             ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
             ImGui::TextWrapped("AMD HIP backend. Each pass owns independent temporal history. More passes increase GPU "
                                "time and memory. Restart the game after a backend failure.");

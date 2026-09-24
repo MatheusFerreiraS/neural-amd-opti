@@ -286,6 +286,8 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
                                      const AmdPreSr::Settings& settings)
 {
     std::lock_guard recordLock(recordMutex);
+    // Counts every Evaluate, so a frame that ends without NR breaks the runtime's history continuity.
+    const uint64_t evaluateId = ++frameId;
     if (!cmd || !frame.colour)
     {
         SetStatus("lmxxf: Record missing cmd/colour");
@@ -343,7 +345,7 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
     D3D12_RESOURCE_DESC desc = frame.colour->GetDesc();
     LmxxfNrFrameInfo fi {};
     fi.struct_size = sizeof(fi);
-    fi.frame_id = ++frameId;
+    fi.frame_id = evaluateId;
     fi.command_list = cmd;
     fi.color_width = frame.width ? frame.width : static_cast<uint32_t>(desc.Width);
     fi.color_height = frame.height ? frame.height : static_cast<uint32_t>(desc.Height);
@@ -354,6 +356,22 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
     fi.color_strength = std::clamp(Config::Instance()->DlssNrColourStrength.value_or_default(), 0.0f, 1.0f);
     fi.debug_view = Config::Instance()->DlssNrDebugView.value_or_default();
     fi.model_scale = settings.modelScale;
+    fi.passes = settings.passes;
+    const bool temporal = Config::Instance()->LmxxfTemporal.value_or_default() && frame.motion;
+    if (temporal)
+    {
+        fi.flags |= LMXXF_NR_FRAME_FLAG_TEMPORAL;
+        fi.motion = frame.motion;
+        fi.motion_state = static_cast<uint32_t>(frame.motionState);
+        fi.motion_width = frame.motionWidth;
+        fi.motion_height = frame.motionHeight;
+        fi.motion_scale_x = frame.motionScaleX;
+        fi.motion_scale_y = frame.motionScaleY;
+        fi.reset = frame.reset ? 1u : 0u;
+        fi.smooth_threshold =
+            std::clamp(Config::Instance()->LmxxfSmoothThreshold.value_or_default(), 0.f, 255.f) / 255.f;
+        fi.smooth_strength = std::clamp(Config::Instance()->LmxxfSmoothStrength.value_or_default(), 0.f, 1.f);
+    }
 
     LmxxfNrJob job {};
     job.struct_size = sizeof(job);
@@ -422,13 +440,14 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
         return nullptr;
     }
     {
-        static bool loggedGeo = false;
-        if (!loggedGeo && api->table.GetStatus)
+        // Logged again whenever temporal history is switched, so its state (or why it failed) reaches the log.
+        static int loggedTemporal = -1;
+        if (loggedTemporal != int(temporal) && api->table.GetStatus)
         {
             char st[256] {};
             api->table.GetStatus(session, st, sizeof st);
             LOG_INFO("lmxxf: after PrepareFrame HIP/net geometry status={}", st);
-            loggedGeo = true;
+            loggedTemporal = int(temporal);
         }
     }
 
