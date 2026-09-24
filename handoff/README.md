@@ -38,21 +38,23 @@ Everything is on `dlss-neural-rendering`. The work was committed on the branch `
 merge, then formatting), which pull request #1 merged into `dlss-neural-rendering`. Fixes since
 then are committed there directly.
 
-Three GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
+Four GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
 
 - `v0.1.0-amd-nr`: the FidelityFX upscaler, frame generation and denoiser never load from the
   package layout, so FSR falls back to FSR 2 and Ray Reconstruction is greyed out. Do not use it.
 - `v0.1.1-amd-nr`: that fixed (section 5, "FidelityFX modules load from the OptiScaler folder").
 - `v0.2.0-amd-nr`: the lmxxf runtime, effect strength, colour grade and XeSS multi frame
   generation (section 5, "0.2.0").
+- `v0.3.0-amd-nr`: lmxxf multipass, temporal history per pass and output smoothing, lmxxf detail
+  and colour strength up to 2, the Neural tab in sections and the red theme (section 5, "0.3.0").
 
-The build reports itself as `0.2.0-amd-nr`, and the packager writes
-`dist/OptiScaler-0.2.0-amd-nr.zip`.
+The build reports itself as `0.3.0-amd-nr`, and the packager writes
+`dist/OptiScaler-0.3.0-amd-nr.zip`.
 
 The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer)
 installs this build as its OptiScaler route. v0.4.0 knows only `v0.1.1-amd-nr`; v0.5.0 and later
-offer every version its payload manifest lists, newest first, and install `v0.2.0-amd-nr` with
-the lmxxf weights. The manifest pins each release zip by URL and SHA-256, and every file it
+offer every version its payload manifest lists, newest first, and install the newest,
+`v0.3.0-amd-nr`, with the lmxxf weights. The manifest pins each release zip by URL and SHA-256, and every file it
 extracts from it by hash. The runtime 0.3.1 (`b108d640…`) and the lmxxf weights
 (`native-game-tiled-assets.zip`) come from the Hugging Face dataset `zmodelerlover/amd-nr`,
 never from this repository. Never replace an asset on a published tag: every installer would
@@ -453,7 +455,7 @@ already there. `XeFGProxy::PointXeLLLookupAtOurs` replaces that import in our `l
 lookup that returns OptiScaler's `libxell`. Tested in Cyberpunk: 2X to 8X switched live, Auto
 followed the game. Above 4X it needs VSync or a frame rate cap.
 
-### After 0.2.0
+### 0.3.0
 
 **lmxxf multipass.** `[DlssNr] Passes` (1 to 3, the key the danielblnc runtime already reads)
 now reaches lmxxf through `LmxxfNrFrameInfo::passes`, and the lmxxf block of the menu has its own
