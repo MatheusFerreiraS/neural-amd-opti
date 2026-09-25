@@ -110,11 +110,33 @@ static VkResult hkvkCreateWin32SurfaceKHR(VkInstance instance, const VkWin32Surf
     return result;
 }
 
+// A Vulkan instance or device created while both flags are set is OptiScaler's own, not the game's, and
+// reaches the original function unchanged -- no DLSS-NR extensions, no AntiLag probe and no State capture.
+// The flags are process-wide, so that is every create made inside both scopes:
+//  - set together directly: mochizuki's NR runtime in PrepareSession (LmxxfBackend.cpp) and IdentifyGpu's
+//    probe device.
+//  - nested: with_dx12 and VkwDx12 set vulkanSkipHooks and then create a DXGI factory or D3D12 device
+//    through the hooked CreateDXGIFactory* / D3D12CreateDevice, which set creatingD3DDevice; the menu's
+//    getPrimaryGpu does the same through IdentifyGpu::checkGpuInfo while the GPU list is not cached yet.
+//    Under Proton these are the instances and devices DXVK and vkd3d-proton create for them.
+// A create made with only vulkanSkipHooks set still takes the full hook: hkD3D12CreateDevice leaves
+// creatingD3DDevice unset for Intel adapters, and AntiLag 2's init sets only vulkanSkipHooks.
+static bool IsForeignCreate() { return State::Instance().vulkanSkipHooks && State::Instance().creatingD3DDevice; }
+
 VALIDATE_HOOK(hkvkCreateInstance, PFN_vkCreateInstance)
 static VkResult hkvkCreateInstance(const VkInstanceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator,
                                    VkInstance* pInstance)
 {
     LOG_FUNC();
+
+    if (IsForeignCreate())
+    {
+        LOG_DEBUG("Not the game's instance, passing straight through");
+
+        // Spoofing stays off for the call itself, as it does for the game's create below
+        ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
+        return o_vkCreateInstance(pCreateInfo, pAllocator, pInstance);
+    }
 
     VkInstanceCreateInfo localCreateInfo {};
     memcpy(&localCreateInfo, pCreateInfo, sizeof(VkInstanceCreateInfo));
@@ -127,7 +149,7 @@ static VkResult hkvkCreateInstance(const VkInstanceCreateInfo* pCreateInfo, cons
         result = o_vkCreateInstance(&localCreateInfo, pAllocator, pInstance);
     }
 
-    if (result == VK_SUCCESS)
+    if (result == VK_SUCCESS && !State::Instance().vulkanSkipHooks)
     {
         State::Instance().VulkanInstance = *pInstance;
         LOG_DEBUG("State::Instance().VulkanInstance captured: {0:X}", (UINT64) State::Instance().VulkanInstance);
@@ -157,6 +179,12 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
                                  const VkAllocationCallbacks* pAllocator, VkDevice* pDevice)
 {
     LOG_FUNC();
+
+    if (IsForeignCreate())
+    {
+        LOG_DEBUG("Not the game's device, passing straight through");
+        return o_vkCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
+    }
 
     VkDeviceCreateInfo localCreteInfo {};
     memcpy(&localCreteInfo, pCreateInfo, sizeof(VkDeviceCreateInfo));
