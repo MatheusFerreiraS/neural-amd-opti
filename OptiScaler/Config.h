@@ -348,6 +348,62 @@ class Config
     // it is pulled toward it, by the strength at no difference. Strength 0 turns it off.
     CustomOptional<float> LmxxfSmoothStrength { 0.8f };
     CustomOptional<float> LmxxfSmoothThreshold { 10.0f };
+    // mochizuki's settings, the INI key being the member's name. Its tuning comes from these keys only, never from
+    // the danielblnc, lmxxf or NVIDIA ones, so each runtime keeps its own, and every default is the network's own:
+    // what it ran with before these keys existed. Passes, ModelScale and LinearInput rebuild the network (a second
+    // or two without NR); the rest apply on the next frame. One leftover: without MochizukiTemporal, LmxxfTemporal
+    // decides (below).
+    //
+    // History from the previous frame, moved along the game's motion vectors. An INI without the key follows
+    // LmxxfTemporal, which switched it before it had its own, so a value set here is always saved, true included.
+    CustomOptional<bool, SoftDefault> MochizukiTemporal { true };
+    // How much of the previous frame's result the network's last block blends into this one, 0..1.
+    CustomOptional<float> MochizukiHistoryStrength { 1.0f };
+    // How much of the network's detail (0..2) and colour change (0..4) reaches the frame. Above 1 exaggerates it.
+    // Colour defaults to 0, the game's own colour at the network's luminance.
+    CustomOptional<float> MochizukiDetailStrength { 1.0f };
+    CustomOptional<float> MochizukiColourStrength { 0.0f };
+    // Network runs per frame, 1..3, each on the last one's output and each at the network's whole cost.
+    CustomOptional<uint32_t> MochizukiPasses { 1 };
+    // The network's resolution as a share of the render resolution, 0.25..1 in steps of 0.05. The cost goes with its
+    // square.
+    CustomOptional<float> MochizukiModelScale { 1.0f };
+    // The model's controls: intensity 0..2; style 0 standard, 1 natural, 2 cinematic; local tone and local structure
+    // 0..2; skin structure -1..2, where -1 follows local structure (it needs the automatic mask); and the highlight
+    // guard, the most the result may multiply or divide a pixel's brightness by, 1..8.
+    CustomOptional<float> MochizukiIntensity { 1.0f };
+    CustomOptional<uint32_t> MochizukiStyle { 0 };
+    CustomOptional<float> MochizukiLocalTone { 1.0f };
+    CustomOptional<float> MochizukiLocalStructure { 1.0f };
+    CustomOptional<float> MochizukiSkinStructure { -1.0f };
+    CustomOptional<bool> MochizukiAutoMask { true };
+    CustomOptional<float> MochizukiMaxRatio { 2.0f };
+    // Linear colour only: the brightness the network treats as white, 0.01..100.
+    CustomOptional<float> MochizukiWhitePoint { 1.0f };
+    // false runs the network at its whole cost but shows the original frame, to measure it or compare.
+    CustomOptional<bool> MochizukiApplyModel { true };
+    // Whether the colour is linear light: 0 auto (float formats are), 1 yes, 2 no.
+    CustomOptional<uint32_t> MochizukiLinearInput { 0 };
+    // Dynamic resolution. exact builds the network for the render resolution, so each change of it rebuilds the
+    // network (a second or two without NR). auto, the default, does so until the render resolution drops below the
+    // size of the game's colour buffer; from then on it keeps one network, built for the largest resolution seen, and
+    // the frame moves inside it. always does that from the first frame, also when the game reallocates its buffers.
+    // Anything else is auto.
+    CustomOptional<std::string> MochizukiDynamicResolution { "auto" };
+    // Passes 2 and 3. A pass with none of these set inherits pass 1 with local tone 0, since tone applied again on
+    // every pass compounds; one with any of them set takes the others from pass 1 the same way.
+    CustomOptional<uint32_t, NoDefault> MochizukiPass2Style;
+    CustomOptional<float, NoDefault> MochizukiPass2Intensity;
+    CustomOptional<float, NoDefault> MochizukiPass2LocalTone;
+    CustomOptional<float, NoDefault> MochizukiPass2LocalStructure;
+    CustomOptional<float, NoDefault> MochizukiPass2SkinStructure;
+    CustomOptional<bool, NoDefault> MochizukiPass2AutoMask;
+    CustomOptional<uint32_t, NoDefault> MochizukiPass3Style;
+    CustomOptional<float, NoDefault> MochizukiPass3Intensity;
+    CustomOptional<float, NoDefault> MochizukiPass3LocalTone;
+    CustomOptional<float, NoDefault> MochizukiPass3LocalStructure;
+    CustomOptional<float, NoDefault> MochizukiPass3SkinStructure;
+    CustomOptional<bool, NoDefault> MochizukiPass3AutoMask;
     // Experimental dirty insert: request SpinDraw=1 even when freeze/admission fails.
     // No complete D3D12 graphics-state restore — risk matches the danielblnc runtime. Default 0.
     CustomOptional<int> AmdGraphicsUnsafe { 0 };

@@ -185,8 +185,9 @@ $ini = [regex]::Replace($ini, '(?ms)^\[DlssNr\].*?(?=^\[|\z)', @"
 ; Unsafe dirty insert stays off (AmdGraphicsUnsafe=0).
 Enabled=false
 RunBeforeSR=true
-; NR runtime: daniel (dlssnr_amd_pass1-3.dll and dlssnr_on_amd_weights.bin) or lmxxf
-; (LmxxfNrRuntime.dll, lmxxf-modules\, shaders\ and native-game-tiled-assets\). Restart after changing.
+; NR runtime: daniel (dlssnr_amd_pass1-3.dll and dlssnr_on_amd_weights.bin), lmxxf
+; (LmxxfNrRuntime.dll, lmxxf-modules\, shaders\ and native-game-tiled-assets\) or mochizuki
+; (MochizukiNrRuntime.dll and its dlssnr-amd\ folder). Restart after changing.
 NrBackend=daniel
 ; lmxxf: fit a render resolution above 1080p onto the 1080 network. Can hitch at ~2K; off by default.
 LmxxfFitLarge=false
@@ -196,6 +197,49 @@ LmxxfTemporal=true
 ; threshold (in 1/255), blend it toward that frame, by the strength at no difference. 0 turns it off.
 LmxxfSmoothStrength=0.8
 LmxxfSmoothThreshold=10
+; mochizuki's tuning comes only from its own keys below, never the danielblnc, lmxxf or NVIDIA ones;
+; every default is the network's own, except MochizukiColourStrength=0: the game's own colour at the
+; network's brightness (1 applies the network's colour change in full). MochizukiPasses (1-3),
+; MochizukiModelScale (0.25-1, share of the render resolution in steps of 0.05) and
+; MochizukiLinearInput (0 auto, 1 on, 2 off) rebuild the network; the rest apply on the next frame.
+; MochizukiTemporal=auto follows LmxxfTemporal.
+MochizukiTemporal=true
+MochizukiHistoryStrength=1
+MochizukiDetailStrength=1
+MochizukiColourStrength=0
+MochizukiPasses=1
+MochizukiModelScale=1
+; mochizuki model controls: intensity 0-2; style 0 standard, 1 natural, 2 cinematic; local tone and
+; local structure 0-2; skin structure -1 (follows local structure) to 2; highlight guard (MaxRatio)
+; 1-8; white point (linear colour only) 0.01-100. ApplyModel=false runs the network at full cost
+; but shows the original frame.
+MochizukiIntensity=1
+MochizukiStyle=0
+MochizukiLocalTone=1
+MochizukiLocalStructure=1
+MochizukiSkinStructure=-1
+MochizukiAutoMask=true
+MochizukiMaxRatio=2
+MochizukiWhitePoint=1
+MochizukiApplyModel=true
+MochizukiLinearInput=0
+; mochizuki dynamic resolution: exact rebuilds the network for every render resolution (a second or
+; two without NR each time); auto keeps one network, built for the largest resolution seen, once the
+; render resolution drops below the colour buffer; always does so from the first frame.
+MochizukiDynamicResolution=auto
+; mochizuki passes 2 and 3: auto inherits pass 1, with local tone 0.
+MochizukiPass2Style=auto
+MochizukiPass2Intensity=auto
+MochizukiPass2LocalTone=auto
+MochizukiPass2LocalStructure=auto
+MochizukiPass2SkinStructure=auto
+MochizukiPass2AutoMask=auto
+MochizukiPass3Style=auto
+MochizukiPass3Intensity=auto
+MochizukiPass3LocalTone=auto
+MochizukiPass3LocalStructure=auto
+MochizukiPass3SkinStructure=auto
+MochizukiPass3AutoMask=auto
 AmdModelScale=1
 AmdDynamicScale=false
 AmdDynamicTargetFps=60

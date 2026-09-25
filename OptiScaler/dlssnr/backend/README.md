@@ -48,8 +48,38 @@ runs on a Vulkan device of its own, on the game's adapter:
 
 The network is built for each render extent and colour format on a background thread; frames pass
 through until it is ready. It reads `dlssnr-amd\dlssnr.bin` and `dlssnr-amd\shaders\` beside the DLL,
-keeps its pipeline cache there and logs to `mochizuki_nr.log`. It has no controls yet: `Enable NR` turns
-it on and off.
+keeps its pipeline cache there and logs to `mochizuki_nr.log`.
+
+Its settings are the `[DlssNr] Mochizuki*` keys, and it takes none of its tuning from another runtime's
+(`TransferStrength`, `Passes`, `AmdModelScale`, `AmdDynamicScale` and the model keys stay danielblnc's,
+lmxxf's and NVIDIA's). `LmxxfBackend::Record` sends them two ways, both only when the backend is not
+lmxxf:
+
+- In `LmxxfNrFrameInfo`: `MochizukiDetailStrength` and `MochizukiColourStrength` (0 to 4 here, 0 to 2
+  for lmxxf; the host's default is 0, the game's own colour at the network's luminance, where the
+  runtime's own default is 1), `MochizukiModelScale` and `MochizukiPasses`. The last two rebuild the
+  network, so the menu commits them when the slider is released.
+- Through the runtime's own `MochizukiNrSetControls` export (`mochizuki_runtime/MochizukiNrControls.h`):
+  the model controls, the highlight guard, history strength, white point, linear input, apply model and
+  the pass 2 and 3 overrides. They go only when they change or the session is new, starting from the
+  runtime's `MochizukiNrGetControlDefaults`, and apply on the next frame.
+
+`MochizukiTemporal` switches the history (without the key, `LmxxfTemporal` does). Every default is the
+network's own, so an INI without these keys runs as before. `AmdModelScale` and `AmdDynamicScale` do
+not reach mochizuki: the settle gate in `AmdBridge::Run` ignores both for it.
+`MochizukiDynamicResolution` is the runtime's `drs_mode`. With `auto` (the default), once the render
+subrect is smaller than the colour texture, the network runs at a bucket: per axis the largest subrect
+seen, rounded up to 64 px, within the texture. A subrect change inside the bucket only restarts the
+history, with no rebuild and no settle (the gate in `AmdBridge::Run` then settles on the colour texture).
+The bucket grows with a larger subrect, and shrinks after 30 s of frames of one colour texture whose
+subrects all stay at least 128 px inside it on both axes. `exact` rebuilds for every render resolution,
+as before; `always` buckets every frame, also across colour texture reallocations. Motion vectors in a
+format the bucket cannot blit run as `exact` (logged once a session). The runtime's own default, for a
+host that does not send `drs_mode`, is `exact`.
+`MochizukiNrGetInfo` feeds the menu's status (model extent, network time, last build), read with the
+runtime status at most twice a second.
+`EvaluateAtSeam` ignores `ApplyAfterRR` for lmxxf and mochizuki, which take only the seam before Super
+Resolution.
 
 ## Toolchain
 

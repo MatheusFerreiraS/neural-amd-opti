@@ -3,6 +3,8 @@
 #include "amd/AmdBridge.h"
 #include "amd/AmdLayout.h"
 #include "backend/Selector.h"
+#include "backend/LmxxfBackend.h"
+#include "backend/mochizuki_runtime/MochizukiNrControls.h"
 #include "DlssNrFeature_Vk.h"
 
 #include "DlssNr.h"
@@ -234,7 +236,7 @@ void RenderMenu(Config* config, float menuResScale)
                            "\nlmxxf: open-source HIP kernels in the game's own queue, before Super"
                            "\nResolution only. Detail, colour and debug view."
                            "\nmochizuki: open-source Vulkan network on its own device, before Super"
-                           "\nResolution only. No controls yet."
+                           "\nResolution only. Its own passes, resolution, strengths and model controls."
                            "\n\nThe choice is stored as NrBackend. Press Save Settings and restart the"
                            "\ngame to switch.");
             }
@@ -305,7 +307,9 @@ void RenderMenu(Config* config, float menuResScale)
             return;
         }
 
-        // mochizuki's Vulkan network, switched with Enable NR. It has no controls of its own yet.
+        // mochizuki's Vulkan network, with settings of its own (the Mochizuki* keys) in place of the controls below.
+        // Passes and the NR resolution rebuild the network, so they commit when the slider is released; everything
+        // else is a shader constant and applies on the next frame.
         if (DlssNr::AmdBridge::HasFiles() &&
             DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Mochizuki)
         {
@@ -320,8 +324,200 @@ void RenderMenu(Config* config, float menuResScale)
                                    "\n\nThe fps is 1000 divided by that time: how many frames per second the"
                                    "\nmodel alone could keep up with. The game runs slower than that, because"
                                    "\nthe rest of the frame takes time too.");
-            ImGui::Spacing();
+
+            // The runtime takes only the seam before Super Resolution. EvaluateAtSeam ignores ApplyAfterRR for it,
+            // but the key is danielblnc's placement too, so it is only cleared on request.
+            const ImVec4 warning(0.95f, 0.70f, 0.20f, 1.0f);
+            if (config->DlssNrApplyAfterRR.value_or_default())
+            {
+                ImGui::TextColored(warning, "ApplyAfterRR is on. It places danielblnc; mochizuki runs before Super"
+                                            "\nResolution only and ignores it.");
+                if (ImGui::Button("Run before Super Resolution"))
+                {
+                    config->DlssNrApplyAfterRR = false;
+                    DlssNr::AmdBridge::InvalidateHistory();
+                }
+                HelpMarker("Sets ApplyAfterRR to false. mochizuki runs the same either way; danielblnc then"
+                           "\nruns before Super Resolution too, if you switch back to it.");
+            }
+            if (auto feature = State::Instance().currentFeature; feature != nullptr)
+            {
+                const auto upscaler = feature->GetUpscalerType();
+                if (upscaler == Upscaler::DLSSD || upscaler == Upscaler::FSR_RR)
+                    ImGui::TextColored(warning, "This title drives Ray Reconstruction, which has no seam before it:"
+                                                "\nthe model is not running. mochizuki runs before Super Resolution"
+                                                "\nonly.");
+            }
+
+            const auto liveSlider = [](const char* label, CustomOptional<float>& option, float lo, float hi)
+            {
+                float value = option.value_or_default();
+                if (ImGui::SliderFloat(label, &value, lo, hi, "%.2f"))
+                    option = value;
+            };
+
+            ImGui::SeparatorText("Temporal");
+            // An INI without MochizukiTemporal follows LmxxfTemporal, as LmxxfBackend::Record does.
+            bool temporal = config->MochizukiTemporal.has_value() ? config->MochizukiTemporal.value()
+                                                                  : config->LmxxfTemporal.value_or_default();
+            if (ImGui::Checkbox("Temporal history", &temporal))
+                config->MochizukiTemporal = temporal;
+            HelpMarker("The network also reads its own result from the previous frame, moved along the"
+                       "\ngame's motion vectors. Keeps the effect steadier in motion. Off runs every frame"
+                       "\non its own.");
+            ImGui::BeginDisabled(!temporal);
+            liveSlider("History strength", config->MochizukiHistoryStrength, 0.0f, 1.0f);
+            HelpMarker("How much of the previous frame's result the network's last block blends into this"
+                       "\none. Lower follows changes faster and steadies less. Even at 0 the network still"
+                       "\nreads the history; turn Temporal history off to drop it.");
+            ImGui::EndDisabled();
+
+            ImGui::SeparatorText("Effect");
+            static int mzPasses = 1;
+            static bool editingMzPasses = false;
+            if (!editingMzPasses)
+                mzPasses = int(std::clamp(config->MochizukiPasses.value_or_default(), 1u, 3u));
+            ImGui::SliderInt("Passes", &mzPasses, 1, 3);
+            editingMzPasses = ImGui::IsItemActive();
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                config->MochizukiPasses = uint32_t(std::clamp(mzPasses, 1, 3));
+            HelpMarker("Runs the network again on its own output, for a stronger effect. Each pass adds the"
+                       "\nnetwork's whole GPU time to every frame, and some VRAM."
+                       "\n\nA change rebuilds the network, a second or two without NR, so it applies when"
+                       "\nyou release the slider.");
+            static float mzScale = 100.f;
+            static bool editingMzScale = false;
+            if (!editingMzScale)
+                mzScale = std::clamp(config->MochizukiModelScale.value_or_default(), .25f, 1.f) * 100.f;
+            ImGui::SliderFloat("NR resolution (% of render)", &mzScale, 25, 100, "%.0f%%");
+            editingMzScale = ImGui::IsItemActive();
+            // The runtime builds in steps of 5%; committing the step it will use keeps the slider honest.
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                config->MochizukiModelScale = std::round(std::clamp(mzScale, 25.f, 100.f) / 5.f) * 5.f / 100.f;
+            HelpMarker("The resolution the network runs at, as a share of the render resolution, in steps"
+                       "\nof 5%. Lower is faster, and the result is enlarged back to the frame, so fine"
+                       "\ndetail softens and slow pans can shimmer. 100% is the network's own."
+                       "\n\nA change rebuilds the network, a second or two without NR, so it applies when"
+                       "\nyou release the slider.");
+            liveSlider("Detail strength", config->MochizukiDetailStrength, 0.0f, 2.0f);
+            HelpMarker("How much of the network's detail reaches the frame. Above 1 it is exaggerated,"
+                       "\nup to twice its size at 2.");
+            liveSlider("Colour strength", config->MochizukiColourStrength, 0.0f, 4.0f);
+            HelpMarker("How much of the network's colour change reaches the frame. 0 keeps the frame's own"
+                       "\ncolour at the new brightness; above 1 the change is exaggerated.");
+            liveSlider("Highlight guard", config->MochizukiMaxRatio, 1.0f, 8.0f);
+            HelpMarker("The most the result may multiply or divide a pixel's brightness by. Keeps the"
+                       "\nnetwork from restyling light sources. 2 by default.");
+
+            ImGui::SeparatorText("Model");
+            int style = int(std::min(config->MochizukiStyle.value_or_default(), 2u));
+            if (ImGui::Combo("Style", &style, "Standard\0Natural\0Cinematic\0"))
+                config->MochizukiStyle = uint32_t(style);
+            HelpMarker("The model's own processing profiles, fed to the network as it runs.");
+            liveSlider("Intensity", config->MochizukiIntensity, 0.0f, 2.0f);
+            HelpMarker("How strongly the network applies its change, before detail and colour strength."
+                       "\nBelow 1 it blends toward the original; above 1 it is exaggerated.");
+            liveSlider("Local structure", config->MochizukiLocalStructure, 0.0f, 2.0f);
+            HelpMarker("The model's structure strength. With the automatic skin mask, the strength for"
+                       "\neverything but skin.");
+            liveSlider("Local tone", config->MochizukiLocalTone, 0.0f, 2.0f);
+            HelpMarker("The model's local lighting. Pass 1 only, unless a later pass sets its own:"
+                       "\napplied again on every pass it compounds.");
+            float skin = config->MochizukiSkinStructure.value_or_default();
+            if (ImGui::SliderFloat("Skin structure", &skin, -1.0f, 2.0f, "%.2f"))
+                config->MochizukiSkinStructure = skin;
+            HelpMarker("-1 follows local structure. Needs the automatic skin mask.");
+            bool mask = config->MochizukiAutoMask.value_or_default();
+            if (ImGui::Checkbox("Auto skin mask", &mask))
+                config->MochizukiAutoMask = mask;
+            HelpMarker("The model's own mask, which lets skin get its own structure strength.");
+
+            if (ImGui::TreeNode("Pass 2/3"))
+            {
+                ImGui::TextWrapped("Unset controls inherit pass 1, except local tone, which defaults to 0. Reset "
+                                   "restores that. Only the passes that run use them. Changes apply when you release "
+                                   "a slider.");
+                static const char* inheritedStyles[] = { "Auto (inherit pass 1)", "Standard", "Natural", "Cinematic" };
+                const auto passControls = [config](const char* name, auto& passStyle, auto& intensity, auto& tone,
+                                                   auto& structure, auto& skinStructure, auto& autoMask)
+                {
+                    if (!ImGui::TreeNodeEx(name, ImGuiTreeNodeFlags_DefaultOpen))
+                        return;
+                    InheritedProfileCombo("Style", &passStyle, inheritedStyles, IM_ARRAYSIZE(inheritedStyles));
+                    DeferredSlider("Intensity", &intensity, 0.0f, 2.0f, config->MochizukiIntensity.value_or_default(),
+                                   "%.2f", true);
+                    DeferredSlider("Local structure", &structure, 0.0f, 2.0f,
+                                   config->MochizukiLocalStructure.value_or_default(), "%.2f", true);
+                    DeferredSlider("Local tone", &tone, 0.0f, 2.0f, 0.0f, "%.2f", true);
+                    DeferredSlider("Skin structure", &skinStructure, -1.0f, 2.0f,
+                                   config->MochizukiSkinStructure.value_or_default(), "%.2f", true);
+                    bool passMask =
+                        autoMask.has_value() ? autoMask.value() : config->MochizukiAutoMask.value_or_default();
+                    if (ImGui::Checkbox("Auto skin mask", &passMask))
+                        autoMask = passMask;
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Reset##mask"))
+                        autoMask = std::optional<bool> {};
+                    ImGui::TreePop();
+                };
+                passControls("Pass 2", config->MochizukiPass2Style, config->MochizukiPass2Intensity,
+                             config->MochizukiPass2LocalTone, config->MochizukiPass2LocalStructure,
+                             config->MochizukiPass2SkinStructure, config->MochizukiPass2AutoMask);
+                passControls("Pass 3", config->MochizukiPass3Style, config->MochizukiPass3Intensity,
+                             config->MochizukiPass3LocalTone, config->MochizukiPass3LocalStructure,
+                             config->MochizukiPass3SkinStructure, config->MochizukiPass3AutoMask);
+                ImGui::TreePop();
+            }
+
+            ImGui::SeparatorText("Advanced");
+            int linear = int(std::min(config->MochizukiLinearInput.value_or_default(), 2u));
+            if (ImGui::Combo("Linear input", &linear, "Auto (float formats)\0On\0Off\0"))
+                config->MochizukiLinearInput = uint32_t(linear);
+            HelpMarker("Whether the game's colour is linear light, which the network encodes before it"
+                       "\nruns. Auto takes floating-point formats as linear; pick Off for a float buffer"
+                       "\nthe game has already tone mapped. A change rebuilds the network.");
+            // MochizukiDynamicResolution: exact, auto or always; anything else is auto, as the host sends it.
+            const std::string dynamicResolution = config->MochizukiDynamicResolution.value_or_default();
+            int drs = dynamicResolution == "exact" ? 1 : dynamicResolution == "always" ? 2 : 0;
+            if (ImGui::Combo("Dynamic resolution", &drs, "Auto\0Exact\0Always\0"))
+                config->MochizukiDynamicResolution = drs == 1 ? "exact" : drs == 2 ? "always" : "auto";
+            HelpMarker("For games that change their render resolution as they run. Auto: once it drops"
+                       "\nbelow the game's colour buffer, one network, built for the largest resolution"
+                       "\nseen, serves every frame, which moves inside it; the network then costs that"
+                       "\nlargest resolution's time. Exact: the network is rebuilt for each resolution, a"
+                       "\nsecond or two without NR every time. Always: as Auto from the first frame, also"
+                       "\nwhen the game makes its buffers again at another size.");
+            bool networkOnly = !config->MochizukiApplyModel.value_or_default();
+            if (ImGui::Checkbox("Network only (no effect)", &networkOnly))
+                config->MochizukiApplyModel = !networkOnly;
+            HelpMarker("Runs the network at its full cost but shows the frame as the game drew it, to"
+                       "\nmeasure the cost or compare with and without the effect.");
+
+            ImGui::SeparatorText("Status");
             ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
+            if (const auto runtimeStatus = DlssNr::AmdBridge::RuntimeStatus(); !runtimeStatus.empty())
+                ImGui::TextWrapped("%s", runtimeStatus.c_str());
+            if (MochizukiNrInfo info {}; DlssNr::Backend::LmxxfBackend::MochizukiInfo(info))
+            {
+                if (info.building)
+                    ImGui::TextDisabled("Building the network; frames pass through until it is ready.");
+                if (info.model_w)
+                    ImGui::Text("Network %ux%u for a %ux%u frame, %u pass%s", info.model_w, info.model_h, info.frame_w,
+                                info.frame_h, info.max_passes, info.max_passes == 1 ? "" : "es");
+                if (info.gpu_ms_median > 0)
+                    ImGui::Text("Network GPU time %.2f ms median, %.2f ms p95", info.gpu_ms_median, info.gpu_ms_p95);
+                if (info.build_seconds > 0)
+                    ImGui::Text("Last network build %.1f s", info.build_seconds);
+                if (temporal && info.frames)
+                    ImGui::Text("History used on %u%% of recent frames", info.history_consumed_pct);
+                if (info.motion_refused_dxgi)
+                    ImGui::TextColored(warning,
+                                       "The game's motion vectors (DXGI format %u) are not supported: running"
+                                       "\nwithout history.",
+                                       info.motion_refused_dxgi);
+                if (info.failed)
+                    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "Failed: %s", info.last_error);
+            }
             ImGui::TextWrapped("Runs before Super Resolution only. The first start builds the network in about"
                                " half a minute; later starts take a second or two.");
             return;

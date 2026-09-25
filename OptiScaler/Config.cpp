@@ -553,6 +553,35 @@ bool Config::Reload(std::filesystem::path iniPath)
             LmxxfTemporal.set_from_config(readBool("DlssNr", "LmxxfTemporal"));
             LmxxfSmoothStrength.set_from_config(readFloat("DlssNr", "LmxxfSmoothStrength"));
             LmxxfSmoothThreshold.set_from_config(readFloat("DlssNr", "LmxxfSmoothThreshold"));
+            MochizukiTemporal.set_from_config(readBool("DlssNr", "MochizukiTemporal"));
+            MochizukiHistoryStrength.set_from_config(readFloat("DlssNr", "MochizukiHistoryStrength"));
+            MochizukiDetailStrength.set_from_config(readFloat("DlssNr", "MochizukiDetailStrength"));
+            MochizukiColourStrength.set_from_config(readFloat("DlssNr", "MochizukiColourStrength"));
+            MochizukiPasses.set_from_config(readUInt("DlssNr", "MochizukiPasses"));
+            MochizukiModelScale.set_from_config(readFloat("DlssNr", "MochizukiModelScale"));
+            MochizukiIntensity.set_from_config(readFloat("DlssNr", "MochizukiIntensity"));
+            MochizukiStyle.set_from_config(readUInt("DlssNr", "MochizukiStyle"));
+            MochizukiLocalTone.set_from_config(readFloat("DlssNr", "MochizukiLocalTone"));
+            MochizukiLocalStructure.set_from_config(readFloat("DlssNr", "MochizukiLocalStructure"));
+            MochizukiSkinStructure.set_from_config(readFloat("DlssNr", "MochizukiSkinStructure"));
+            MochizukiAutoMask.set_from_config(readBool("DlssNr", "MochizukiAutoMask"));
+            MochizukiMaxRatio.set_from_config(readFloat("DlssNr", "MochizukiMaxRatio"));
+            MochizukiWhitePoint.set_from_config(readFloat("DlssNr", "MochizukiWhitePoint"));
+            MochizukiApplyModel.set_from_config(readBool("DlssNr", "MochizukiApplyModel"));
+            MochizukiLinearInput.set_from_config(readUInt("DlssNr", "MochizukiLinearInput"));
+            MochizukiDynamicResolution.set_from_config(readString("DlssNr", "MochizukiDynamicResolution", true));
+            MochizukiPass2Style.set_from_config(readUInt("DlssNr", "MochizukiPass2Style"));
+            MochizukiPass2Intensity.set_from_config(readFloat("DlssNr", "MochizukiPass2Intensity"));
+            MochizukiPass2LocalTone.set_from_config(readFloat("DlssNr", "MochizukiPass2LocalTone"));
+            MochizukiPass2LocalStructure.set_from_config(readFloat("DlssNr", "MochizukiPass2LocalStructure"));
+            MochizukiPass2SkinStructure.set_from_config(readFloat("DlssNr", "MochizukiPass2SkinStructure"));
+            MochizukiPass2AutoMask.set_from_config(readBool("DlssNr", "MochizukiPass2AutoMask"));
+            MochizukiPass3Style.set_from_config(readUInt("DlssNr", "MochizukiPass3Style"));
+            MochizukiPass3Intensity.set_from_config(readFloat("DlssNr", "MochizukiPass3Intensity"));
+            MochizukiPass3LocalTone.set_from_config(readFloat("DlssNr", "MochizukiPass3LocalTone"));
+            MochizukiPass3LocalStructure.set_from_config(readFloat("DlssNr", "MochizukiPass3LocalStructure"));
+            MochizukiPass3SkinStructure.set_from_config(readFloat("DlssNr", "MochizukiPass3SkinStructure"));
+            MochizukiPass3AutoMask.set_from_config(readBool("DlssNr", "MochizukiPass3AutoMask"));
             AmdGraphicsUnsafe.set_from_config(readInt("DlssNr", "AmdGraphicsUnsafe"));
             AmdRtgiEnabled.set_from_config(readBool("AmdRtgi", "Enabled"));
             AmdRtgiQuality.set_from_config(readUInt("AmdRtgi", "Quality"));
@@ -1657,6 +1686,62 @@ bool Config::SaveIni()
                      GetFloatValue(Instance()->LmxxfSmoothStrength.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfSmoothThreshold",
                      GetFloatValue(Instance()->LmxxfSmoothThreshold.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiTemporal",
+                     GetBoolValue(Instance()->MochizukiTemporal.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiHistoryStrength",
+                     GetFloatValue(Instance()->MochizukiHistoryStrength.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiDetailStrength",
+                     GetFloatValue(Instance()->MochizukiDetailStrength.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiColourStrength",
+                     GetFloatValue(Instance()->MochizukiColourStrength.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPasses", GetIntValue(Instance()->MochizukiPasses.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiModelScale",
+                     GetFloatValue(Instance()->MochizukiModelScale.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiIntensity",
+                     GetFloatValue(Instance()->MochizukiIntensity.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiStyle", GetIntValue(Instance()->MochizukiStyle.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiLocalTone",
+                     GetFloatValue(Instance()->MochizukiLocalTone.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiLocalStructure",
+                     GetFloatValue(Instance()->MochizukiLocalStructure.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiSkinStructure",
+                     GetFloatValue(Instance()->MochizukiSkinStructure.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiAutoMask",
+                     GetBoolValue(Instance()->MochizukiAutoMask.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiMaxRatio",
+                     GetFloatValue(Instance()->MochizukiMaxRatio.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiWhitePoint",
+                     GetFloatValue(Instance()->MochizukiWhitePoint.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiApplyModel",
+                     GetBoolValue(Instance()->MochizukiApplyModel.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiLinearInput",
+                     GetIntValue(Instance()->MochizukiLinearInput.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiDynamicResolution",
+                     Instance()->MochizukiDynamicResolution.value_for_config().value_or("auto").c_str());
+        ini.SetValue("DlssNr", "MochizukiPass2Style",
+                     GetIntValue(Instance()->MochizukiPass2Style.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPass2Intensity",
+                     GetFloatValue(Instance()->MochizukiPass2Intensity.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPass2LocalTone",
+                     GetFloatValue(Instance()->MochizukiPass2LocalTone.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPass2LocalStructure",
+                     GetFloatValue(Instance()->MochizukiPass2LocalStructure.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPass2SkinStructure",
+                     GetFloatValue(Instance()->MochizukiPass2SkinStructure.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPass2AutoMask",
+                     GetBoolValue(Instance()->MochizukiPass2AutoMask.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPass3Style",
+                     GetIntValue(Instance()->MochizukiPass3Style.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPass3Intensity",
+                     GetFloatValue(Instance()->MochizukiPass3Intensity.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPass3LocalTone",
+                     GetFloatValue(Instance()->MochizukiPass3LocalTone.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPass3LocalStructure",
+                     GetFloatValue(Instance()->MochizukiPass3LocalStructure.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPass3SkinStructure",
+                     GetFloatValue(Instance()->MochizukiPass3SkinStructure.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPass3AutoMask",
+                     GetBoolValue(Instance()->MochizukiPass3AutoMask.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdGraphicsUnsafe",
                      GetIntValue(Instance()->AmdGraphicsUnsafe.value_for_config()).c_str());
         ini.SetValue("AmdRtgi", "Enabled", GetBoolValue(Instance()->AmdRtgiEnabled.value_for_config()).c_str());

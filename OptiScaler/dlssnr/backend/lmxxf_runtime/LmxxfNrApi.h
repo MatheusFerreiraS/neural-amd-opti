@@ -84,7 +84,7 @@ extern "C"
         uint32_t color_state;    /* D3D12_RESOURCE_STATES at RecordInputs */
         uint32_t flags;          /* LMXXF_NR_FRAME_FLAG_* (0 in legacy ABI v1) */
         float transfer_strength; /* Detail strength: 0..2, default 1.0; above 1 extrapolates */
-        float color_strength;    /* Colour strength: 0..2, default 1.0; above 1 extrapolates */
+        float color_strength;    /* Colour strength: lmxxf 0..2, mochizuki 0..4, default 1.0; above 1 extrapolates */
         uint32_t debug_view;     /* 0=normal, 1=proxy, 2=neural solo, 3=diff 20x, 4=tint */
         float model_scale;       /* 0.25..1.0, default 1.0 */
         uint32_t passes;         /* network runs per frame, each on the previous output: 1..3, 0 = 1 */

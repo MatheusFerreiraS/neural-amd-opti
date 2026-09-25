@@ -18,6 +18,11 @@ bool HasReplacement(NVSDK_NGX_Parameter*);
 void InvalidateHistory();
 void TraceContextRelease(unsigned int handle, bool after);
 std::string Status();
+// The runtime's own status line (for mochizuki: network size and time, or the build in progress), refreshed by
+// the render thread at most twice a second; empty until a session runs. Never waits on a frame being recorded.
+std::string RuntimeStatus();
+// True once the process-exit hook has run. Everything after it passes the original colour through.
+bool Exiting();
 // Smoothed GPU time the neural work takes on the game's queue per frame, all passes; 0 before the
 // first reading.
 float NeuralMs();

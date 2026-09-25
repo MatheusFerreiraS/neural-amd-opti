@@ -16,8 +16,13 @@ class Host
     virtual void TraceBoundary(const std::string&) = 0;
     virtual void Submitted(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*) = 0;
     virtual bool Shutdown() = 0;
+    // Called from the process-exit hook while the game's other threads still run. A host that cannot tear down
+    // safely there overrides this and leaves its resources to the OS.
+    virtual void OnProcessExit() { Shutdown(); }
     virtual void InvalidateHistory() = 0;
     virtual std::string Status() const = 0;
+    // The runtime's own status line (network time, build state), or empty when the host has none.
+    virtual std::string RuntimeStatus() const { return {}; }
     virtual bool GraphicsRestartNeeded(UINT activePasses) const = 0;
 };
 } // namespace DlssNr::Backend

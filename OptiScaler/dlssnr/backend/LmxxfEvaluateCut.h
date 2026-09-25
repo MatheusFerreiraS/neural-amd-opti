@@ -44,6 +44,11 @@ inline PendingHip& Pending()
     return p;
 }
 
+// Set once by the process-exit hook (AmdBridge::Exit) before any teardown, and never cleared. It lives here, the
+// lowest header the bridge, the backend and the standalone tests share, so BetweenThunk can read it without
+// linking AmdBridge.cpp. Everyone else reads it through AmdBridge::Exiting().
+inline std::atomic<bool> g_exiting { false };
+
 inline void ClearPendingEnqueue()
 {
     auto& p = Pending();
@@ -77,8 +82,29 @@ inline void ClearPendingEnqueueIfSubmitted(UINT count, ID3D12CommandList* const*
     }
 }
 
+// The list was Reset or released without being executed, so its between-slot will never run. Clears only while the
+// pending enqueue is still that list's and that job's, so a newer arm survives.
+inline void ClearPendingEnqueueIf(ID3D12CommandList* list, void* job)
+{
+    if (!list)
+        return;
+    auto& p = Pending();
+    std::lock_guard lock(p.mutex);
+    if (p.targetList != list || p.job != job)
+        return;
+    p.session = nullptr;
+    p.job = nullptr;
+    p.enqueueHip = nullptr;
+    p.getLastError = nullptr;
+    p.targetList = nullptr;
+    p.expectedQueue = nullptr;
+}
+
 inline void BetweenThunk(ID3D12CommandQueue* queue, ID3D12CommandList* list, void* /*ctx*/)
 {
+    // Past the exit hook nothing new enters the runtime; the list's halves still run, in order.
+    if (g_exiting.load(std::memory_order_acquire))
+        return;
     auto& p = Pending();
     void* session;
     void* job;
@@ -149,6 +175,13 @@ inline void BetweenThunk(ID3D12CommandQueue* queue, ID3D12CommandList* list, voi
                     p.lastEnqueueError = error;
                 else
                 {
+                    // The text below ("output zeroed") holds for lmxxf only, which clears its output on a queue
+                    // other than the session's so that the original colour passes through (it normally says so in
+                    // its own error, used above). It is wrong for a runtime with MOCHIZUKI_NR_FEATURE_ANY_QUEUE
+                    // (mochizuki): rc 0 there means the network ran on this queue after it waited for the last
+                    // frame (Session::Follow; that frame may look wrong and the history restarts), nothing was
+                    // zeroed, and the host keeps the session; only a network that fails on a frame passes that
+                    // frame's colour through. So for mochizuki this rc/text only records that the queue changed.
                     std::array<char, 256> errBuf {};
                     std::snprintf(
                         errBuf.data(), errBuf.size(),

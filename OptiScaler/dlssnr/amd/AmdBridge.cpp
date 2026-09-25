@@ -30,6 +30,10 @@ namespace DlssNr::AmdBridge
 namespace
 {
 std::atomic<DlssNr::Backend::Host*> backend { nullptr };
+// COM identity and adapter of the device the backend was built on (guarded by initMutex). The backend lives for
+// the process, so this reference is never released either.
+IUnknown* backendDevice = nullptr;
+LUID backendAdapter {};
 using ExecuteFn = void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
 using ExitFn = void(NTAPI*)(LONG);
 ExecuteFn executeOriginal = nullptr;
@@ -157,7 +161,9 @@ void ExecuteBatch(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* c)
     // (Daniel-only isolation of a private neural list).
     if (DlssNr::Submission::Hooks::ExpandEnabled())
     {
-        const auto between = DlssNr::Submission::Hooks::GetBetween();
+        // Past the exit hook nothing is enqueued between a list's halves; both still run, in order.
+        const auto between =
+            Exiting() ? DlssNr::Submission::Hooks::BetweenState {} : DlssNr::Submission::Hooks::GetBetween();
         DlssNr::Submission::Hooks::ExecuteExpanded(q, n, c, between.fn, between.ctx, executeOriginal);
     }
     else
@@ -193,10 +199,13 @@ void STDMETHODCALLTYPE Execute(ID3D12CommandQueue* q, UINT n, ID3D12CommandList*
 }
 void NTAPI Exit(LONG code)
 {
+    // The game's other threads still run until exitOriginal terminates them. From here on Run passes the
+    // original colour through and nothing new enters the runtime; the backend decides what it can tear down.
+    DlssNr::Backend::LmxxfCut::g_exiting.store(true, std::memory_order_release);
     s_confirmedRenderQueue.Clear();
     s_awaitingTracker.Clear();
     if (auto b = backend.load())
-        b->Shutdown();
+        b->OnProcessExit();
     exitOriginal(code);
 }
 // Caller holds initMutex. Install once, before any proxy can escape into game submission.
@@ -295,6 +304,7 @@ std::string VramUsage(LUID luid)
     return text;
 }
 } // namespace
+bool Exiting() { return DlssNr::Backend::LmxxfCut::g_exiting.load(std::memory_order_acquire); }
 void UpdateConfirmedRenderQueue(ID3D12CommandQueue* q) { SetConfirmedRenderQueueInternal(q); }
 bool EnsureSubmissionHook(ID3D12CommandQueue* q)
 {
@@ -370,6 +380,13 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
 {
     if (outResult)
         *outResult = nullptr;
+    // Process exit has begun: the original colour goes to SR.
+    if (Exiting())
+        return true;
+    // This evaluate's colour is already the model's answer (DlssNrPreUpscale or DualFeature offering the pre-SR
+    // seam a second time). Running again would only be refused, and would cost the model its history.
+    if (!afterUpscale && HasReplacement(params))
+        return true;
     // A single backend consumes one SR stream even if the engine rotates worker threads.
     // Serialize shared settling/identity state; thread-local replacement ownership stays unchanged.
     std::lock_guard frameGuard(frameMutex);
@@ -477,8 +494,37 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
             b = new DlssNr::Backend::LmxxfBackend(device, q, Directory(), L"MochizukiNrRuntime.dll");
         else
             b = new DlssNr::Backend::DanielBackend(device, q, Directory());
+        device->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&backendDevice));
+        backendAdapter = adapter;
         backend.store(b);
         neuralTimer = std::make_unique<GpuTime_Dx12>(device);
+    }
+    // The backend and its runtime session belong to the device they were built on. A frame recorded on another
+    // one (a second adapter) goes to SR untouched rather than reach resources that device cannot use. A different
+    // COM identity on the same adapter is the same device behind a wrapper: D3D12 has one device per adapter.
+    {
+        IUnknown* deviceId = nullptr;
+        device->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&deviceId));
+        const bool sameDevice = deviceId == backendDevice || (adapter.HighPart == backendAdapter.HighPart &&
+                                                              adapter.LowPart == backendAdapter.LowPart);
+        if (deviceId)
+            deviceId->Release();
+        if (!sameDevice)
+        {
+            static bool loggedForeignDevice = false;
+            if (!loggedForeignDevice)
+            {
+                loggedForeignDevice = true;
+                LOG_WARN("AMD pre-SR: frame recorded on device {:p} (adapter {:08X}{:08X}), not the backend's {:p}; "
+                         "passing it through without NR",
+                         reinterpret_cast<void*>(deviceId), static_cast<uint32_t>(adapter.HighPart),
+                         static_cast<uint32_t>(adapter.LowPart), reinterpret_cast<void*>(backendDevice));
+            }
+            device->Release();
+            if (confirmedQ)
+                confirmedQ->Release();
+            return true;
+        }
     }
     device->Release();
     if (confirmedQ)
@@ -553,11 +599,21 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     // Let SR finish its reconfiguration before rebuilding the private HIP model.
     // Do not retain or replay the old image while input sizes are settling.
     static UINT settlingWidth = 0, settlingHeight = 0;
+    static DXGI_FORMAT settlingFormat = DXGI_FORMAT_UNKNOWN;
     static float settlingScale = 1.f;
     static ULONGLONG settlingSince = 0;
+    // mochizuki builds its network from its own keys and swaps a rebuilt one in while the frames keep the old, so
+    // danielblnc's NR resolution (AmdNrScale, INI AmdModelScale) and its dynamic steps (AmdDynamicScale) neither size
+    // it nor settle it: the controller stays off and the gate's scale is constant. With dynamic resolution
+    // (MochizukiDynamicResolution other than exact) it also keeps its network while the render subrect moves inside
+    // one colour allocation, so the gate settles and warms up on that allocation (and its format) instead, and a
+    // subrect change only restarts the history.
+    const bool mochizuki = active == DlssNr::Backend::Kind::Mochizuki;
+    const bool dynamicResolution =
+        mochizuki && Config::Instance()->MochizukiDynamicResolution.value_or_default() != "exact";
     // Post-upscale answers to the "after RR" controls, so the two placements can be tuned apart.
     // The AMD backend never supersamples, so its scale tops out at 1.0 (the frame's own size).
-    const bool dynamicOn = Config::Instance()->AmdDynamicScale.value_or_default();
+    const bool dynamicOn = !mochizuki && Config::Instance()->AmdDynamicScale.value_or_default();
     const float sessionScale = dynamicScale.Step(
         std::chrono::steady_clock::now(), dynamicOn, Config::Instance()->AmdDynamicTargetFps.value_or_default(),
         afterUpscale ? std::clamp(Config::Instance()->DlssNrRRWorkingScale.value_or_default(), .25f, 1.f)
@@ -565,16 +621,29 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     dynamicScaleNow = dynamicOn ? sessionScale : 0.f;
     dynamicFpsNow = dynamicOn ? static_cast<float>(dynamicScale.Fps()) : 0.f;
     dynamicChangesNow = dynamicScale.changes;
-    const float requestedScale = sessionScale;
+    const float requestedScale = mochizuki ? 1.f : sessionScale;
+    // What the gate settles on: the render subrect, or with mochizuki's dynamic resolution the colour allocation.
+    UINT gateWidth = f.width, gateHeight = f.height;
+    DXGI_FORMAT gateFormat = DXGI_FORMAT_UNKNOWN;
+    if (dynamicResolution && f.colour)
+    {
+        const auto allocation = f.colour->GetDesc();
+        gateWidth = static_cast<UINT>(allocation.Width);
+        gateHeight = allocation.Height;
+        gateFormat = allocation.Format;
+    }
     const auto now = GetTickCount64();
-    if (settlingWidth != f.width || settlingHeight != f.height || settlingScale != requestedScale)
+    if (settlingWidth != gateWidth || settlingHeight != gateHeight || settlingFormat != gateFormat ||
+        settlingScale != requestedScale)
     {
         b->TraceBoundary("settings change: input " + std::to_string(settlingWidth) + "x" +
-                         std::to_string(settlingHeight) + " -> " + std::to_string(f.width) + "x" +
-                         std::to_string(f.height) + "; NR scale " + std::to_string(settlingScale) + " -> " +
-                         std::to_string(requestedScale) + "; " + VramUsage(adapter));
-        settlingWidth = f.width;
-        settlingHeight = f.height;
+                         std::to_string(settlingHeight) + " -> " + std::to_string(gateWidth) + "x" +
+                         std::to_string(gateHeight) + (dynamicResolution ? " (colour allocation)" : "") +
+                         "; NR scale " + std::to_string(settlingScale) + " -> " + std::to_string(requestedScale) +
+                         "; " + VramUsage(adapter));
+        settlingWidth = gateWidth;
+        settlingHeight = gateHeight;
+        settlingFormat = gateFormat;
         settlingScale = requestedScale;
         settlingSince = now;
         b->InvalidateHistory();
@@ -584,7 +653,7 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         Message("AMD neural: waiting for resolution settings to settle");
         return true;
     }
-    const FrameIdentity current { f.colour, f.motion, f.depth, f.width, f.height };
+    const FrameIdentity current { f.colour, f.motion, f.depth, gateWidth, gateHeight };
     // Resource addresses rotate in Unreal's frame buffers. Only an extent
     // change requires warm-up; pointer equality can suppress every frame.
     const bool sameFrame = current.width == lastFrame.width && current.height == lastFrame.height;
@@ -601,6 +670,13 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         Message("AMD pre-SR: warming up after an upscaler/resource change");
         return true;
     }
+    // mochizuki's dynamic resolution: a render subrect change inside the allocation needs no settling, only a new
+    // history (the runtime restarts it too).
+    static UINT subrectWidth = 0, subrectHeight = 0;
+    if (dynamicResolution && (subrectWidth != f.width || subrectHeight != f.height))
+        b->InvalidateHistory();
+    subrectWidth = f.width;
+    subrectHeight = f.height;
     f.depthInverted = (flags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
     params->Get(NVSDK_NGX_Parameter_Reset, &reset);
     f.reset = reset != 0;
@@ -780,5 +856,11 @@ std::string Status()
     if (auto b = backend.load())
         return b->Status();
     return "AMD pre-SR: idle";
+}
+std::string RuntimeStatus()
+{
+    if (auto b = backend.load())
+        return b->RuntimeStatus();
+    return {};
 }
 } // namespace DlssNr::AmdBridge

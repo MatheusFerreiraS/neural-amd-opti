@@ -4,8 +4,10 @@
 #include <cstring>
 #include "../submission/SubmissionTls.h"
 #include "lmxxf_runtime/LmxxfNrApi.h"
+#include "mochizuki_runtime/MochizukiNrControls.h"
 #include "../amd/AmdBridge.h"
 #include <State.h>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -15,11 +17,43 @@ namespace DlssNr::Backend
 struct LmxxfBackend::Api
 {
     LmxxfNrApi table {};
+    // mochizuki's own exports (MochizukiNrControls.h); null for lmxxf and older runtimes.
+    PFN_MochizukiNrGetFeatures getFeatures = nullptr;
+    PFN_MochizukiNrSetControls setControls = nullptr;
+    PFN_MochizukiNrGetInfo getInfo = nullptr;
+    PFN_MochizukiNrGetControlDefaults getControlDefaults = nullptr;
+    // MOCHIZUKI_NR_FEATURE_ANY_QUEUE: the runtime follows whichever queue executes the list, so a queue change
+    // needs no new session.
+    bool anyQueue = false;
+    // The runtime's defaults, which every frame's controls start from, and what the session last took: SetControls
+    // runs only when the controls change or the session is new. Render thread only.
+    MochizukiNrControls controlDefaults {};
+    MochizukiNrControls controlsSent {};
+    bool controlsSentValid = false;
 };
 
 namespace
 {
 std::wstring WidenPath(const std::filesystem::path& p) { return p.wstring(); }
+
+// COM identity: proxies (FG, Streamline) can hand out different pointers for one queue.
+bool SameObject(IUnknown* a, IUnknown* b)
+{
+    if (a == b)
+        return true;
+    if (!a || !b)
+        return false;
+    IUnknown* id1 = nullptr;
+    IUnknown* id2 = nullptr;
+    a->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&id1));
+    b->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&id2));
+    const bool same = id1 && id2 && id1 == id2;
+    if (id1)
+        id1->Release();
+    if (id2)
+        id2->Release();
+    return same;
+}
 
 std::filesystem::path ResolveModulesDir(const std::filesystem::path& directory)
 {
@@ -34,6 +68,91 @@ std::filesystem::path ResolveModulesDir(const std::filesystem::path& directory)
     return directory;
 }
 
+// A mochizuki setting as its runtime accepts it: NaN or infinity is the default, anything else is clamped. The
+// runtime sanitises again; doing it here keeps what the log shows equal to what runs.
+float MzSetting(float v, float lo, float hi, float def) { return std::isfinite(v) ? std::clamp(v, lo, hi) : def; }
+
+// What mochizuki takes with each frame in LmxxfNrFrameInfo.
+struct MochizukiFrameSettings
+{
+    float detail;
+    float colour;
+    float scale;
+    uint32_t passes;
+};
+
+// From mochizuki's own keys only: never the danielblnc, lmxxf or NVIDIA ones, nor AmdNrScale with AmdDynamicScale's
+// steps (the bridge's Settings::modelScale), since every distinct scale or pass count rebuilds the network.
+MochizukiFrameSettings MochizukiFrame(const Config& cfg)
+{
+    MochizukiFrameSettings s {};
+    s.detail = MzSetting(cfg.MochizukiDetailStrength.value_or_default(), 0.f, 2.f, 1.f);
+    s.colour = MzSetting(cfg.MochizukiColourStrength.value_or_default(), 0.f, 4.f, 0.f);
+    s.scale = MzSetting(cfg.MochizukiModelScale.value_or_default(), .25f, 1.f, 1.f);
+    s.passes = std::clamp(cfg.MochizukiPasses.value_or_default(), 1u, 3u);
+    return s;
+}
+
+// mochizuki's model controls from its Mochizuki* keys, into c (the runtime's defaults, for the fields past these).
+// A later pass with none of its keys set is left unused, and inherits pass 1 with local tone 0; one with any set
+// takes the others from pass 1 the same way, so a single key changes only itself.
+void FillMochizukiControls(const Config& cfg, MochizukiNrControls& c)
+{
+    c.intensity = MzSetting(cfg.MochizukiIntensity.value_or_default(), 0.f, 2.f, 1.f);
+    c.style = std::min(cfg.MochizukiStyle.value_or_default(), 2u);
+    c.local_tone = MzSetting(cfg.MochizukiLocalTone.value_or_default(), 0.f, 2.f, 1.f);
+    c.local_structure = MzSetting(cfg.MochizukiLocalStructure.value_or_default(), 0.f, 2.f, 1.f);
+    c.skin_structure = MzSetting(cfg.MochizukiSkinStructure.value_or_default(), -1.f, 2.f, -1.f);
+    c.automatic_mask = cfg.MochizukiAutoMask.value_or_default() ? 1u : 0u;
+    c.max_ratio = MzSetting(cfg.MochizukiMaxRatio.value_or_default(), 1.f, 8.f, 2.f);
+    c.history_strength = MzSetting(cfg.MochizukiHistoryStrength.value_or_default(), 0.f, 1.f, 1.f);
+    c.white_point = MzSetting(cfg.MochizukiWhitePoint.value_or_default(), .01f, 100.f, 1.f);
+    c.apply_model = cfg.MochizukiApplyModel.value_or_default() ? 1u : 0u;
+    const uint32_t linear = cfg.MochizukiLinearInput.value_or_default();
+    c.linear_input = linear <= 2 ? linear : 0u;
+    // Dynamic resolution: 0 exact, 1 auto (the key's default, and anything the key does not name), 2 always. The
+    // runtime's own default is exact, for hosts that do not ask.
+    const std::string drs = cfg.MochizukiDynamicResolution.value_or_default();
+    c.drs_mode = drs == "exact" ? 0u : drs == "always" ? 2u : 1u;
+    const auto pass = [&c](MochizukiNrPassControls& p, const auto& style, const auto& intensity, const auto& tone,
+                           const auto& structure, const auto& skin, const auto& mask)
+    {
+        p.used = style.has_value() || intensity.has_value() || tone.has_value() || structure.has_value() ||
+                         skin.has_value() || mask.has_value()
+                     ? 1u
+                     : 0u;
+        p.style = style.has_value() ? std::min(style.value(), 2u) : c.style;
+        p.intensity = intensity.has_value() ? MzSetting(intensity.value(), 0.f, 2.f, c.intensity) : c.intensity;
+        p.local_tone = tone.has_value() ? MzSetting(tone.value(), 0.f, 2.f, 0.f) : 0.f;
+        p.local_structure =
+            structure.has_value() ? MzSetting(structure.value(), 0.f, 2.f, c.local_structure) : c.local_structure;
+        p.skin_structure = skin.has_value() ? MzSetting(skin.value(), -1.f, 2.f, c.skin_structure) : c.skin_structure;
+        p.automatic_mask = mask.has_value() ? (mask.value() ? 1u : 0u) : c.automatic_mask;
+    };
+    pass(c.pass[0], cfg.MochizukiPass2Style, cfg.MochizukiPass2Intensity, cfg.MochizukiPass2LocalTone,
+         cfg.MochizukiPass2LocalStructure, cfg.MochizukiPass2SkinStructure, cfg.MochizukiPass2AutoMask);
+    pass(c.pass[1], cfg.MochizukiPass3Style, cfg.MochizukiPass3Intensity, cfg.MochizukiPass3LocalTone,
+         cfg.MochizukiPass3LocalStructure, cfg.MochizukiPass3SkinStructure, cfg.MochizukiPass3AutoMask);
+}
+
+// The live mochizuki session's last MochizukiNrGetInfo, for the menu (LmxxfBackend::MochizukiInfo). The product
+// runs one backend, so one slot; the render thread fills it with the runtime status and clears it with the session.
+struct InfoSlot
+{
+    std::mutex mutex;
+    MochizukiNrInfo info {};
+    bool valid = false;
+};
+
+InfoSlot& LastInfo()
+{
+    static InfoSlot slot;
+    return slot;
+}
+
+// The backend LmxxfBackend::OnListRecycled routes to. The product constructs one and never destroys it.
+std::atomic<LmxxfBackend*> g_recycleTarget { nullptr };
+
 } // namespace
 
 void LmxxfBackend::SetStatus(const char* s)
@@ -43,16 +162,106 @@ void LmxxfBackend::SetStatus(const char* s)
     std::string next = s;
     if (!Lmxxf() && next.rfind("lmxxf", 0) == 0)
         next.replace(0, 5, "mochizuki");
-    if (status == next)
-        return;
-    status = next;
+    {
+        std::lock_guard lock(statusMutex);
+        if (status == next)
+            return;
+        status = next;
+    }
     // Surface to OptiScaler.log with progressive rate-limiting on status changes.
     static std::atomic<uint32_t> s_statusLogCount { 0 };
     const uint32_t c = s_statusLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
     if (c <= 10 || (c <= 100 && (c % 20 == 0)) || (c <= 1000 && (c % 100 == 0)) || (c % 1000 == 0))
     {
-        LOG_INFO("lmxxf status: {} (status change #{})", status, c);
+        LOG_INFO("lmxxf status: {} (status change #{})", next, c);
     }
+}
+
+void LmxxfBackend::RefreshRuntimeStatus()
+{
+    const ULONGLONG now = GetTickCount64();
+    if (!session || !api->table.GetStatus || (runtimeStatusTick && now - runtimeStatusTick < 500))
+        return;
+    runtimeStatusTick = now;
+    char st[256] {};
+    api->table.GetStatus(session, st, sizeof st);
+    st[sizeof st - 1] = 0;
+    {
+        std::lock_guard lock(statusMutex);
+        runtimeStatus = st;
+    }
+    if (!Lmxxf() && api->getInfo)
+    {
+        // Zeroed first, so a field past the struct_size the runtime fills reads 0.
+        MochizukiNrInfo info {};
+        info.struct_size = sizeof info;
+        const bool ok = api->getInfo(session, &info) == LMXXF_NR_OK;
+        info.last_error[sizeof info.last_error - 1] = 0;
+        auto& slot = LastInfo();
+        std::lock_guard lock(slot.mutex);
+        slot.info = info;
+        slot.valid = ok;
+    }
+}
+
+void LmxxfBackend::ClearRuntimeStatus()
+{
+    runtimeStatusTick = 0;
+    {
+        auto& slot = LastInfo();
+        std::lock_guard lock(slot.mutex);
+        slot.valid = false;
+    }
+    std::lock_guard lock(statusMutex);
+    runtimeStatus.clear();
+}
+
+bool LmxxfBackend::MochizukiInfo(MochizukiNrInfo& out)
+{
+    auto& slot = LastInfo();
+    std::lock_guard lock(slot.mutex);
+    if (!slot.valid)
+        return false;
+    out = slot.info;
+    return true;
+}
+
+// Render thread, under recordMutex, with a session. The runtime applies the controls from the next PrepareFrame and
+// never fails the session over them. They go only when they change or the session is new: each call sanitises them
+// again, and pass overrides allocate.
+void LmxxfBackend::SendControls()
+{
+    if (!session || !api->setControls)
+        return;
+    MochizukiNrControls c = api->controlDefaults;
+    FillMochizukiControls(*Config::Instance(), c);
+    if (api->controlsSentValid && std::memcmp(&c, &api->controlsSent, sizeof c) == 0)
+        return;
+    const int32_t rc = api->setControls(session, &c);
+    if (rc != LMXXF_NR_OK)
+    {
+        static std::atomic<uint32_t> failures { 0 };
+        const uint32_t n = failures.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n <= 3 || n % 120 == 0)
+        {
+            char err[256] {};
+            if (api->table.GetLastError)
+                api->table.GetLastError(err, sizeof err);
+            LOG_ERROR("mochizuki: SetControls rc={} err={} (fail#{})", rc, err, n);
+        }
+        return;
+    }
+    api->controlsSent = c;
+    api->controlsSentValid = true;
+    // A slider moves them every frame; the log keeps the first few and then every hundredth.
+    static std::atomic<uint32_t> sends { 0 };
+    const uint32_t n = sends.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 10 || n % 100 == 0)
+        LOG_INFO("mochizuki: controls intensity={:.2f} style={} tone={:.2f} structure={:.2f} skin={:.2f} mask={} "
+                 "guard={:.2f} history={:.2f} white={:.2f} apply={} linear={} drs={} pass2={} pass3={} (#{})",
+                 c.intensity, c.style, c.local_tone, c.local_structure, c.skin_structure, c.automatic_mask, c.max_ratio,
+                 c.history_strength, c.white_point, c.apply_model, c.linear_input, c.drs_mode, c.pass[0].used,
+                 c.pass[1].used, n);
 }
 
 LmxxfBackend::LmxxfBackend(ID3D12Device* dev, ID3D12CommandQueue* q, const std::filesystem::path& dir,
@@ -74,10 +283,15 @@ LmxxfBackend::LmxxfBackend(ID3D12Device* dev, ID3D12CommandQueue* q, const std::
         LOG_INFO("lmxxf FitLarge={} (DLSS5_FIT_LARGE; restart if changed mid-session)", fit);
     }
     SetStatus("lmxxf: constructed (session not ready)");
+    g_recycleTarget.store(this, std::memory_order_release);
+    DlssNr::Submission::Hooks::g_onListRecycled.store(&LmxxfBackend::OnListRecycled, std::memory_order_release);
 }
 
+// Like Shutdown, only once no other thread can be inside the backend: a ListRecycled already running is not waited
+// for. The product never destroys its backend.
 LmxxfBackend::~LmxxfBackend()
 {
+    UnregisterListRecycled();
     Shutdown();
     delete api;
     api = nullptr;
@@ -117,15 +331,71 @@ bool LmxxfBackend::EnsureRuntime()
         SetStatus("lmxxf: GetApi failed");
         return false;
     }
+    if (!Lmxxf())
+    {
+        const auto dll = reinterpret_cast<HMODULE>(runtimeDll);
+        api->getFeatures = reinterpret_cast<PFN_MochizukiNrGetFeatures>(GetProcAddress(dll, "MochizukiNrGetFeatures"));
+        api->setControls = reinterpret_cast<PFN_MochizukiNrSetControls>(GetProcAddress(dll, "MochizukiNrSetControls"));
+        api->getInfo = reinterpret_cast<PFN_MochizukiNrGetInfo>(GetProcAddress(dll, "MochizukiNrGetInfo"));
+        api->getControlDefaults =
+            reinterpret_cast<PFN_MochizukiNrGetControlDefaults>(GetProcAddress(dll, "MochizukiNrGetControlDefaults"));
+        const uint32_t features = api->getFeatures ? api->getFeatures() : 0u;
+        api->anyQueue = (features & MOCHIZUKI_NR_FEATURE_ANY_QUEUE) != 0;
+        // The runtime's own defaults under the fields the keys fill, so a field this host does not know stays at
+        // what the runtime would use without it.
+        api->controlDefaults = {};
+        api->controlDefaults.struct_size = sizeof(MochizukiNrControls);
+        if (api->getControlDefaults && api->getControlDefaults(&api->controlDefaults) != LMXXF_NR_OK)
+        {
+            api->controlDefaults = {};
+            api->controlDefaults.struct_size = sizeof(MochizukiNrControls);
+        }
+        api->controlsSentValid = false;
+        LOG_INFO("mochizuki: runtime features=0x{:X} (export {}); controls {}; info {}", features,
+                 api->getFeatures ? "present" : "absent", api->setControls ? "present" : "absent (defaults only)",
+                 api->getInfo ? "present" : "absent");
+    }
     return true;
+}
+
+// mochizuki: every start creates a Vulkan instance, so a failed one is retried after 2 s, doubling up to a minute,
+// and one the runtime reports unsupported ("[unsupported] ...") is never retried. Returns false.
+bool LmxxfBackend::SessionStartFailed(const char* step, const char* err)
+{
+    if (Lmxxf())
+    {
+        SetStatus((std::string("lmxxf: ") + step + " failed").c_str());
+        return false;
+    }
+    if (std::strncmp(err, "[unsupported]", 13) == 0)
+    {
+        sessionUnavailable = true;
+        LOG_ERROR("mochizuki: {} reports this GPU or driver unsupported; NR stays off for this process: {}", step, err);
+        SetStatus((std::string("lmxxf: ") + err + " (NO NR)").c_str());
+        return false;
+    }
+    ++sessionFailures;
+    const ULONGLONG delay = std::min<ULONGLONG>(2000ull << std::min<uint32_t>(sessionFailures - 1, 5u), 60000ull);
+    nextSessionRetry = GetTickCount64() + delay;
+    char text[128] {};
+    std::snprintf(text, sizeof text, "lmxxf: %s failed (attempt %u; retrying in %llu s)", step, sessionFailures,
+                  static_cast<unsigned long long>(delay / 1000));
+    SetStatus(text);
+    return false;
 }
 
 bool LmxxfBackend::EnsureSession()
 {
     if (sessionReady && session)
         return true;
+    // Before anything else, the weights scan and the QueryInterface calls included.
+    if (!Lmxxf() && (sessionUnavailable || (sessionFailures && GetTickCount64() < nextSessionRetry)))
+        return false;
     if (!EnsureRuntime() || !device || !queue)
         return false;
+    // mochizuki logs its first attempt and every tenth; lmxxf logs them all.
+    const uint32_t attempt = sessionFailures + 1;
+    const bool verbose = Lmxxf() || attempt == 1 || attempt % 10 == 0;
 
     // Upstream 0.21+: auto picks 720/900/1080 from Color size. Unset defaults to 1080 and blacks 720p Color.
     if (Lmxxf() && !std::getenv("DLSS5_NETWORK_HEIGHT"))
@@ -198,24 +468,27 @@ bool LmxxfBackend::EnsureSession()
 
     const auto modules = ResolveModulesDir(directory);
     const std::wstring modulesW = WidenPath(modules);
-    LOG_INFO("lmxxf: assets/modules dir={}", modules.string());
+    if (verbose)
+    {
+        LOG_INFO("lmxxf: assets/modules dir={}", modules.string());
 
-    static constexpr GUID kStreamlineRiid = {
-        0xADEC44E2, 0x61F0, 0x45C3, { 0xAD, 0x9F, 0x1B, 0x37, 0x37, 0x92, 0x84, 0xFF }
-    };
-    IUnknown* qId = nullptr;
-    if (queue)
-        queue->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&qId));
-    IUnknown* slQueue = nullptr;
-    if (queue)
-        queue->QueryInterface(kStreamlineRiid, reinterpret_cast<void**>(&slQueue));
-    LOG_INFO("lmxxf: session queue={:p} (type {}) id={:p} sl={:p}", reinterpret_cast<void*>(queue),
-             queue ? static_cast<int>(queue->GetDesc().Type) : -1, reinterpret_cast<void*>(qId),
-             reinterpret_cast<void*>(slQueue));
-    if (qId)
-        qId->Release();
-    if (slQueue)
-        slQueue->Release();
+        static constexpr GUID kStreamlineRiid = {
+            0xADEC44E2, 0x61F0, 0x45C3, { 0xAD, 0x9F, 0x1B, 0x37, 0x37, 0x92, 0x84, 0xFF }
+        };
+        IUnknown* qId = nullptr;
+        if (queue)
+            queue->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&qId));
+        IUnknown* slQueue = nullptr;
+        if (queue)
+            queue->QueryInterface(kStreamlineRiid, reinterpret_cast<void**>(&slQueue));
+        LOG_INFO("lmxxf: session queue={:p} (type {}) id={:p} sl={:p}", reinterpret_cast<void*>(queue),
+                 queue ? static_cast<int>(queue->GetDesc().Type) : -1, reinterpret_cast<void*>(qId),
+                 reinterpret_cast<void*>(slQueue));
+        if (qId)
+            qId->Release();
+        if (slQueue)
+            slQueue->Release();
+    }
 
     LmxxfNrCreateInfo info {};
     info.struct_size = sizeof(info);
@@ -230,11 +503,11 @@ bool LmxxfBackend::EnsureSession()
         char err[256] {};
         if (api->table.GetLastError)
             api->table.GetLastError(err, sizeof err);
-        LOG_ERROR("lmxxf: Create rc={} err={}", createRc, err);
-        SetStatus("lmxxf: Create failed");
-        return false;
+        if (Lmxxf() || std::strncmp(err, "[unsupported]", 13) != 0)
+            LOG_ERROR("lmxxf: Create rc={} err={}", createRc, err);
+        return SessionStartFailed("Create", err);
     }
-    if (api->table.GetStatus)
+    if (verbose && api->table.GetStatus)
     {
         char st[256] {};
         api->table.GetStatus(ctx, st, sizeof st);
@@ -253,13 +526,15 @@ bool LmxxfBackend::EnsureSession()
         char err[256] {};
         if (api->table.GetLastError)
             api->table.GetLastError(err, sizeof err);
-        LOG_ERROR("lmxxf: PrepareSession rc={} err={}", prepRc, err);
+        if (Lmxxf() || (verbose && std::strncmp(err, "[unsupported]", 13) != 0))
+            LOG_ERROR("lmxxf: PrepareSession rc={} err={} (attempt {})", prepRc, err, attempt);
         api->table.Destroy(ctx);
-        SetStatus("lmxxf: PrepareSession failed");
-        return false;
+        return SessionStartFailed("PrepareSession", err);
     }
     session = ctx;
     sessionReady = true;
+    sessionFailures = 0;
+    api->controlsSentValid = false; // a new session starts from the runtime's defaults
     SetStatus("lmxxf: session ready");
     return true;
 }
@@ -291,6 +566,7 @@ ID3D12Resource* LmxxfBackend::FinishRecord(ID3D12GraphicsCommandList* recordCmd,
         std::lock_guard lock(jobMutex);
         pendingJobInfo.job = jobHandle;
         pendingJobInfo.cmd = recordCmd;
+        pendingList.store(recordCmd, std::memory_order_release);
     }
     SetStatus("lmxxf: Record ok (pending EnqueueHip)");
     return reinterpret_cast<ID3D12Resource*>(privateOutput);
@@ -300,29 +576,55 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
                                      const AmdPreSr::Settings& settings)
 {
     std::lock_guard recordLock(recordMutex);
-    // Counts every Evaluate, so a frame that ends without NR breaks the runtime's history continuity.
-    const uint64_t evaluateId = ++frameId;
-    if (!cmd || !frame.colour)
-    {
-        SetStatus("lmxxf: Record missing cmd/colour");
+    if (exiting.load(std::memory_order_acquire))
         return nullptr;
-    }
-    if (frame.afterUpscale)
+    // A queue change seen by Submitted is acted on here, where no other Record can be inside the session.
+    ID3D12CommandQueue* newQueue = nullptr;
     {
-        SetStatus("lmxxf: runs before Super Resolution only; set ApplyAfterRR=false (NO NR)");
-        return nullptr;
+        std::lock_guard lock(jobMutex);
+        if (migrateTo && !pendingJobInfo.job)
+        {
+            newQueue = migrateTo;
+            migrateTo = nullptr;
+        }
     }
+    if (newQueue)
+        MigrateQueue(newQueue);
+    if (historyResetPending.exchange(false, std::memory_order_acq_rel))
+        ResetHistoryNow();
     bool previousPending = false;
+    bool sameList = false;
     {
         std::lock_guard lock(jobMutex);
         previousPending = pendingJobInfo.job != nullptr;
+        sameList = previousPending && pendingJobInfo.cmd == cmd;
     }
+    if (sameList)
+    {
+        // A second Evaluate on the list that already carries this frame's job (DlssNrPreUpscale, DualFeature).
+        // The frame keeps its NR, so neither the frame id nor the history moves.
+        return nullptr;
+    }
+    // Every other decline before PrepareFrame is a frame without NR. frameId does not advance for it, so the history
+    // is reset instead: the next frame would otherwise pass the runtime's continuity test and blend history two
+    // frames old with one frame of motion.
+    const auto declineFrame = [this](const char* why) -> ID3D12Resource*
+    {
+        if (session && api->table.ResetHistory)
+            api->table.ResetHistory(session);
+        SetStatus(why);
+        return nullptr;
+    };
+    if (!cmd || !frame.colour)
+        return declineFrame("lmxxf: Record missing cmd/colour");
+    if (frame.afterUpscale)
+        return declineFrame("lmxxf: runs before Super Resolution only; set ApplyAfterRR=false (NO NR)");
     if (previousPending)
     {
         // The previous Evaluate already returned its output to SR. Cancelling its
         // job here would leave that recorded continuation consuming invalid data.
-        SetStatus("lmxxf: previous frame not submitted (original Color; NO NR)");
-        return nullptr;
+        // It clears when its list is executed (Submitted), or Reset or released unexecuted (ListRecycled).
+        return declineFrame("lmxxf: previous frame not submitted (original Color; NO NR)");
     }
     // Crucially before EnsureSession: controls do not load the runtime, prepare HIP,
     // or submit HIP. split-original only cuts the game list for boundary validation.
@@ -334,8 +636,7 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
                                    reinterpret_cast<void**>(&logical))) ||
         !logical)
     {
-        SetStatus("lmxxf: same-frame boundary unavailable (original Color; NO NR)");
-        return nullptr;
+        return declineFrame("lmxxf: same-frame boundary unavailable (original Color; NO NR)");
     }
     const bool ineligible = logical->IsSplitIneligible();
     const char* reason = logical->SplitRejectionReason();
@@ -344,34 +645,53 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
     {
         char status[128] {};
         std::snprintf(status, sizeof(status), "lmxxf: split ineligible: %s (NO NR)", reason ? reason : "unknown");
-        SetStatus(status);
         static std::atomic<uint32_t> s_ineligibleCount { 0 };
         const uint32_t c = s_ineligibleCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (c <= 10 || (c <= 100 && (c % 20 == 0)) || (c <= 1000 && (c % 100 == 0)) || (c % 1000 == 0))
         {
             LOG_WARN("{} (frame #{})", status, c);
         }
-        return nullptr;
+        return declineFrame(status);
     }
     if (!EnsureSession())
         return nullptr;
+    RefreshRuntimeStatus();
+    if (!Lmxxf())
+        SendControls();
 
     D3D12_RESOURCE_DESC desc = frame.colour->GetDesc();
     LmxxfNrFrameInfo fi {};
     fi.struct_size = sizeof(fi);
-    fi.frame_id = evaluateId;
+    // Only frames that reach PrepareFrame count, so a duplicate Evaluate cannot break the history's continuity.
+    fi.frame_id = ++frameId;
     fi.command_list = cmd;
     fi.color_width = frame.width ? frame.width : static_cast<uint32_t>(desc.Width);
     fi.color_height = frame.height ? frame.height : static_cast<uint32_t>(desc.Height);
     fi.color = frame.colour;
     fi.color_state = static_cast<uint32_t>(frame.colourState);
     fi.flags = LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW;
-    fi.transfer_strength = std::clamp(Config::Instance()->DlssNrTransferStrength.value_or_default(), 0.0f, 2.0f);
-    fi.color_strength = std::clamp(Config::Instance()->DlssNrColourStrength.value_or_default(), 0.0f, 2.0f);
-    fi.debug_view = Config::Instance()->DlssNrDebugView.value_or_default();
-    fi.model_scale = settings.modelScale;
-    fi.passes = settings.passes;
-    const bool temporal = Config::Instance()->LmxxfTemporal.value_or_default() && frame.motion;
+    if (Lmxxf())
+    {
+        fi.transfer_strength = std::clamp(Config::Instance()->DlssNrTransferStrength.value_or_default(), 0.0f, 2.0f);
+        fi.color_strength = std::clamp(Config::Instance()->DlssNrColourStrength.value_or_default(), 0.0f, 2.0f);
+        fi.debug_view = Config::Instance()->DlssNrDebugView.value_or_default();
+        fi.model_scale = settings.modelScale;
+        fi.passes = settings.passes;
+    }
+    else
+    {
+        // mochizuki's own keys; its network has no debug view, so debug_view stays 0.
+        const MochizukiFrameSettings mz = MochizukiFrame(*Config::Instance());
+        fi.transfer_strength = mz.detail;
+        fi.color_strength = mz.colour;
+        fi.model_scale = mz.scale;
+        fi.passes = mz.passes;
+    }
+    // mochizuki has a switch of its own. An INI without MochizukiTemporal keeps what LmxxfTemporal gave it before.
+    const bool temporalOn = (!Lmxxf() && Config::Instance()->MochizukiTemporal.has_value())
+                                ? Config::Instance()->MochizukiTemporal.value()
+                                : Config::Instance()->LmxxfTemporal.value_or_default();
+    const bool temporal = temporalOn && frame.motion;
     if (temporal)
     {
         fi.flags |= LMXXF_NR_FRAME_FLAG_TEMPORAL;
@@ -453,6 +773,7 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
                 api->table.Destroy(session);
             session = nullptr;
             sessionReady = false;
+            ClearRuntimeStatus();
             SetStatus("lmxxf: session rebuild after PrepareFrame fail");
         }
         else
@@ -567,7 +888,7 @@ ID3D12Resource* LmxxfBackend::RecordDiagnostic(ID3D12GraphicsCommandList* cmd, c
                 D3D12_RESOURCE_DESC desc = frame.colour->GetDesc();
                 LmxxfNrFrameInfo fi {};
                 fi.struct_size = sizeof(fi);
-                fi.frame_id = ++frameId;
+                fi.frame_id = ++frameId; // Record leaves the increment to whichever path calls PrepareFrame.
                 fi.command_list = cmd;
                 fi.color_width = frame.width ? frame.width : static_cast<uint32_t>(desc.Width);
                 fi.color_height = frame.height ? frame.height : static_cast<uint32_t>(desc.Height);
@@ -575,10 +896,20 @@ ID3D12Resource* LmxxfBackend::RecordDiagnostic(ID3D12GraphicsCommandList* cmd, c
                 fi.color_state = static_cast<uint32_t>(frame.colourState);
                 fi.flags = LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW |
                            LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH;
-                fi.transfer_strength =
-                    std::clamp(Config::Instance()->DlssNrTransferStrength.value_or_default(), 0.0f, 2.0f);
-                fi.color_strength = std::clamp(Config::Instance()->DlssNrColourStrength.value_or_default(), 0.0f, 2.0f);
-                fi.debug_view = Config::Instance()->DlssNrDebugView.value_or_default();
+                if (Lmxxf())
+                {
+                    fi.transfer_strength =
+                        std::clamp(Config::Instance()->DlssNrTransferStrength.value_or_default(), 0.0f, 2.0f);
+                    fi.color_strength =
+                        std::clamp(Config::Instance()->DlssNrColourStrength.value_or_default(), 0.0f, 2.0f);
+                    fi.debug_view = Config::Instance()->DlssNrDebugView.value_or_default();
+                }
+                else
+                {
+                    const MochizukiFrameSettings mz = MochizukiFrame(*Config::Instance());
+                    fi.transfer_strength = mz.detail;
+                    fi.color_strength = mz.colour;
+                }
                 fi.model_scale = 1.0f;
 
                 LmxxfNrJob job {};
@@ -782,10 +1113,18 @@ void LmxxfBackend::TraceBoundary(const std::string&) {}
 
 void LmxxfBackend::Submitted(ID3D12CommandQueue* q, UINT count, ID3D12CommandList* const* lists)
 {
-    void* jobToRetire = nullptr;
-    bool containsCmd = false;
+    if (exiting.load(std::memory_order_acquire))
+        return;
+    int32_t retireRc = LMXXF_NR_OK;
+    char retireErr[256] {};
+    ID3D12CommandQueue* sessionQueue = nullptr;
+    bool migrate = false;
+    bool keptQueue = false;
     {
+        // Retire, releasing the pending job and the queue decision are one step: the next Record cannot prepare a
+        // job on this session until the runtime has retired this one.
         std::lock_guard lock(jobMutex);
+        bool containsCmd = false;
         if (lists)
         {
             for (UINT i = 0; i < count; ++i)
@@ -801,88 +1140,162 @@ void LmxxfBackend::Submitted(ID3D12CommandQueue* q, UINT count, ID3D12CommandLis
         {
             if (session && pendingJobInfo.job && api && api->table.Retire)
             {
-                jobToRetire = pendingJobInfo.job;
+                retireRc = api->table.Retire(session, pendingJobInfo.job);
+                if (retireRc != LMXXF_NR_OK && api->table.GetLastError)
+                    api->table.GetLastError(retireErr, sizeof retireErr);
             }
             pendingJobInfo = {};
-        }
-    }
-    if (containsCmd && q && q != queue)
-    {
-        bool sameQueue = (this->queue == q);
-        if (!sameQueue && this->queue && q)
-        {
-            IUnknown* id1 = nullptr;
-            IUnknown* id2 = nullptr;
-            this->queue->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&id1));
-            q->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&id2));
-            sameQueue = (id1 && id2 && id1 == id2);
-            if (id1)
-                id1->Release();
-            if (id2)
-                id2->Release();
-        }
-        if (!sameQueue)
-        {
-            LOG_WARN("lmxxf: queue transition detected (current={:p}, actual={:p}); draining actual queue and old "
-                     "session before migration",
-                     reinterpret_cast<void*>(this->queue), reinterpret_cast<void*>(q));
-            // 1. Drain the actual queue q that just executed producer and continuation:
-            const bool actualDrained = DrainQueue(this->device, q);
-
-            // 2. Drain the old session queue:
-            const bool sessionDrained =
-                !session || ((api && api->table.Drain) ? (api->table.Drain(session) == LMXXF_NR_OK) : false);
-
-            if (actualDrained && sessionDrained)
+            pendingList.store(nullptr, std::memory_order_release);
+            sessionQueue = queue;
+            if (q && !SameObject(q, queue))
             {
-                if (session && api && api->table.Destroy)
-                    api->table.Destroy(session);
-                session = nullptr;
-                sessionReady = false;
-                q->AddRef();
-                if (this->queue)
-                    this->queue->Release();
-                this->queue = q;
-                jobToRetire = nullptr;
-                DlssNr::AmdBridge::UpdateConfirmedRenderQueue(q);
-                SetStatus("lmxxf: session migrated to new render queue");
-                LOG_INFO("lmxxf: session cleanly destroyed after verified dual queue drain; queue updated to {:p}",
-                         reinterpret_cast<void*>(q));
-            }
-            else
-            {
-                LOG_ERROR("lmxxf: GPU drain failed during queue transition (actualDrained={}, sessionDrained={}); "
-                          "abandoning old session without Destroy to prevent GPU UAF",
-                          actualDrained, sessionDrained);
-                // CRITICAL SAFETY: If either queue failed to drain, GPU may still be referencing
-                // old session resources. We MUST NOT call Destroy(session) to avoid GPU Use-After-Free.
-                session = nullptr;
-                sessionReady = false;
-                jobToRetire = nullptr;
-                q->AddRef();
-                if (this->queue)
-                    this->queue->Release();
-                this->queue = q;
-                DlssNr::AmdBridge::UpdateConfirmedRenderQueue(q);
-                SetStatus("lmxxf: queue migration completed with abandoned undrained session (GPU safety fallback)");
+                if (api && api->anyQueue)
+                    keptQueue = true;
+                else
+                {
+                    // Draining and destroying here would pull the session from under a Record on the render
+                    // thread; Record migrates it before its next use instead.
+                    q->AddRef();
+                    if (migrateTo)
+                        migrateTo->Release();
+                    migrateTo = q;
+                    migrate = true;
+                }
             }
         }
+        // Other UE/FG lists may submit before the list containing this Evaluate.
+        // Only that list can retire the pending HIP slot.
+        LmxxfCut::ClearPendingEnqueueIfSubmitted(count, lists);
     }
-    if (jobToRetire)
+    if (retireRc != LMXXF_NR_OK)
+        LOG_ERROR("lmxxf: Retire rc={} err={} submitQ={:p} sessQ={:p}", retireRc, retireErr, reinterpret_cast<void*>(q),
+                  reinterpret_cast<void*>(sessionQueue));
+    if (migrate)
+        LOG_WARN("lmxxf: queue transition detected (current={:p}, actual={:p}); the next Record drains both and "
+                 "migrates the session",
+                 reinterpret_cast<void*>(sessionQueue), reinterpret_cast<void*>(q));
+    if (keptQueue)
     {
-        const int32_t retireRc = api->table.Retire(session, jobToRetire);
-        if (retireRc != LMXXF_NR_OK)
-        {
-            char err[256] {};
-            if (api->table.GetLastError)
-                api->table.GetLastError(err, sizeof err);
-            LOG_ERROR("lmxxf: Retire rc={} err={} submitQ={:p} sessQ={:p}", retireRc, err, reinterpret_cast<void*>(q),
-                      reinterpret_cast<void*>(queue));
-        }
+        static std::atomic<bool> logged { false };
+        if (!logged.exchange(true, std::memory_order_relaxed))
+            LOG_INFO("mochizuki: list executed on queue {:p}, not the session's {:p}; the runtime follows any queue, "
+                     "so the session stays",
+                     reinterpret_cast<void*>(q), reinterpret_cast<void*>(sessionQueue));
     }
-    // Other UE/FG lists may submit before the list containing this Evaluate.
-    // Only that list can retire the pending HIP slot.
-    LmxxfCut::ClearPendingEnqueueIfSubmitted(count, lists);
+}
+
+// Any thread, from inside a proxy's Reset or final Release (the proxy is deleted only after this returns).
+void LmxxfBackend::OnListRecycled(ID3D12CommandList* list)
+{
+    if (auto* backend = g_recycleTarget.load(std::memory_order_acquire))
+        backend->ListRecycled(list);
+}
+
+// The game Reset or released the list carrying the pending job without executing it: the job's input and output
+// copies went with that recording, and Submitted will never retire it. Without this every later Record would decline
+// as "previous frame not submitted" until that list pointer is executed again, which a released list never is. Only
+// this event proves the list dead; one that is merely late still holds copies into the session's buffers, so nothing
+// ages a job out. Submitted runs inside the game's Execute, before the game can Reset the list, so this never races
+// a real submit.
+void LmxxfBackend::ListRecycled(ID3D12CommandList* list)
+{
+    if (!list || pendingList.load(std::memory_order_acquire) != list)
+        return;
+    void* job = nullptr;
+    void* jobSession = nullptr;
+    int32_t (*cancel)(void*, void*) = nullptr;
+    int32_t (*resetHistory)(void*) = nullptr;
+    {
+        std::lock_guard lock(jobMutex);
+        if (exiting.load(std::memory_order_acquire) || !pendingJobInfo.job || pendingJobInfo.cmd != list)
+            return;
+        // The job stays pending until the runtime has cancelled it: Record keeps declining, so it can neither
+        // prepare the next job on this session nor rebuild or migrate the session meanwhile. The session and the
+        // table were set before the job was, and stay while it is pending.
+        job = pendingJobInfo.job;
+        pendingJobInfo.cmd = nullptr;
+        pendingList.store(nullptr, std::memory_order_release);
+        cancelling = true;
+        jobSession = session;
+        cancel = api->table.CancelUnsubmitted;
+        resetHistory = api->table.ResetHistory;
+    }
+    if (jobSession && cancel)
+        cancel(jobSession, job);
+    LmxxfCut::ClearPendingEnqueueIf(list, job);
+    // The cancelled frame took a frame id, so the next frame would otherwise pass as continuous with it.
+    if (jobSession && resetHistory)
+        resetHistory(jobSession);
+    // Set while the job is still pending, so the next Record's status replaces this one and not the reverse.
+    SetStatus("lmxxf: frame's command list reset or released without being executed; its NR job was cancelled");
+    {
+        std::lock_guard lock(jobMutex);
+        if (pendingJobInfo.job == job && !pendingJobInfo.cmd)
+            pendingJobInfo = {};
+        cancelling = false;
+    }
+    static std::atomic<uint32_t> s_cancelCount { 0 };
+    const uint32_t c = s_cancelCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (c <= 10 || (c <= 100 && (c % 20 == 0)) || (c <= 1000 && (c % 100 == 0)) || (c % 1000 == 0))
+    {
+        LOG_WARN("lmxxf: command list {:p} was reset or released without being executed; its NR job was cancelled "
+                 "and the history reset (event #{})",
+                 reinterpret_cast<void*>(list), c);
+    }
+}
+
+// Stops OnListRecycled reaching this backend. It does not wait for a call already running.
+void LmxxfBackend::UnregisterListRecycled()
+{
+    LmxxfBackend* self = this;
+    if (!g_recycleTarget.compare_exchange_strong(self, nullptr, std::memory_order_acq_rel))
+        return;
+    auto listener = &LmxxfBackend::OnListRecycled;
+    DlssNr::Submission::Hooks::g_onListRecycled.compare_exchange_strong(listener, nullptr, std::memory_order_acq_rel);
+}
+
+// Render thread, under recordMutex, with no job pending, so nothing else is inside the session. Takes over the
+// reference migrateTo held on q.
+void LmxxfBackend::MigrateQueue(ID3D12CommandQueue* q)
+{
+    LmxxfCut::ClearPendingEnqueue();
+    // 1. Drain the actual queue q that executed the last producer and continuation:
+    const bool actualDrained = DrainQueue(device, q);
+
+    // 2. Drain the old session queue:
+    const bool sessionDrained =
+        !session || ((api && api->table.Drain) ? (api->table.Drain(session) == LMXXF_NR_OK) : false);
+
+    if (actualDrained && sessionDrained)
+    {
+        if (session && api && api->table.Destroy)
+            api->table.Destroy(session);
+        LOG_INFO("lmxxf: session cleanly destroyed after verified dual queue drain; queue updated to {:p}",
+                 reinterpret_cast<void*>(q));
+    }
+    else
+    {
+        // CRITICAL SAFETY: If either queue failed to drain, GPU may still be referencing
+        // old session resources. We MUST NOT call Destroy(session) to avoid GPU Use-After-Free.
+        LOG_ERROR("lmxxf: GPU drain failed during queue transition (actualDrained={}, sessionDrained={}); "
+                  "abandoning old session without Destroy to prevent GPU UAF",
+                  actualDrained, sessionDrained);
+    }
+    session = nullptr;
+    sessionReady = false;
+    ClearRuntimeStatus();
+    ID3D12CommandQueue* previous = nullptr;
+    {
+        std::lock_guard lock(jobMutex);
+        previous = queue;
+        queue = q;
+    }
+    if (previous)
+        previous->Release();
+    DlssNr::AmdBridge::UpdateConfirmedRenderQueue(q);
+    SetStatus(actualDrained && sessionDrained
+                  ? "lmxxf: session migrated to new render queue"
+                  : "lmxxf: queue migration completed with abandoned undrained session (GPU safety fallback)");
 }
 
 bool LmxxfBackend::Shutdown()
@@ -891,6 +1304,12 @@ bool LmxxfBackend::Shutdown()
     {
         std::lock_guard lock(jobMutex);
         pendingJobInfo = {};
+        pendingList.store(nullptr, std::memory_order_release);
+        if (migrateTo)
+        {
+            migrateTo->Release();
+            migrateTo = nullptr;
+        }
     }
     if (session && api && api->table.Destroy)
     {
@@ -898,18 +1317,96 @@ bool LmxxfBackend::Shutdown()
         session = nullptr;
     }
     sessionReady = false;
+    ClearRuntimeStatus();
     if (runtimeDll)
     {
         FreeLibrary(reinterpret_cast<HMODULE>(runtimeDll));
         runtimeDll = nullptr;
     }
     if (api)
+    {
         api->table = {};
+        api->getFeatures = nullptr;
+        api->setControls = nullptr;
+        api->getInfo = nullptr;
+        api->getControlDefaults = nullptr;
+        api->anyQueue = false;
+        api->controlsSentValid = false;
+    }
     SetStatus("lmxxf: shutdown");
     return true;
 }
 
+// The exit hook runs while the render and submit threads may still be inside the runtime. mochizuki is left to the
+// OS: Destroy would wait out a network build (up to a minute) and free what those threads use, and FreeLibrary
+// would unmap the code they run. lmxxf is destroyed only if its recording and submission locks come free within
+// 2 s and no job is being cancelled. Neither DLL is unloaded.
+void LmxxfBackend::OnProcessExit()
+{
+    UnregisterListRecycled();
+    LmxxfCut::DisarmBetweenSlot();
+    {
+        std::lock_guard lock(jobMutex);
+        pendingJobInfo = {};
+        pendingList.store(nullptr, std::memory_order_release);
+        exiting.store(true, std::memory_order_release);
+    }
+    if (!Lmxxf())
+    {
+        SetStatus("lmxxf: process exit (session left to the OS)");
+        return;
+    }
+    const ULONGLONG deadline = GetTickCount64() + 2000;
+    const auto acquire = [deadline](auto& lock)
+    {
+        while (!lock.try_lock())
+        {
+            if (GetTickCount64() >= deadline)
+                return false;
+            Sleep(1);
+        }
+        return true;
+    };
+    std::unique_lock recordLock(recordMutex, std::defer_lock);
+    std::unique_lock executeLock(DlssNr::Submission::Hooks::g_executeMu, std::defer_lock);
+    if (!acquire(recordLock) || !acquire(executeLock))
+    {
+        LOG_WARN("lmxxf: process exit while the runtime is in use; session left to the OS");
+        return;
+    }
+    {
+        // ListRecycled starts no cancel once exiting is set; one already started may still be inside the session.
+        std::lock_guard lock(jobMutex);
+        if (cancelling)
+        {
+            LOG_WARN("lmxxf: process exit while a job is being cancelled; session left to the OS");
+            return;
+        }
+    }
+    if (session && api && api->table.Destroy)
+        api->table.Destroy(session);
+    session = nullptr;
+    sessionReady = false;
+    ClearRuntimeStatus();
+    SetStatus("lmxxf: shutdown");
+}
+
 void LmxxfBackend::InvalidateHistory()
+{
+    if (exiting.load(std::memory_order_acquire))
+        return;
+    // The menu calls this too and must never wait on a Record: while one runs, the next Record resets instead.
+    std::unique_lock recordLock(recordMutex, std::try_to_lock);
+    if (!recordLock.owns_lock())
+    {
+        historyResetPending.store(true, std::memory_order_release);
+        return;
+    }
+    ResetHistoryNow();
+}
+
+// Caller holds recordMutex.
+void LmxxfBackend::ResetHistoryNow()
 {
     if (session && api && api->table.ResetHistory)
     {
@@ -930,7 +1427,17 @@ void LmxxfBackend::InvalidateHistory()
     stagingProbe.InvalidateEpoch();
 }
 
-std::string LmxxfBackend::Status() const { return status; }
+std::string LmxxfBackend::Status() const
+{
+    std::lock_guard lock(statusMutex);
+    return status;
+}
+
+std::string LmxxfBackend::RuntimeStatus() const
+{
+    std::lock_guard lock(statusMutex);
+    return runtimeStatus;
+}
 
 bool LmxxfBackend::GraphicsRestartNeeded(UINT) const { return false; }
 } // namespace DlssNr::Backend
