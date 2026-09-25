@@ -1342,6 +1342,19 @@ layout(set = 0, binding = 0, std430) NR_COH    buffer ActE4M3v { uint act_v4[]; 
 #define NR_LOAD_B_ACT(frag, off, stride) \
     coopMatLoad(frag, act_v4, (off) / 4u, (stride) / 4u, gl_CooperativeMatrixLayoutColumnMajor)
 #endif
+// The store side of the same view. A persistent run's coopMatStore into the coherent byte array
+// is one byte store per element too: 64 buffer_store_b8 in each persistent pipeline's epilogue.
+// Accumulator component c of lane l is element (8*(l/16)+c, l%16) (coopmm.glsl), so a
+// ColumnMajor store puts a lane's eight components on eight contiguous, 8-aligned bytes: two
+// coherent dword stores, which LLPC merges into one buffer_store_b64. Same bytes, same addresses.
+#if NR_PERSIST
+#define NR_STORE_ACC_COL_ACT(frag, off, stride) do { \
+    const uint nr_sa = ((off) + (gl_SubgroupInvocationID % 16u) * (stride) + (gl_SubgroupInvocationID / 16u) * 8u) / 4u; \
+    act_v4[nr_sa] = pack32(floate4m3BitsToUintEXT(fe4m3vec4(frag[0], frag[1], frag[2], frag[3]))); \
+    act_v4[nr_sa + 1u] = pack32(floate4m3BitsToUintEXT(fe4m3vec4(frag[4], frag[5], frag[6], frag[7]))); } while (false)
+#else
+#define NR_STORE_ACC_COL_ACT(frag, off, stride) NR_STORE_ACC_COL(frag, act_e4m3, off, stride)
+#endif
 layout(set = 0, binding = 1, std430) NR_COH    buffer ActF16  { NR_F16  act_f16[]; };
 layout(set = 0, binding = 2, std430) readonly buffer WgtE4M3 { NR_E4M3 wgt_e4m3[]; };
 layout(set = 0, binding = 3, std430) readonly buffer WgtF32  { float   wgt_f32[]; };
@@ -1380,8 +1393,32 @@ layout(set=0,binding=4,std430) readonly buffer ActLut4 { fe4m3vec4 act_lut4[]; }
 #if ((defined(NR_PACKED_EXPAND) || defined(NR_PACKED_QKV) || NR_PACKED_DENSE) && NR_HWAVES) || NR_PACK_C32_ACTIVE
 layout(set = 0, binding = 4, std430) readonly buffer WExpandPair4 { fe4m3vec4 wexpand_pair4[]; };
 #endif
+// Windows (LLPC): the same records as whole words. Assembled element by element from fe4m3vec4
+// loads, every weight fragment costs gfx1201 an identity v_perm_b32, a register copy that moves
+// no byte (611 of them in g_fswinpds256); read as words, the loaded registers are the fragment.
+// Every matrix starts on a 256-byte boundary (nr_graph.cpp put(..., 256)), so a C32 half-record
+// is one uvec2 and a pair record two, one per fragment. One uvec4 per pair record keeps the
+// copies. Same bytes, same order.
+// NR_C32_WORDS=0 keeps the byte-vector reads for C32. It is the default in the fused image-input
+// pre block only: there the word reads take 192 -> 201 VGPRs, 8 -> 7 waves per SIMD, and the
+// block runs 5% slower.
+#ifndef NR_C32_WORDS
+#ifdef NR_FUSED_IMAGE_INPUT
+#define NR_C32_WORDS 0
+#else
+#define NR_C32_WORDS 1
+#endif
+#endif
+#if ((defined(NR_PACKED_EXPAND) || defined(NR_PACKED_QKV) || NR_PACKED_DENSE) && NR_HWAVES) || (NR_PACK_C32_ACTIVE && NR_C32_WORDS)
+layout(set = 0, binding = 4, std430) readonly buffer WExpandU2 { uvec2 wexpand_u2[]; };
+#endif
 #if defined(NR_POOL_F16) && NR_POOL_VECTOR_STORE
 layout(set = 0, binding = 5, std430) NR_COH buffer ActE4M3x4 { fe4m3vec4 act_e4m3x4[]; };
+#if NR_PERSIST && defined(NR_DS_PROJECT)
+// The same arena as words for the DS projection's stores: in a persistent run a coherent
+// fe4m3vec4 store is four buffer_store_b8.
+layout(set = 0, binding = 5, std430) NR_COH buffer ActE4M3x4v { uint act_x4v[]; };
+#endif
 #endif
 
 #if defined(NR_FUSED_POST_BLEND) && NR_BLEND_VECTOR_LOAD
@@ -1857,10 +1894,17 @@ shared uint nr_lds_pad[NR_LDS_PAD / 4];
 #endif
 // Adjacent matrix rows occupy the two halves of one lane's 16-byte record.
 // Keeping row selection constant lets the driver combine adjacent reads.
+#if NR_C32_WORDS
+#define NR_C32_WEIGHT(frag,base,row,k,kf) { \
+    const uvec2 w=wexpand_u2[(base)/8u+((row)/2u)*(kf)*64u+(k)*64u+lane*2u+((row)&1u)]; \
+    const fe4m3vec4 lo=uintBitsToFloate4m3EXT(unpack8(w.x)),hi=uintBitsToFloate4m3EXT(unpack8(w.y)); \
+    for(int z=0;z<4;++z){(frag)[z]=lo[z];(frag)[z+4]=hi[z];} }
+#else
 #define NR_C32_WEIGHT(frag,base,row,k,kf) { \
     const uint q=(base)/4u+((row)/2u)*(kf)*128u+(k)*128u+lane*4u+((row)&1u)*2u; \
     const fe4m3vec4 lo=wexpand_pair4[q],hi=wexpand_pair4[q+1u]; \
     for(int z=0;z<4;++z){(frag)[z]=lo[z];(frag)[z+4]=hi[z];} }
+#endif
 #else
 #define NR_C32_WEIGHT(frag,base,row,k,kf) \
     NR_LOAD_A(frag,NR_WARENA,NR_TILE(base,(row)*16u,(k)*16u,(kf)*16u),16u)
@@ -1871,9 +1915,10 @@ shared uint nr_lds_pad[NR_LDS_PAD / 4];
 // reduction. The host repacks only weights, before merging persistent runs.
 #if (defined(NR_PACKED_QKV) || NR_PACKED_DENSE) && NR_HWAVES
 #define NR_WEIGHT_PAIR(wf0,wf1,base,row,k,kfrags) { \
-    const uint q=(base)/4u + ((row)/2u)*(kfrags)*128u + (k)*128u + lane*4u; \
-    const fe4m3vec4 w0=wexpand_pair4[q],w1=wexpand_pair4[q+1u]; \
-    const fe4m3vec4 w2=wexpand_pair4[q+2u],w3=wexpand_pair4[q+3u]; \
+    const uint i=(base)/8u + ((row)/2u)*(kfrags)*64u + (k)*64u + lane*2u; \
+    const uvec2 wa=wexpand_u2[i],wb=wexpand_u2[i+1u]; \
+    const fe4m3vec4 w0=uintBitsToFloate4m3EXT(unpack8(wa.x)),w1=uintBitsToFloate4m3EXT(unpack8(wa.y)); \
+    const fe4m3vec4 w2=uintBitsToFloate4m3EXT(unpack8(wb.x)),w3=uintBitsToFloate4m3EXT(unpack8(wb.y)); \
     for(int v=0;v<4;++v) { \
         wf0[v]=w0[v]; wf0[v+4]=w1[v]; \
         wf1[v]=w2[v]; wf1[v+4]=w3[v]; \
@@ -2030,6 +2075,95 @@ fe4m3vec2 nr_act_lookup(f16vec2 x) {
         DST[2] = nrq_q1.x; DST[3] = nrq_q1.y;                                 \
         DST[4] = nrq_q2.x; DST[5] = nrq_q2.y;                                 \
         DST[6] = nrq_q3.x; DST[7] = nrq_q3.y; }
+#endif
+
+// ---- NR_QUAD: one MODE write per four conversions (LLPC) -------------------
+//
+// LLPC puts `s_setreg_imm32_b32 hwreg(HW_REG_WAVE_MODE, 23, 1), 0` in front of
+// every e4m3 OpFConvert and never merges or hoists them: 385-496 MODE writes a
+// fswin pipeline, one per `v_cvt_pk_fp8_f32`, whether the conversion is the
+// saturating one or NR_QUANT_EXPLICIT's plain one. The count follows the
+// OpFConverts, not the converts: a fe4m3vec4 conversion is one MODE write for
+// two `v_cvt_pk_fp8_f32`, and the second of them writes the high half of the
+// dword itself (op_sel), where two fe4m3vec2 also need a shift and a merge.
+// So the sites below convert a fragment's eight components as two quads.
+// Each quad is the two pairs the paired site converts, component for
+// component, so the bytes are the same; only the grouping changes.
+//
+// Which sites pay is a register-allocation question, not an arithmetic one:
+// every site together takes 1.6-28% off the C >= 64 bodies but nothing off
+// the C=32 `fswin32` and post block, where only some sites pay (the expand
+// activation alone costs the post block 5%). So the knob is a bitmask over the
+// sites and pipelines.json sets one per pipeline; 0, the default, is the
+// paired code.
+// (RX 9070 XT, driver 26.8.1; third_party/mochizuki/UPSTREAM.md has the numbers.)
+#define NR_QD_XB    1   // the window's x, staged for stage 1 (NR_INPUT_F16)
+#define NR_QD_EQ    2   // the MLP's hidden activation
+#define NR_QD_MQ    4   // the grouped middle output (head split)
+#define NR_QD_YQ    8   // the MLP output plus the residual
+#define NR_QD_Q    16
+#define NR_QD_K    32
+#define NR_QD_V    64
+#define NR_QD_P   128
+#define NR_QD_CTX 256
+#define NR_QD_OUT 512   // the block output, the pool, the DS projection, the upsample blend
+#ifndef NR_QUAD
+#define NR_QUAD 0
+#endif
+// Mode 4's paired f32-accumulator path only: the probes and ablations that
+// change a site's converter keep their pairs.
+#if defined(NR_HAVE_QUANT_QUAD) && NR_QUANT_PAIRED && NR_QUANT_MODE == 4 && !NR_F16_MMA && \
+    !NR_QBATCH_ON && !NR_ATT_F16 && !NR_ABLATE_QSITE && !NR_ABLATE_QUANT
+#if NR_XB_QH
+#define NR_QUAD_ON ((NR_QUAD) & ~NR_QD_XB)
+#else
+#define NR_QUAD_ON (NR_QUAD)
+#endif
+#else
+#define NR_QUAD_ON 0
+#endif
+#if NR_QUAD_ON
+// DST[c .. c + 3] from one quad.
+#define NR_QSET4(DST, c, Q) {                                                 \
+        const fe4m3vec4 nrq4 = (Q);                                           \
+        DST[c] = nrq4.x; DST[(c) + 1] = nrq4.y;                               \
+        DST[(c) + 2] = nrq4.z; DST[(c) + 3] = nrq4.w; }
+// All eight: PAIR(c) is what the paired site hands its converter for
+// components c and c + 1 (a vec2 or an f16vec2), V4 the matching vector type
+// and CVT the quad form of that converter.
+#define NR_QUAD8(DST, CVT, V4, PAIR) {                                        \
+        NR_QSET4(DST, 0, CVT(V4(PAIR(0), PAIR(2))))                           \
+        NR_QSET4(DST, 4, CVT(V4(PAIR(4), PAIR(6)))) }
+#if NR_QK_SCALE_FAST
+// nr_qscale_fast and nr_kscale_fast on four components.
+fe4m3vec4 nr_qscale_fast4(vec4 value, float norm, float16_t scale) {
+#if NR_QK_SCALE_FAST == 1
+    return nr_quant_quad(f16vec4(value) * f16vec4(float16_t(norm) * scale));
+#elif NR_QK_SCALE_FAST == 4
+    return fe4m3vec4((f16vec4(value) * f16vec4(float16_t(norm))) * f16vec4(scale));
+#elif NR_QK_SCALE_FAST == 5
+    return fe4m3vec4(value * (norm * float(scale)));
+#else
+    return nr_quant_quad32(value * (float(norm) * float(scale)));
+#endif
+}
+fe4m3vec4 nr_kscale_fast4(vec4 value, float norm) {
+#if NR_QK_SCALE_FAST == 1
+    return nr_quant_quad(f16vec4(value) * f16vec4(norm));
+#elif NR_QK_SCALE_FAST == 4
+    return fe4m3vec4(f16vec4(value) * f16vec4(float16_t(norm)));
+#elif NR_QK_SCALE_FAST == 5
+    return fe4m3vec4(value * norm);
+#else
+    return nr_quant_quad32(value * float(norm));
+#endif
+}
+#endif
+#if NR_PROB_BOUNDED
+#define NR_QCVT_P fe4m3vec4
+#else
+#define NR_QCVT_P nr_quant_quad
+#endif
 #endif
 
 #define NR_EXP_A 0.044910375
@@ -2454,6 +2588,22 @@ void main() {
     // 16 elements keeps the offset's alignment provable - a byte-aligned
     // dynamic term would cost the ds_load_b64 lowering.
 #define NR_OPQ(kk) (nr_opaque * ((kk) * 16u))
+// NR_V_ROW: V's head-split tiles in lds_y RowMajor. The context product reads each tile back as
+// an A operand, and A lane l holds row l%16, columns 8*(l/16)..+7. From the ColumnMajor tile
+// (the store is two dwords a lane) LLPC gathers those eight bytes 16 apart: 8 `ds_load_u8` plus
+// the `v_perm_b32`/`v_lshl_or_b32` that assemble them, in front of the MMA. RowMajor puts the
+// byte scatter on the store instead (`ds_store_b8`, which nothing waits on) and the load is one
+// `ds_load_b64`. The same element reaches the same A component, so the product is unchanged.
+#ifndef NR_V_ROW
+#define NR_V_ROW 0
+#endif
+#if NR_V_ROW
+#define NR_STORE_V(f, off) NR_STORE_ACC(f, lds_y, off, 16u)
+#define NR_LOAD_V(f, off)  NR_LOAD_A(f, lds_y, off, 16u)
+#else
+#define NR_STORE_V(f, off) NR_STORE_ACC_COL(f, lds_y, off, 16u)
+#define NR_LOAD_V(f, off)  NR_LOAD_A_COL(f, lds_y, off, 16u)
+#endif
 #else
     const uint tok0  = wave * uint(NR_MTOK);
 #endif
@@ -2675,6 +2825,9 @@ void main() {
             const uint islot=(ipy%4u)*4u+ipx%4u;
             const uint stw=pc.blend_stiles_x!=0u?pc.blend_stiles_x:pc.blend_tiles_x;
             const uint stile=ty*stw+tx;
+#if (NR_QUAD_ON) & NR_QD_OUT
+            NR_F16 blend[8];
+#endif
             for(int j=0;j<8;++j) {
                 const uint ch=k*16u+rbase+uint(j);
 #ifdef NR_WIDE_UPS_PROJECT
@@ -2686,8 +2839,17 @@ void main() {
                 NR_F16 sv=NR_F16(NR_ACT_B8(pc.blend_s_off+(stile*uint(NR_CF)+k)*256u+slot*16u+rbase, j));
                 NR_F16 sp=NR_F16(sv*wgt_f16[pc.blend_g_off+ch]);
                 // Native wide path quantizes the half blend before residual/MLP.
+#if (NR_QUAD_ON) & NR_QD_OUT
+                blend[j]=NR_F16(pv+sp);
+#else
                 src[j]=nr_quant_e4m3(NR_F16(pv+sp));
+#endif
             }
+#if (NR_QUAD_ON) & NR_QD_OUT
+#define NR_Q4_BL(c) f16vec2(blend[c], blend[(c) + 1])
+            NR_QUAD8(src, nr_quant_quad, f16vec4, NR_Q4_BL)
+#undef NR_Q4_BL
+#endif
 #else
             NR_LOAD_B_ACT(src, tbase[m] + k * 256u, 16u);
 #endif
@@ -2808,9 +2970,16 @@ void main() {
 #endif
 #if NR_QUANT_PAIRED
             }
+#if (NR_QUAD_ON) & NR_QD_XB
+            {
+#define NR_Q4_XB(c) f16vec2(xh[m][k][c], xh[m][k][(c) + 1])
+                NR_QUAD8(xb[m][k], nr_quant_quad, f16vec4, NR_Q4_XB)
+#undef NR_Q4_XB
+#else
             for (int j=0;j<8;j+=2) {
                 fe4m3vec2 q=NR_QP_XB(f16vec2(xh[m][k][j],xh[m][k][j+1]));
                 xb[m][k][j]=q.x; xb[m][k][j+1]=q.y;
+#endif
 #else
                 xb[m][k][j]=nr_quant_e4m3(xh[m][k][j]);
 #endif
@@ -2894,10 +3063,11 @@ void main() {
 #error "paired expansion weights require FP32 with FP8 operands"
 #endif
                 for(int p=0;p<NR_EXPAND_GROUP;p+=2) {
-                    const uint q=pc.e_off/4u + uint((g*NR_HGF+h+p)/2)*uint(NR_CF)*128u
-                        + uint(k)*128u + lane*4u;
-                    const fe4m3vec4 w0=wexpand_pair4[q],w1=wexpand_pair4[q+1u];
-                    const fe4m3vec4 w2=wexpand_pair4[q+2u],w3=wexpand_pair4[q+3u];
+                    const uint i=pc.e_off/8u + uint((g*NR_HGF+h+p)/2)*uint(NR_CF)*64u
+                        + uint(k)*64u + lane*2u;
+                    const uvec2 wa=wexpand_u2[i],wb=wexpand_u2[i+1u];
+                    const fe4m3vec4 w0=uintBitsToFloate4m3EXT(unpack8(wa.x)),w1=uintBitsToFloate4m3EXT(unpack8(wa.y));
+                    const fe4m3vec4 w2=uintBitsToFloate4m3EXT(unpack8(wb.x)),w3=uintBitsToFloate4m3EXT(unpack8(wb.y));
                     NR_OPA wf0,wf1;
                     for(int v=0;v<4;++v) {
                         wf0[v]=w0[v]; wf0[v+4]=w1[v];
@@ -2926,6 +3096,10 @@ void main() {
                     const fe4m3vec2 qp=nr_act_lookup(NR_N2_EQ(a[p][m][c],a[p][m][c+1]));
                     eqg[m][h+p][c]=qp.x;eqg[m][h+p][c+1]=qp.y;
                 }
+#elif NR_ACT_F32 && ((NR_QUAD_ON) & NR_QD_EQ)
+#define NR_Q4_EQ(c) vec2(nr_mp_cubic_silu(a[p][m][c]), nr_mp_cubic_silu(a[p][m][(c) + 1]))
+                NR_QUAD8(eqg[m][h + p], nr_quant_quad32, vec4, NR_Q4_EQ)
+#undef NR_Q4_EQ
 #elif NR_ACT_F32
                 for (int c = 0; c < 8; c += 2) {
                     const fe4m3vec2 qp = nr_quant_pair32(vec2(
@@ -2985,7 +3159,11 @@ void main() {
                     for (int m = 0; m < NR_MF; ++m) NR_RND(a[m])
             }
             for (int m = 0; m < NR_MF; ++m)
-#if NR_ACT_F32
+#if NR_ACT_F32 && ((NR_QUAD_ON) & NR_QD_EQ)
+#define NR_Q4_EQ(c) vec2(nr_mp_cubic_silu(a[m][c]), nr_mp_cubic_silu(a[m][(c) + 1]))
+                NR_QUAD8(eqg[m][h], nr_quant_quad32, vec4, NR_Q4_EQ)
+#undef NR_Q4_EQ
+#elif NR_ACT_F32
                 // Same trade as the heads==1 expand: f32 throughout, one
                 // conversion, a different rounding. See nr_quant_pair32.
                 for (int c = 0; c < 8; c += 2) {
@@ -3076,6 +3254,10 @@ void main() {
                 NR_QRUN8(NR_MQ(m, nf), NR_QV_M)
 #undef NR_QV_M
             }
+#elif (NR_QUAD_ON) & NR_QD_MQ
+#define NR_Q4_MQ(c) f16vec2(NR_F16(a[m][c]), NR_F16(a[m][(c) + 1]))
+                NR_QUAD8(NR_MQ(m, nf), nr_quant_quad, f16vec4, NR_Q4_MQ)
+#undef NR_Q4_MQ
 #elif NR_QUANT_PAIRED
                 for (int c = 0; c < 8; c += 2) {
                     fe4m3vec2 qp = nr_quant_pair(f16vec2(
@@ -3156,6 +3338,10 @@ void main() {
                 const fe4m3vec2 qp=nr_act_lookup(NR_N2_EQ(a[m][c],a[m][c+1]));
                 NR_EQ(m,h)[c]=qp.x;NR_EQ(m,h)[c+1]=qp.y;
             }
+#elif NR_ACT_F32 && ((NR_QUAD_ON) & NR_QD_EQ)
+#define NR_Q4_EQ(c) vec2(nr_mp_cubic_silu(a[m][c]), nr_mp_cubic_silu(a[m][(c) + 1]))
+            NR_QUAD8(NR_EQ(m,h), nr_quant_quad32, vec4, NR_Q4_EQ)
+#undef NR_Q4_EQ
 #elif NR_ACT_F32
             // The accumulator is f32 and the converter takes f32, so the half
             // hop in between buys nothing but two conversions each way. This
@@ -3431,10 +3617,16 @@ void main() {
             }
 #endif
 #if NR_QUANT_PAIRED
+#if (NR_QUAD_ON) & NR_QD_YQ
+#define NR_Q4_YQ(c) f16vec2(requantized[c], requantized[(c) + 1])
+            NR_QUAD8(NR_YQ(m, n), nr_quant_quad, f16vec4, NR_Q4_YQ)
+#undef NR_Q4_YQ
+#else
             for (int c=0;c<8;c+=2) {
                 NR_QPAIR_T q=NR_QP_YQ(f16vec2(requantized[c],requantized[c+1]));
                 NR_YQ(m, n)[c]=q.x; NR_YQ(m, n)[c+1]=q.y;
             }
+#endif
         }
 #else
 #endif
@@ -3615,6 +3807,15 @@ void main() {
                     nr_norm_rsq(sq[0]);
 #endif
                 for (int d = 0; d < NR_DF; ++d)
+#if ((NR_QUAD_ON) & NR_QD_Q) && NR_QK_SCALE_FAST
+                {
+#define NR_Q4_Q(c) vec2(acc[m][d][c], acc[m][d][(c) + 1])
+#define NR_Q4_QC(v) nr_qscale_fast4(v, nq, hscale)
+                    NR_QUAD8(qb[m][d], NR_Q4_QC, vec4, NR_Q4_Q)
+#undef NR_Q4_QC
+#undef NR_Q4_Q
+                }
+#else
                     for (int c = 0; c < 8; c += 2) {
 #if NR_QK_SCALE_FAST
                         fe4m3vec2 qp = nr_qscale_fast(vec2(acc[m][d][c],acc[m][d][c+1]),nq,hscale);
@@ -3626,6 +3827,7 @@ void main() {
                         qb[m][d][c] = qp.x;
                         qb[m][d][c + 1] = qp.y;
                     }
+#endif
             }
 #if !NR_QK_TOGETHER
             // ---- pass K: rows [hh*3*NR_DF + NR_DF, +NR_DF) ----
@@ -3692,6 +3894,14 @@ void main() {
 #endif
                 for (int d = 0; d < NR_DF; ++d) {
                     NR_FRAG_E4M3 kf;
+#if ((NR_QUAD_ON) & NR_QD_K) && NR_QK_SCALE_FAST
+#define NR_Q4_K(c) vec2(acc[m][d + NR_QK_TOGETHER * NR_DF][c],                \
+                        acc[m][d + NR_QK_TOGETHER * NR_DF][(c) + 1])
+#define NR_Q4_KC(v) nr_kscale_fast4(v, nk)
+                    NR_QUAD8(kf, NR_Q4_KC, vec4, NR_Q4_K)
+#undef NR_Q4_KC
+#undef NR_Q4_K
+#else
                     for (int c = 0; c < 8; c += 2) {
 #if NR_QK_SCALE_FAST
                         fe4m3vec2 qp = nr_kscale_fast(vec2(acc[m][d + NR_QK_TOGETHER * NR_DF][c],
@@ -3704,6 +3914,7 @@ void main() {
                         kf[c] = qp.x;
                         kf[c + 1] = qp.y;
                     }
+#endif
                     // The ColumnMajor store was the transpose; the component
                     // copy is the same transpose with no memory behind it.
                     for (int c = 0; c < 8; ++c) kreg[m][d][c] = kf[c];
@@ -3744,6 +3955,11 @@ void main() {
             for (int m = 0; m < NR_MF; ++m) NR_MG(m)
                 for (int d = 0; d < NR_DF; ++d) {
                     NR_FRAG_E4M3 vf;
+#if (NR_QUAD_ON) & NR_QD_V
+#define NR_Q4_V(c) NR_N2_V(acc[m][d][c], acc[m][d][(c) + 1])
+                    NR_QUAD8(vf, nr_quant_quad, f16vec4, NR_Q4_V)
+#undef NR_Q4_V
+#else
                     for (int c = 0; c < 8; c += 2) {
                         fe4m3vec2 qp = nr_quant_pair(NR_N2_V(
                             acc[m][d][c],
@@ -3751,12 +3967,13 @@ void main() {
                         vf[c] = qp.x;
                         vf[c + 1] = qp.y;
                     }
+#endif
                     // V into this wave's own tiles of lds_y - [dim][token]
                     // stored ColumnMajor at stride 16 is read back ColumnMajor
                     // as an A operand that is [dim][token], which is what the
-                    // context product wants. Nothing crosses a wave.
-                    NR_STORE_ACC_COL(vf, lds_y, NR_LXB_
-                                     uint(m * NR_CF + hh * NR_DF + d) * 256u, 16u);
+                    // context product wants (RowMajor both ways under
+                    // NR_V_ROW). Nothing crosses a wave.
+                    NR_STORE_V(vf, NR_LXB_ uint(m * NR_CF + hh * NR_DF + d) * 256u);
                 }
         }
 #else
@@ -3932,6 +4149,12 @@ void main() {
                      * f16vec2(nq)) * f16vec2(hscale))
                 NR_QRUN8(qb[m][d], NR_QV_Q)
 #undef NR_QV_Q
+#elif ((NR_QUAD_ON) & NR_QD_Q) && NR_QK_SCALE_FAST
+#define NR_Q4_Q(c) vec2(NR_QKVA(m, d)[c], NR_QKVA(m, d)[(c) + 1])
+#define NR_Q4_QC(v) nr_qscale_fast4(v, nq, hscale)
+                NR_QUAD8(qb[m][d], NR_Q4_QC, vec4, NR_Q4_Q)
+#undef NR_Q4_QC
+#undef NR_Q4_Q
 #elif NR_QUANT_PAIRED
                 for (int c = 0; c < 8; c += 2) {
                     // Packed, and bit-identical: `v_pk_mul_f16` rounds each
@@ -3961,6 +4184,12 @@ void main() {
                             NR_QKVA(m, NR_DF + d)[(c) + 1]) * f16vec2(nk))
                 NR_QRUN8(kf, NR_QV_K)
 #undef NR_QV_K
+#elif ((NR_QUAD_ON) & NR_QD_K) && NR_QK_SCALE_FAST
+#define NR_Q4_K(c) vec2(NR_QKVA(m, NR_DF + d)[c], NR_QKVA(m, NR_DF + d)[(c) + 1])
+#define NR_Q4_KC(v) nr_kscale_fast4(v, nk)
+                NR_QUAD8(kf, NR_Q4_KC, vec4, NR_Q4_K)
+#undef NR_Q4_KC
+#undef NR_Q4_K
 #elif NR_QUANT_PAIRED
                 for (int c = 0; c < 8; c += 2) {
 #if NR_QK_SCALE_FAST
@@ -3993,6 +4222,10 @@ void main() {
                            NR_QKVA(m, 2 * NR_DF + d)[(c) + 1])
                 NR_QRUN8(vf, NR_QV_V)
 #undef NR_QV_V
+#elif (NR_QUAD_ON) & NR_QD_V
+#define NR_Q4_V(c) NR_N2_V(NR_QKVA(m, 2 * NR_DF + d)[c], NR_QKVA(m, 2 * NR_DF + d)[(c) + 1])
+                NR_QUAD8(vf, nr_quant_quad, f16vec4, NR_Q4_V)
+#undef NR_Q4_V
 #elif NR_QUANT_PAIRED
                 for (int c = 0; c < 8; c += 2) {
                     NR_PV_QT qp = NR_QP_V(NR_N2_V(
@@ -4009,9 +4242,9 @@ void main() {
                 // V into this wave's own tiles of lds_y - [dim][token] stored
                 // ColumnMajor at stride 16 is read back ColumnMajor as an A
                 // operand that is [dim][token], which is what the context
-                // product wants. Nothing crosses a wave, so no barrier.
-                NR_STORE_ACC_COL(vf, lds_y, NR_LXB_
-                                 uint(m * NR_CF + hh * NR_DF + d) * 256u, 16u);
+                // product wants (RowMajor both ways under NR_V_ROW). Nothing
+                // crosses a wave, so no barrier.
+                NR_STORE_V(vf, NR_LXB_ uint(m * NR_CF + hh * NR_DF + d) * 256u);
 #else
                 NR_STORE_ACC(vf, lds_v, NR_V_LDS_OFFSET + uint(d) * 16u * uint(NR_WIN) + t0, uint(NR_WIN));
 #endif
@@ -4093,6 +4326,13 @@ void main() {
             // packed-multiply note in the token-split path below.
             float inv = float(NR_F16(1.0 / float(max(sum, NR_F16(NR_SUM_FLOOR)))));
             for (int j = 0; j < NR_JF; ++j)
+#if (NR_QUAD_ON) & NR_QD_P
+            {
+#define NR_Q4_P(c) NR_N2_P(float(pq2[j][(c) / 2].x) * inv, float(pq2[j][(c) / 2].y) * inv)
+                NR_QUAD8(pb[m][j], NR_QCVT_P, f16vec4, NR_Q4_P)
+#undef NR_Q4_P
+            }
+#else
                 for (int c = 0; c < 4; ++c) {
                     float x = float(pq2[j][c].x) * inv;
                     float y = float(pq2[j][c].y) * inv;
@@ -4111,6 +4351,7 @@ void main() {
                     pb[m][j][2 * c] = q.x;
                     pb[m][j][2 * c + 1] = q.y;
                 }
+#endif
         }
 #else
         NR_PV_OPB pb[NR_MF][NR_JF];
@@ -4224,6 +4465,13 @@ void main() {
             // MODE writes are that fallback. **The f32 spelling is what reaches
             // the free converter.** Do not re-try it.
             float inv=float(NR_F16(1.0/float(max(sum,NR_F16(NR_SUM_FLOOR)))));
+#if (NR_QUAD_ON) & NR_QD_P
+            // The brace this opens is closed below, after the unpaired path.
+            for (int j=0;j<NR_JF;++j) {
+#define NR_Q4_P(c) NR_N2_P(float(pq2[m][j][(c) / 2].x) * inv, float(pq2[m][j][(c) / 2].y) * inv)
+                NR_QUAD8(pb[m][j], NR_QCVT_P, f16vec4, NR_Q4_P)
+#undef NR_Q4_P
+#else
             for (int j=0;j<NR_JF;++j) for (int c=0;c<4;++c) {
 #if NR_ATT_F16_PV
                 // **The packed multiply rejected above, for the reason given there.**
@@ -4248,6 +4496,7 @@ void main() {
 #endif
                 pb[m][j][2*c]=q.x;
                 pb[m][j][2*c+1]=q.y;
+#endif
 #else
             // Sum the eight key groups at each column in the packed PTX order.
             NR_F16 part[8];
@@ -4297,9 +4546,7 @@ void main() {
             for (int j = 0; j < NR_JF; ++j) {
                 NR_PV_OPA vf;
 #if NR_HWAVES
-                NR_LOAD_A_COL(vf, lds_y, NR_LXB_
-                              uint(j * NR_CF + hh * NR_DF + e) * 256u
-                              + NR_OPQ(192u), 16u);
+                NR_LOAD_V(vf, NR_LXB_ uint(j * NR_CF + hh * NR_DF + e) * 256u + NR_OPQ(192u));
 #else
                 NR_LOAD_A(vf, lds_v, NR_V_LDS_OFFSET + uint(e) * 16u * uint(NR_WIN) + uint(j) * 16u,
                           uint(NR_WIN));
@@ -4315,6 +4562,10 @@ void main() {
 #define NR_QV_CTX(c) NR_N2_CTX(a[m][c], a[m][(c) + 1])
                 NR_QRUN8(out_context, NR_QV_CTX)
 #undef NR_QV_CTX
+#elif (NR_QUAD_ON) & NR_QD_CTX
+#define NR_Q4_CTX(c) NR_N2_CTX(a[m][c], a[m][(c) + 1])
+                NR_QUAD8(out_context, nr_quant_quad, f16vec4, NR_Q4_CTX)
+#undef NR_Q4_CTX
 #elif NR_QUANT_PAIRED
                 for (int c = 0; c < 8; c += 2) {
                     NR_QPAIR_T qp = NR_QP_CTX(NR_N2_CTX(a[m][c], a[m][c + 1]));
@@ -4339,6 +4590,10 @@ void main() {
 #define NR_QV_CQ(c) NR_N2_CTX(a[m][c], a[m][(c) + 1])
                 NR_QRUN8(cq[m][hh * NR_DF + e], NR_QV_CQ)
 #undef NR_QV_CQ
+#elif (NR_QUAD_ON) & NR_QD_CTX
+#define NR_Q4_CTX(c) NR_N2_CTX(a[m][c], a[m][(c) + 1])
+                NR_QUAD8(cq[m][hh * NR_DF + e], nr_quant_quad, f16vec4, NR_Q4_CTX)
+#undef NR_Q4_CTX
 #elif NR_QUANT_PAIRED
                 for (int c = 0; c < 8; c += 2) {
                     NR_QPAIR_T qp = NR_QP_CTX(NR_N2_CTX(a[m][c], a[m][c + 1]));
@@ -4598,9 +4853,16 @@ void main() {
 #endif
 #if NR_QUANT_PAIRED
             }
+#if (NR_QUAD_ON) & NR_QD_OUT
+            {
+#define NR_Q4_OF(c) f16vec2(wide[c], wide[(c) + 1])
+                NR_QUAD8(of, nr_quant_quad, f16vec4, NR_Q4_OF)
+#undef NR_Q4_OF
+#else
             for (int c=0;c<8;c+=2) {
                 fe4m3vec2 q=nr_quant_pair(f16vec2(wide[c],wide[c+1]));
                 of[c]=q.x; of[c+1]=q.y;
+#endif
 #else
                 of[c] = nr_quant_e4m3(wide[c]);
 #endif
@@ -4630,8 +4892,12 @@ void main() {
 #if NR_POOL_DPP16
             float meansf[8];
 #define NR_POOL_Q(c) nr_quant_pair32(vec2(meansf[c], meansf[(c)+1]))
+#define NR_POOL_Q4(c) nr_quant_quad32(vec4(vec2(meansf[c], meansf[(c)+1]),          \
+                                           vec2(meansf[(c)+2], meansf[(c)+3])))
 #else
 #define NR_POOL_Q(c) nr_quant_pair(f16vec2(means[c], means[(c)+1]))
+#define NR_POOL_Q4(c) nr_quant_quad(f16vec4(f16vec2(means[c], means[(c)+1]),         \
+                                            f16vec2(means[(c)+2], means[(c)+3])))
 #endif
 #if NR_POOL_ADDR_UNIFORM
             // px = 2*tx + lx and py = 2*ty + ly with lx, ly in {0, 1},
@@ -4706,10 +4972,14 @@ void main() {
             // Every top-left lane of a 2x2 block publishes its pixel, in or out
             // of the pooled grid; out-of-grid pixels are dropped at the store.
             if ((lane&5u)==0u) {
+#if (NR_QUAD_ON) & NR_QD_OUT
+                pooled[0]=NR_POOL_Q4(0);pooled[1]=NR_POOL_Q4(4);
+#else
                 for (int c=0;c<8;c+=2) {
                     fe4m3vec2 q=NR_POOL_Q(c);
                     pooled[c/4][c%4]=q.x;pooled[c/4][c%4+1]=q.y;
                 }
+#endif
                 const uint lp = uint(2*int(q>>1u) + int((lane%16u)/8u)) * 4u
                               + uint(2*int(q&1u) + int((lane%4u)/2u));
 #if NR_HWAVES
@@ -4724,7 +4994,9 @@ void main() {
 #else
             if(store_pool) {
 #endif
-#if NR_QUANT_PAIRED
+#if (NR_QUAD_ON) & NR_QD_OUT
+                pooled[0]=NR_POOL_Q4(0);pooled[1]=NR_POOL_Q4(4);
+#elif NR_QUANT_PAIRED
                 for (int c=0;c<8;c+=2) {
                     fe4m3vec2 q=NR_POOL_Q(c);
                     pooled[c/4][c%4]=q.x;pooled[c/4][c%4+1]=q.y;
@@ -4774,9 +5046,9 @@ void main() {
             // `tile_blocked`'s `(r%16)*16 + (k%16)`.
 #if NR_IMAGE
             if (!nr_tile_oob((tok0 + uint(m) * 16u) / 16u))
-            NR_STORE_ACC_COL(of, act_e4m3,
-                             pc.o_off + nr_tile_base((tok0 + uint(m) * 16u) / 16u)
-                             + uint(n) * 256u, 16u);
+            NR_STORE_ACC_COL_ACT(of,
+                                 pc.o_off + nr_tile_base((tok0 + uint(m) * 16u) / 16u)
+                                 + uint(n) * 256u, 16u);
 #else
             NR_STORE_ACC_COL(of, act_e4m3, pc.o_off + wbase
                              + (tok0 + uint(m) * 16u) * uint(NR_C) + uint(n) * 16u,
@@ -4867,10 +5139,26 @@ void main() {
                              + (((sdy / 4u) * pc.ds_otx + sdx / 4u) * (pc.ds_n / 16u) + dst_group) * 256u
                              + (4u * (sdy % 4u) + sdx % 4u) * 16u + col0) / 4u;
             if (in_grid && !s_oob) {
+#if ((NR_QUAD_ON) & NR_QD_OUT) && NR_PERSIST
+                // nr_quant_e4m3 of each component, as below, four to a conversion.
+                act_x4v[ob]      = pack32(floate4m3BitsToUintEXT(nr_quant_quad(
+                    f16vec4(outv[0], outv[1], outv[2], outv[3]))));
+                act_x4v[ob + 1u] = pack32(floate4m3BitsToUintEXT(nr_quant_quad(
+                    f16vec4(outv[4], outv[5], outv[6], outv[7]))));
+#elif (NR_QUAD_ON) & NR_QD_OUT
+                act_e4m3x4[ob]      = nr_quant_quad(f16vec4(outv[0], outv[1], outv[2], outv[3]));
+                act_e4m3x4[ob + 1u] = nr_quant_quad(f16vec4(outv[4], outv[5], outv[6], outv[7]));
+#elif NR_PERSIST
+                act_x4v[ob]      = pack32(floate4m3BitsToUintEXT(fe4m3vec4(
+                    nr_quant_e4m3(outv[0]), nr_quant_e4m3(outv[1]), nr_quant_e4m3(outv[2]), nr_quant_e4m3(outv[3]))));
+                act_x4v[ob + 1u] = pack32(floate4m3BitsToUintEXT(fe4m3vec4(
+                    nr_quant_e4m3(outv[4]), nr_quant_e4m3(outv[5]), nr_quant_e4m3(outv[6]), nr_quant_e4m3(outv[7]))));
+#else
                 act_e4m3x4[ob]      = fe4m3vec4(nr_quant_e4m3(outv[0]), nr_quant_e4m3(outv[1]),
                                                 nr_quant_e4m3(outv[2]), nr_quant_e4m3(outv[3]));
                 act_e4m3x4[ob + 1u] = fe4m3vec4(nr_quant_e4m3(outv[4]), nr_quant_e4m3(outv[5]),
                                                 nr_quant_e4m3(outv[6]), nr_quant_e4m3(outv[7]));
+#endif
             }
         }
     }

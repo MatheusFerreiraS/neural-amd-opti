@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <vector>
 #include <vulkan/vulkan.h>
 #include <cstdint>
@@ -105,6 +106,21 @@ struct RuntimeConfig {
     // pass, so `colour` and `model_scale` have no effect. What a host that does
     // its own resolve afterwards (OptiScaler) must be given.
     bool native_compose = false;
+};
+
+// A build on this thread stops before its next pipeline once *build_cancel is
+// set: it writes the pipeline cache it has so far and throws, so a host that is
+// going away does not wait out a cold compile, and its next start keeps what
+// was compiled. Null, the default, never stops a build. Set it around the
+// Runtime's constructor with BuildCancelScope.
+extern thread_local const std::atomic<bool>* build_cancel;
+struct BuildCancelScope {
+    explicit BuildCancelScope(const std::atomic<bool>* flag) noexcept : outer_(build_cancel) { build_cancel = flag; }
+    ~BuildCancelScope() { build_cancel = outer_; }
+    BuildCancelScope(const BuildCancelScope&) = delete;
+    BuildCancelScope& operator=(const BuildCancelScope&) = delete;
+private:
+    const std::atomic<bool>* outer_;
 };
 
 // SDR encoded RGB, source-sized and upright. Accepts RGBA32F and 8-bit RGBA/BGRA

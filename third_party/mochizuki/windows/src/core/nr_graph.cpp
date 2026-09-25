@@ -25,6 +25,7 @@
 #include "tinlayout.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <filesystem>
 #include <cmath>
 #include <cstdio>
@@ -38,6 +39,9 @@
 #include <string>
 #include <functional>
 #include <vector>
+
+// nr_runtime.hpp: a host's stop flag for the build on this thread.
+namespace nr { thread_local const std::atomic<bool>* build_cancel = nullptr; }
 
 // The ViT GEMM's wide tile, `NR_MTILE`/`NR_NTILE` in gemm1x1.comp. It is a
 // shader constant that the host's grid arithmetic also needs, so the shader
@@ -3418,6 +3422,12 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
     // lets one descriptor set per *shader* serve all of that shader's layers.
     for (const Disp& d : disp) {
         if (kern.count(d.kern)) continue;
+        // A host going away (nr::build_cancel) stops here, between two
+        // pipelines, and keeps what was compiled so far for its next start.
+        if (nr::build_cancel && nr::build_cancel->load()) {
+            ctx.save_pipeline_cache();
+            throw std::runtime_error("NR build cancelled");
+        }
         const std::string p = spv_dir + "/g_" + d.kern + ".spv";
         if (d.kern.rfind("fswindsp",0)==0)
             kern[d.kern].create(ctx,p,{act.handle,act.handle,wgt.handle,wgt.handle,wgt.handle,act.handle},

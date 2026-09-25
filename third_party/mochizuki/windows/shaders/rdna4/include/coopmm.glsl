@@ -508,6 +508,41 @@ fe4m3vec2 nr_quant_pair32(vec2 x) {
 #endif
 }
 #define NR_HAVE_QUANT_PAIR32 1
+
+// Four at a time: the pair conversions above on a vec4, component for component.
+// LLPC (AMD's Windows driver, 26.8.1) writes `s_setreg hwreg(MODE, 23, 1)` in front of
+// every e4m3 OpFConvert, whatever its width, and never merges or hoists the writes. A
+// fe4m3vec2 is one MODE write per `v_cvt_pk_fp8_f32`, plus a shift and a merge to put
+// the next pair in the high half of the dword; a fe4m3vec4 is one MODE write for two
+// converts, the second writing the high half itself (op_sel). fswin_t.comp's NR_QUAD
+// uses these for its eight-component fragments.
+#if NR_QUANT_EXPLICIT
+vec4 nr_e4m3_range4(vec4 x) {
+    return clamp(x, vec4(-448.0), vec4(448.0)) + x * 0.0;
+}
+#endif
+fe4m3vec4 nr_quant_quad(f16vec4 v) {
+#if NR_ABLATE_QUANT
+    return fe4m3vec4(v);
+#elif NR_QUANT_EXPLICIT
+    return fe4m3vec4(nr_e4m3_range4(vec4(v)));
+#else
+    vec4 x = vec4(v);
+    fe4m3vec4 r;
+    saturatedConvertEXT(r, mix(x, vec4(uintBitsToFloat(0x7FC00000u)), isinf(x)));
+    return r;
+#endif
+}
+fe4m3vec4 nr_quant_quad32(vec4 x) {
+#if NR_QUANT_EXPLICIT
+    return fe4m3vec4(nr_e4m3_range4(x));
+#else
+    fe4m3vec4 r;
+    saturatedConvertEXT(r, mix(x, vec4(uintBitsToFloat(0x7FC00000u)), isinf(x)));
+    return r;
+#endif
+}
+#define NR_HAVE_QUANT_QUAD 1
 #endif
 
 // The same conversion with the **saturation** removed and nothing else: no
