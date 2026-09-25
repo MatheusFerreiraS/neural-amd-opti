@@ -41,5 +41,10 @@ Kind ActiveKindFromConfig()
     return ActiveKind(requested);
 }
 
-bool SubmissionHooksWanted() { return LmxxfWired() && ActiveKindFromConfig() == Kind::Lmxxf; }
+// Both runtimes that run between the two halves of the game's command list need the split.
+bool SubmissionHooksWanted()
+{
+    const auto kind = ActiveKindFromConfig();
+    return (LmxxfWired() && kind == Kind::Lmxxf) || kind == Kind::Mochizuki;
+}
 } // namespace DlssNr::Backend

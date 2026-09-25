@@ -1,7 +1,7 @@
 # NR backend selector
 
-How OptiScaler picks one of the two AMD NR runtimes, and how the lmxxf backend records its work.
-Both runtimes ship since 0.2.0-amd-nr.
+How OptiScaler picks one of the AMD NR runtimes, and how the lmxxf backend records its work.
+danielblnc and lmxxf ship since 0.2.0-amd-nr; mochizuki is being tried out.
 
 ## Choosing the runtime
 
@@ -12,12 +12,13 @@ hooks when the device is created, so the menu's "NR runtime" combo applies on th
 |---|---|
 | `daniel` | `DanielBackend`, runtime `dlssnr_amd_pass1-3.dll` |
 | `lmxxf` | `LmxxfBackend`, runtime `LmxxfNrRuntime.dll` |
+| `mochizuki` | `LmxxfBackend`, runtime `MochizukiNrRuntime.dll` |
 | `off` or `none` | None: no AMD Record, the original colour goes to SR |
 | `auto`, empty or missing | lmxxf when `LmxxfNrRuntime.dll` sits beside OptiScaler and `dlssnr_amd_pass1.dll` does not, otherwise daniel |
 | Anything else | daniel |
 
 `AmdBridge::HasFiles` looks for the active backend's runtime DLL. The `submission/` hooks are armed
-only while lmxxf is the active backend (`SubmissionHooksWanted`).
+only while lmxxf or mochizuki is the active backend (`SubmissionHooksWanted`).
 
 `LmxxfBackend::Record` refuses frames after the upscale (`afterUpscale`), so lmxxf runs only before
 Super Resolution. This is a local change on top of TheAutomatic's lmxxf files.
@@ -32,6 +33,24 @@ after it. The flow is upstream's `native_game_frame.h` for one pass. `OutputSmoo
 `DLSS5_OUTPUT_SMOOTH`, `LmxxfSmoothStrength`/`LmxxfSmoothThreshold`) then pulls the last pass's
 output toward its warped history where they differ little, before it is shown or kept.
 
+## mochizuki
+
+`MochizukiNrRuntime.dll` implements the lmxxf ABI (`LmxxfNrApi.h`), so `LmxxfBackend` drives it
+unchanged apart from the DLL name. Inside, mochizuki0323's Vulkan network (`third_party/mochizuki`)
+runs on a Vulkan device of its own, on the game's adapter:
+
+- `RecordInputs` copies the colour and the motion vectors into shared D3D12 buffers the Vulkan device
+  imports.
+- `EnqueueHip`, between the two halves of the game's list, signals the game queue's shared fence, submits
+  the network on Vulkan behind a wait on that fence (imported as a timeline semaphore), and makes the game
+  queue wait for the network's signal.
+- `RecordOutputs` copies the result into the texture Super Resolution gets.
+
+The network is built for each render extent and colour format on a background thread; frames pass
+through until it is ready. It reads `dlssnr-amd\dlssnr.bin` and `dlssnr-amd\shaders\` beside the DLL,
+keeps its pipeline cache there and logs to `mochizuki_nr.log`. It has no controls yet: `Enable NR` turns
+it on and off.
+
 ## Toolchain
 
 `LmxxfNrRuntime.dll` is MinGW, built by `tools\build-lmxxf-runtime.cmd exports\lmxxf-runtime` from
@@ -43,6 +62,9 @@ the gfx1201 modules and the top-level shaders.
 - Weights, never shipped: the first of `native-game-tiled-assets\`, `lmxxf-weights\` and the folder
   named in `lmxxf-weights-dir.txt`, all beside OptiScaler, then `LMXXF_WEIGHTS_DIR`. These are the
   tiled assets; the 0.24.2 `HIP/` folder is never read.
+
+`MochizukiNrRuntime.dll` is MSVC, built with its shaders by `tools\build-mochizuki-runtime.cmd` (see
+`third_party/mochizuki/UPSTREAM.md`).
 
 ## Record sandwich (fail-closed)
 

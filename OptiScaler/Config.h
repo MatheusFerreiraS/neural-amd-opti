@@ -333,7 +333,7 @@ class Config
     // New wait (1) vs original wait (0). Default 1 since 1.8.4; still being tested.
     // Live switching needs installed hooks and a ready 1-pixel-draw PSO; otherwise restart.
     CustomOptional<int> AmdGraphicsWait { 1 };
-    // NR host: daniel (default), lmxxf, off. Missing key = daniel. Restart to change.
+    // NR host: daniel (default), lmxxf, mochizuki, off. Missing key = daniel. Restart to change.
     CustomOptional<std::string> NrBackend { "daniel" };
     // lmxxf diagnostics: original/copy-current/staging-current/staging-previous,
     // proxy-original/split-original (NO NR). off requires a same-frame boundary. Restart to change.

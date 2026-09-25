@@ -7,6 +7,7 @@ enum class Kind
 {
     Daniel,
     Lmxxf,
+    Mochizuki,
     Off,
 };
 
@@ -35,6 +36,8 @@ inline Kind ParseKind(std::string_view raw)
         return Kind::Off;
     if (eq(raw, "lmxxf"))
         return Kind::Lmxxf;
+    if (eq(raw, "mochizuki"))
+        return Kind::Mochizuki;
     return Kind::Daniel;
 }
 
@@ -47,6 +50,8 @@ inline Kind ActiveKind(Kind requested)
         return Kind::Off;
     if (requested == Kind::Lmxxf && LmxxfWired())
         return Kind::Lmxxf;
+    if (requested == Kind::Mochizuki)
+        return Kind::Mochizuki;
     return Kind::Daniel;
 }
 } // namespace DlssNr::Backend

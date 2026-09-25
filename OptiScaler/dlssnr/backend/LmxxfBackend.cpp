@@ -5,6 +5,7 @@
 #include "../submission/SubmissionTls.h"
 #include "lmxxf_runtime/LmxxfNrApi.h"
 #include "../amd/AmdBridge.h"
+#include <State.h>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -39,9 +40,12 @@ void LmxxfBackend::SetStatus(const char* s)
 {
     if (!s)
         return;
-    if (status == s)
+    std::string next = s;
+    if (!Lmxxf() && next.rfind("lmxxf", 0) == 0)
+        next.replace(0, 5, "mochizuki");
+    if (status == next)
         return;
-    status = s;
+    status = next;
     // Surface to OptiScaler.log with progressive rate-limiting on status changes.
     static std::atomic<uint32_t> s_statusLogCount { 0 };
     const uint32_t c = s_statusLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -51,8 +55,9 @@ void LmxxfBackend::SetStatus(const char* s)
     }
 }
 
-LmxxfBackend::LmxxfBackend(ID3D12Device* dev, ID3D12CommandQueue* q, const std::filesystem::path& dir)
-    : device(dev), queue(q), directory(dir)
+LmxxfBackend::LmxxfBackend(ID3D12Device* dev, ID3D12CommandQueue* q, const std::filesystem::path& dir,
+                           const wchar_t* runtime)
+    : device(dev), queue(q), directory(dir), runtimeFile(runtime)
 {
     if (device)
         device->AddRef();
@@ -92,11 +97,11 @@ bool LmxxfBackend::EnsureRuntime()
 {
     if (runtimeDll && api && api->table.EnqueueHip)
         return true;
-    const auto dllPath = directory / L"LmxxfNrRuntime.dll";
+    const auto dllPath = directory / runtimeFile;
     runtimeDll = reinterpret_cast<void*>(LoadLibraryW(dllPath.c_str()));
     if (!runtimeDll)
     {
-        SetStatus("lmxxf: LmxxfNrRuntime.dll missing next to OptiScaler");
+        SetStatus("lmxxf: runtime DLL missing next to OptiScaler");
         return false;
     }
     auto getApi = reinterpret_cast<int32_t (*)(uint32_t, LmxxfNrApi*)>(
@@ -123,7 +128,7 @@ bool LmxxfBackend::EnsureSession()
         return false;
 
     // Upstream 0.21+: auto picks 720/900/1080 from Color size. Unset defaults to 1080 and blacks 720p Color.
-    if (!std::getenv("DLSS5_NETWORK_HEIGHT"))
+    if (Lmxxf() && !std::getenv("DLSS5_NETWORK_HEIGHT"))
     {
         _putenv("DLSS5_NETWORK_HEIGHT=auto");
         SetEnvironmentVariableA("DLSS5_NETWORK_HEIGHT", "auto");
@@ -133,6 +138,8 @@ bool LmxxfBackend::EnsureSession()
     // 1. Prioritize local folder next to OptiScaler / game (native-game-tiled-assets or lmxxf-weights).
     // 2. Sibling hint file (lmxxf-weights-dir.txt).
     // 3. Fallback to LMXXF_WEIGHTS_DIR environment variable (for development/benchmarks).
+    // mochizuki's runtime reads its model from the dlssnr-amd folder beside it.
+    if (Lmxxf())
     {
         const auto localWeights = directory / L"native-game-tiled-assets";
         const auto altWeights = directory / L"lmxxf-weights";
@@ -233,7 +240,14 @@ bool LmxxfBackend::EnsureSession()
         api->table.GetStatus(ctx, st, sizeof st);
         LOG_INFO("lmxxf: after Create status={}", st);
     }
-    const int32_t prepRc = api->table.PrepareSession(ctx);
+    int32_t prepRc;
+    {
+        // mochizuki's runtime creates its Vulkan instance and device here. They are not the game's, so the
+        // Vulkan hooks leave them alone, as they do for the devices DXVK and vkd3d create.
+        ScopedSkipVulkanHooks skipVulkanHooks {};
+        ScopedCreatingD3DDevice creatingDevice {};
+        prepRc = api->table.PrepareSession(ctx);
+    }
     if (prepRc != LMXXF_NR_OK)
     {
         char err[256] {};
@@ -376,6 +390,14 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
     LmxxfNrJob job {};
     job.struct_size = sizeof(job);
     const int32_t frameRc = api->table.PrepareFrame(session, &fi, &job);
+    if (frameRc == LMXXF_NR_UNAVAILABLE && !Lmxxf())
+    {
+        // Building its network, or declining this frame; the reason goes to the menu, the details to its own log.
+        char err[256] {};
+        api->table.GetLastError(err, sizeof err);
+        SetStatus((std::string("lmxxf: ") + err).c_str());
+        return nullptr;
+    }
     if (frameRc != LMXXF_NR_OK || !job.handle || !job.private_output)
     {
         char err[256] {};

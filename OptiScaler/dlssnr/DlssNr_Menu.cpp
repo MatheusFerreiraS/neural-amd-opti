@@ -189,20 +189,43 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::Checkbox("Enable NR", &enabled))
             config->DlssNrEnabled = enabled;
 
-        // With both runtimes installed, choose the one the next launch uses. This session keeps the
+        // With more than one runtime installed, choose the one the next launch uses. This session keeps the
         // one it started with: each installs its own D3D12 hooks as the device is created.
         {
+            using DlssNr::Backend::Kind;
+            struct Runtime
+            {
+                Kind kind;
+                const char *key, *label;
+                const wchar_t* file;
+            };
+            static constexpr Runtime runtimes[] = {
+                { Kind::Daniel, "daniel", "danielblnc", L"dlssnr_amd_pass1.dll" },
+                { Kind::Lmxxf, "lmxxf", "lmxxf", L"LmxxfNrRuntime.dll" },
+                { Kind::Mochizuki, "mochizuki", "mochizuki", L"MochizukiNrRuntime.dll" },
+            };
             std::error_code ec;
             const auto dir = Util::DllPath().parent_path();
-            if (std::filesystem::exists(dir / L"dlssnr_amd_pass1.dll", ec) &&
-                std::filesystem::exists(dir / L"LmxxfNrRuntime.dll", ec))
+            bool installed[std::size(runtimes)] {};
+            int count = 0;
+            for (size_t i = 0; i < std::size(runtimes); ++i)
+                count += installed[i] = std::filesystem::exists(dir / runtimes[i].file, ec);
+            if (count > 1)
             {
-                const bool running = DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Lmxxf;
-                int pick =
-                    DlssNr::Backend::ParseKind(config->NrBackend.value_or_default()) == DlssNr::Backend::Kind::Lmxxf;
-                if (ImGui::Combo("NR runtime", &pick, "danielblnc\0lmxxf\0"))
-                    config->NrBackend = std::string(pick ? "lmxxf" : "daniel");
-                if ((pick == 1) != running)
+                const Kind running = DlssNr::Backend::ActiveKindFromConfig();
+                const Kind picked = DlssNr::Backend::ParseKind(config->NrBackend.value_or_default());
+                const char* preview = runtimes[0].label;
+                for (const auto& r : runtimes)
+                    if (r.kind == picked)
+                        preview = r.label;
+                if (ImGui::BeginCombo("NR runtime", preview))
+                {
+                    for (size_t i = 0; i < std::size(runtimes); ++i)
+                        if (installed[i] && ImGui::Selectable(runtimes[i].label, runtimes[i].kind == picked))
+                            config->NrBackend = std::string(runtimes[i].key);
+                    ImGui::EndCombo();
+                }
+                if (picked != running)
                 {
                     ImGui::SameLine();
                     ImGui::TextColored(ImVec4(1.f, 0.8f, 0.f, 1.f), "(save and restart)");
@@ -210,6 +233,8 @@ void RenderMenu(Config* config, float menuResScale)
                 HelpMarker("danielblnc: the DLSS-NR-on-AMD runtime, every control below."
                            "\nlmxxf: open-source HIP kernels in the game's own queue, before Super"
                            "\nResolution only. Detail, colour and debug view."
+                           "\nmochizuki: open-source Vulkan network on its own device, before Super"
+                           "\nResolution only. No controls yet."
                            "\n\nThe choice is stored as NrBackend. Press Save Settings and restart the"
                            "\ngame to switch.");
             }
@@ -277,6 +302,28 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
             ImGui::TextWrapped("Runs before Super Resolution only, so a game driving Ray Reconstruction"
                                " gets no NR. Built for a render resolution of 1080p or less.");
+            return;
+        }
+
+        // mochizuki's Vulkan network, switched with Enable NR. It has no controls of its own yet.
+        if (DlssNr::AmdBridge::HasFiles() &&
+            DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Mochizuki)
+        {
+            HGap(0.12f);
+            ImGui::TextDisabled("mochizuki");
+            HelpMarker("AMD NR runtime: mochizuki (open-source Vulkan network on a device of its own,"
+                       "\nsame-frame execution). NrBackend in OptiScaler.ini picks the runtime; restart after"
+                       "\nchanging it.");
+            NeuralPassLine(config, "GPU time the game's queue spends on the model each frame: copying its"
+                                   "\ninputs, waiting while the Vulkan network runs between the two halves of"
+                                   "\nthe game's command list, and copying the result back."
+                                   "\n\nThe fps is 1000 divided by that time: how many frames per second the"
+                                   "\nmodel alone could keep up with. The game runs slower than that, because"
+                                   "\nthe rest of the frame takes time too.");
+            ImGui::Spacing();
+            ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
+            ImGui::TextWrapped("Runs before Super Resolution only. The first start builds the network in about"
+                               " half a minute; later starts take a second or two.");
             return;
         }
 

@@ -468,3 +468,4 @@ build_out
 third_party/lmxxf/hip/_build_gfx1201/
 third_party/lmxxf/hip/rtc_compile.exe
 third_party/lmxxf/hip/*.hsaco.s
+third_party/mochizuki/toolchain/

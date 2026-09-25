@@ -8,13 +8,14 @@
 
 namespace DlssNr::Backend
 {
-// Full Host for lmxxf. Constructed only when ActiveKind==Lmxxf (requires LmxxfWired()).
+// Full Host for lmxxf, and for mochizuki's runtime, which implements the same ABI.
 // Record: PrepareFrame → RecordInputs → Split → RecordOutputs → SetPendingEnqueue(EnqueueHip).
 class LmxxfBackend final : public Host
 {
     ID3D12Device* device = nullptr;
     ID3D12CommandQueue* queue = nullptr;
     std::filesystem::path directory;
+    std::wstring runtimeFile;   // LmxxfNrRuntime.dll or MochizukiNrRuntime.dll
     void* runtimeDll = nullptr; // HMODULE
     void* session = nullptr;
     bool sessionReady = false;
@@ -44,10 +45,12 @@ class LmxxfBackend final : public Host
     bool EnsureRuntime();
     ID3D12Resource* FinishRecord(ID3D12GraphicsCommandList* recordCmd, void* jobHandle, void* privateOutput);
     bool EnsureSession();
+    bool Lmxxf() const { return runtimeFile == L"LmxxfNrRuntime.dll"; }
     void SetStatus(const char* s);
 
   public:
-    LmxxfBackend(ID3D12Device* device, ID3D12CommandQueue* queue, const std::filesystem::path& directory);
+    LmxxfBackend(ID3D12Device* device, ID3D12CommandQueue* queue, const std::filesystem::path& directory,
+                 const wchar_t* runtime = L"LmxxfNrRuntime.dll");
     ~LmxxfBackend() override;
     LmxxfBackend(const LmxxfBackend&) = delete;
     LmxxfBackend& operator=(const LmxxfBackend&) = delete;

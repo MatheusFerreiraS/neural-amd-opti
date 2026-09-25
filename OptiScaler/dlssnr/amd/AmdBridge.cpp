@@ -321,6 +321,8 @@ bool HasFiles()
     const auto active = DlssNr::Backend::ActiveKindFromConfig();
     if (active == DlssNr::Backend::Kind::Lmxxf)
         return std::filesystem::exists(dir / L"LmxxfNrRuntime.dll", ec);
+    if (active == DlssNr::Backend::Kind::Mochizuki)
+        return std::filesystem::exists(dir / L"MochizukiNrRuntime.dll", ec);
     if (active == DlssNr::Backend::Kind::Daniel)
         return std::filesystem::exists(dir / L"dlssnr_amd_pass1.dll", ec);
     return std::filesystem::exists(dir / L"LmxxfNrRuntime.dll", ec) ||
@@ -471,6 +473,8 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
             DlssNr::Submission::Hooks::SetProxyWrap(true);
         if (active == DlssNr::Backend::Kind::Lmxxf)
             b = new DlssNr::Backend::LmxxfBackend(device, q, Directory());
+        else if (active == DlssNr::Backend::Kind::Mochizuki)
+            b = new DlssNr::Backend::LmxxfBackend(device, q, Directory(), L"MochizukiNrRuntime.dll");
         else
             b = new DlssNr::Backend::DanielBackend(device, q, Directory());
         backend.store(b);
@@ -676,8 +680,8 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         s.skin = s.structure;
     s.strength = std::clamp(cfg.AmdEffectStrength.value_or_default(), 0.f, 1.f);
     s.grade = UINT(std::clamp(cfg.AmdColourGrade.value_or_default(), 0, 2));
-    // Evaluate cut: Split proxy + SetBetween(EnqueueHip). Live only when SubmissionHooksWanted() (Wired &&
-    // NrBackend=lmxxf).
+    // Evaluate cut: Split proxy + SetBetween(EnqueueHip). Live only when SubmissionHooksWanted() (NrBackend=lmxxf
+    // or mochizuki).
     DlssNr::Backend::LmxxfCut::OnEvaluateBeforeRecord(cmd);
     if (neuralTimer)
         neuralTimer->Start(cmd);
