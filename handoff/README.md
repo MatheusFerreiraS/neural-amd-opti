@@ -38,7 +38,7 @@ Everything is on `dlss-neural-rendering`. The work was committed on the branch `
 merge, then formatting), which pull request #1 merged into `dlss-neural-rendering`. Fixes since
 then are committed there directly.
 
-Four GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
+Five GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
 
 - `v0.1.0-amd-nr`: the FidelityFX upscaler, frame generation and denoiser never load from the
   package layout, so FSR falls back to FSR 2 and Ray Reconstruction is greyed out. Do not use it.
@@ -47,19 +47,28 @@ Four GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
   generation (section 5, "0.2.0").
 - `v0.3.0-amd-nr`: lmxxf multipass, temporal history per pass and output smoothing, lmxxf detail
   and colour strength up to 2, the Neural tab in sections and the red theme (section 5, "0.3.0").
+- `v0.4.0-amd-nr`: the host side of a third runtime, mochizuki (its runtime and model are not in
+  the zip), and host fixes that reach every runtime: process exit, command lists recycled before
+  they run, the upscalers' colour barriers, OptiScaler's own Vulkan devices and the placement of
+  the runtimes that run before Super Resolution (section 5, "0.4.0").
 
-The build reports itself as `0.3.0-amd-nr`, and the packager writes
-`dist/OptiScaler-0.3.0-amd-nr.zip`.
+The build reports itself as `0.4.0-amd-nr`, and the packager writes
+`dist/OptiScaler-0.4.0-amd-nr.zip`.
 
 The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer)
 installs this build as its OptiScaler route. v0.4.0 knows only `v0.1.1-amd-nr`; v0.5.0 and later
-offer every version its payload manifest lists, newest first, and install the newest,
-`v0.3.0-amd-nr`, with the lmxxf weights. The manifest pins each release zip by URL and SHA-256, and every file it
-extracts from it by hash. The runtime 0.3.1 (`b108d640…`) and the lmxxf weights
-(`native-game-tiled-assets.zip`) come from the Hugging Face dataset `zmodelerlover/amd-nr`,
-never from this repository. Never replace an asset on a published tag: every installer would
-refuse the new bytes. A new release is a new tag, and then new pins in that installer's
-`payload/payload.json` (its `handoffs/HANDOFF-v0.5.0-2026-09-23.md` has the steps).
+offer every version its payload manifest lists, newest first, and install the newest with the
+lmxxf weights: `v0.3.0-amd-nr` until the manifest pins `v0.4.0-amd-nr`. The manifest pins each
+release zip by URL and SHA-256, and every file it extracts from it by hash. The runtime 0.3.1
+(`b108d640…`) and the lmxxf weights (`native-game-tiled-assets.zip`) come from the Hugging Face
+dataset `zmodelerlover/amd-nr`, never from this repository. For mochizuki the installer installs
+`MochizukiNrRuntime.dll` with `dlssnr-amd\shaders\`, `dlssnr-amd\prewarm\manifest.txt` and the
+model, `dlssnr-amd\dlssnr.bin`. The manifest is not in this repository and
+`tools\build-mochizuki-runtime.cmd` does not make it: the runtime writes it after its first serial
+build, and it holds only for the `dlssnr-amd\shaders\` it was made from (their file list and sizes),
+so the payload needs one made from the shaders it ships. Never replace an asset on a published tag:
+every installer would refuse the new bytes. A new release is a new tag, and then new pins in that
+installer's `payload/payload.json` (its `handoffs/HANDOFF-v0.5.0-2026-09-23.md` has the steps).
 
 ---
 
@@ -524,6 +533,137 @@ pass meter at the top, then one column of titled sections: for danielblnc Proces
 resolution, dynamic resolution), Scheduling (temporal stabilization, slots, wait mode), Effect and
 Colour (grade, encoding, the appearance filter and the RTGI experiment); for lmxxf Temporal, Effect
 and Inspect. A two-column version was tried and dropped. The NVIDIA-chain page is unchanged.
+
+### 0.4.0
+
+**Third NR runtime: mochizuki.**
+[mochizuki0323/DLSSNR-AMD](https://github.com/mochizuki0323/DLSSNR-AMD) (MIT, v0.0.1, commit
+`791b046`, vendored under `third_party/mochizuki/`) reimplements the NR network of NVIDIA's
+`nvngx_dlssnr.dll` 310.8.0 as Vulkan compute shaders on FP8 (`VK_KHR_cooperative_matrix`,
+`VK_EXT_shader_float8`), so it needs RDNA4. Upstream's own host asks vkd3d-proton for the game's
+Vulkan device, and a native D3D12 game has none. `MochizukiNrRuntime.dll`
+(`dlssnr/backend/mochizuki_runtime/`) creates a Vulkan device of its own on the game's adapter
+(matched by LUID) and runs the network between the two halves of the game's command list, with the
+list cut lmxxf already uses. Colour, motion vectors and the result cross in shared D3D12 buffers
+(buffers, not textures, so the two APIs never have to agree on a tiling), and two shared D3D12
+fences, imported as Vulkan timeline semaphores, order the work, one per direction. The DLL
+implements the lmxxf C ABI (`LmxxfNrApi.h`) plus four exports of its own (`MochizukiNrControls.h`),
+so `LmxxfBackend` hosts it with only the DLL name changed; its `PrepareSession` runs inside
+`ScopedSkipVulkanHooks` and `ScopedCreatingD3DDevice`. `[DlssNr] NrBackend=mochizuki` selects it
+(`auto` never does). It runs before Super Resolution only and ignores `ApplyAfterRR`. The model's
+temporal history follows the game's motion vectors (2- and 4-channel float formats); in a harness
+pan of 2 px per frame the effect changed 73% less from frame to frame than without history, and more
+with the vectors' sign flipped. Beside the DLL: `dlssnr-amd\dlssnr.bin` (the model),
+`dlssnr-amd\shaders\` (39 network, 4 temporal and 6 runtime pipelines),
+`dlssnr-amd\prewarm\manifest.txt`, `dlssnr-amd\pipeline.cache` and `mochizuki_nr.log`.
+
+`tools\build-mochizuki-runtime.cmd <out>` builds the DLL and its shaders (MSVC, Vulkan SDK 1.4.357
+or newer, Python; glslang 16.5.0 is downloaded once and its hash checked). The DLL imports only
+`vulkan-1.dll` and `KERNEL32.dll`. The zip carries only the host side: the backend, the keys and the
+menu. The AMD-NR installer supplies the runtime, its shaders, the prewarm manifest and the model.
+The model is made from `nvngx_dlssnr.dll` 310.8.0 (`e16bcf15…`) with upstream's scripts
+(`third_party/mochizuki/UPSTREAM.md`, "The model"): 599 entries, 147,756,560 bytes.
+
+**mochizuki keys and menu.** 29 `[DlssNr] Mochizuki*` keys (`Config.h`, the packaged INI, the root
+README): temporal history and its strength, detail (0 to 2) and colour (0 to 4) strength, passes
+(1 to 3), model scale (0.25 to 1), the model's controls (intensity, style, local tone and structure,
+skin structure, automatic mask), highlight guard, white point, linear input, apply model, dynamic
+resolution, and six overrides each for passes 2 and 3. It reads none of the danielblnc, lmxxf or
+NVIDIA keys; without `MochizukiTemporal`, `LmxxfTemporal` decides. Every default is the network's
+own except `MochizukiColourStrength`, 0: the game's own colour at the network's luminance (1, the
+runtime's default, applies the network's colour change in full). At the runtime's defaults the
+output is byte-identical to the first build's in the harness. Passes, model scale and linear input
+rebuild the network; the rest apply on the next frame through `MochizukiNrSetControls`, which the
+host calls only when a value changes or a session is new. The Neural tab has a mochizuki section:
+Temporal, Effect, Model (with a Pass 2/3 node), Advanced and Status (network size, GPU time median
+and p95, last build, history use, refused motion formats, failures).
+
+**Host fixes that reach every runtime.**
+
+- Process exit. The hook on `RtlExitUserProcess` sets a latch first; from then on `AmdBridge::Run`
+  passes the original colour to SR and nothing is enqueued between a list's halves.
+  `Host::OnProcessExit` replaces the plain `Shutdown`: danielblnc still shuts down, lmxxf is
+  destroyed only if its locks come free within 2 s, and mochizuki is left to the OS (`Destroy` could
+  wait out a network build, and `FreeLibrary` would unmap code other threads still run). Also: an
+  evaluate whose colour is already the model's answer (`DlssNrPreUpscale`, `DualFeature`) passes
+  through instead of costing the history, `frameId` no longer advances on declined calls, a frame
+  recorded on another adapter's device passes through, and a failing session start backs off from
+  2 to 60 s.
+- Command lists recycled before they run. A list reset or released without being executed left its
+  pending job behind, and lmxxf or mochizuki stayed on "previous frame not submitted". The proxy now
+  reports it (`Hooks::g_onListRecycled`, `CommandListProxy.h`) and `LmxxfBackend` cancels that job.
+- Upscaler colour barriers. XeSS, FSR 2.2, FSR 2.1.2 and FSR 3.1 (FSR-RR included, built on it)
+  applied the game's configured colour barriers to the NR replacement, which arrives in
+  `NON_PIXEL_SHADER_RESOURCE` and must stay there. They skip it now; the Unreal quirk still records
+  the game colour's state, which `AmdBridge` reads.
+- OptiScaler's own Vulkan devices. An instance or device created while both `vulkanSkipHooks` and
+  `creatingD3DDevice` are set passes straight through the Vulkan hooks: no NR extensions, no
+  AntiLag probe, no `State` capture. Those are mochizuki's runtime and `IdentifyGpu`'s probe, and
+  under Proton the instances and devices DXVK and vkd3d-proton create for the DXGI factories and
+  D3D12 devices OptiScaler makes for itself (`with_dx12`, `VkwDx12`, the menu's GPU list). The
+  game's own instances and devices, DXVK's and vkd3d-proton's included, still take the full hook.
+  Wave 1 found the passthrough is not reached on native Windows D3D12, only under Proton, with
+  `LoadVulkanManually`, or when an overlay loaded `vulkan-1.dll` first; it was not checked there.
+- Placement of the runtimes that run before SR. `EvaluateAtSeam` ignores `ApplyAfterRR` for lmxxf
+  and mochizuki. A `true` left over from danielblnc sent every frame to the seam they refuse, so NR
+  stayed off.
+- Settle gate. `AmdBridge::Run` no longer lets danielblnc's `AmdModelScale` and `AmdDynamicScale`
+  restart mochizuki's history or pause it. With mochizuki's dynamic resolution the gate keys on the
+  colour allocation, so a subrect change only restarts the history. For danielblnc and lmxxf the
+  gate is unchanged.
+
+**mochizuki runtime stability.** A failed start is torn down without leaks, and an unsupported GPU
+or driver is logged once (`[unsupported]`). Only device loss is sticky: a frame whose network fails
+shows the original colour (never black), and a failed build is retried, 5, 30 and 120 s after
+running out of memory. VRAM is checked before a build (D3DKMT; "insufficient VRAM", retried every
+10 s); the 1080p network takes about 0.7 GB. Two fences instead of one, so neither goes backwards; a
+watchdog releases the game's queues after 5 s without progress on the Vulkan side; the runtime
+declares `ANY_QUEUE`, so a frame from another queue waits for the last one instead of recreating the
+session. Builds run on a second Vulkan queue, and a change of size no longer waits for the GPU on
+the render thread (`PrepareFrame` 31.0 / 21.6 ms to 0.44 / 0.57 ms). A change of passes, model scale
+or linear input keeps the old network serving until the new one is ready.
+`MochizukiDynamicResolution` (`auto` by default) runs the network in a bucket, per axis the largest
+render subrect seen rounded up to 64 px inside the colour texture, so a dynamic-resolution title
+does not rebuild: NR ran on 300 of 300 frames of the harness's dynamic-resolution run, against 15 of
+300 with `exact`. The harness's 21 fault-injection cases (`mz_stress all`) pass.
+
+**mochizuki performance.** RX 9070 XT, driver 26.8.1, against the first build (on 0.3.0), in
+interleaved pairs in one session, output byte-identical: the network's span on the game's queue went
+from 10.23 to 9.39 ms at 1920x1080 (-0.86 ms, -8.4%) and from 17.32 to 16.10 ms at 2560x1440
+(-1.23 ms, -7.1%); the network alone (`nr_graph --per-layer`) from 9.69 to 8.89 ms and from
+15.82 to 14.65 ms. The gain is all shaders: word-wide e4m3 reads, two work-split knobs and two LLPC
+codegen knobs (upstream patches 2 to 4 below). The CPU cost of a frame's enqueue stays at 0.1 ms.
+For comparison, lmxxf's HIP span at 1080p, one pass, is 18.5 ms.
+
+**Cold build and the prewarm manifest.** The AMD driver keys its pipeline cache by executable, so
+the first start in each game compiles every pipeline: 54.8 s in Cyberpunk 2077 with the first build,
+24.8 s in the harness. `mz_interpose.cpp` records the pipelines the core creates in
+`dlssnr-amd\prewarm\manifest.txt`. With it, the runtime compiles those 32 pipelines on
+min(8, cores - 2) threads at below-normal priority (`MZ_COMPILE_THREADS`; 1 turns it off) before the
+core asks for them, and the network was ready in 5.8 to 6.0 s in the harness, against 21.6 s without
+the manifest. `pipeline.cache` is now also written after the adapter and temporal pipelines. Without
+a manifest the runtime compiles in series and writes one (no build step makes it); it must be
+regenerated whenever the shaders change. Frames pass through without NR until the network is
+ready. Not yet measured in a game.
+
+**Upstream patches** (`third_party/mochizuki/UPSTREAM.md`, entries 1 to 5): the `VkImageAspectFlags`
+cast MSVC needs; word views for the e4m3 weight reads and the persistent runs' stores in
+`fswin_t.comp`; `fswin32` `NR_FWAVES` 1 to 2 and `fswinfusedup128` `NR_EXPAND_GROUP` 4 to 2 in
+`pipelines.json`; `NR_QUAD` and `NR_V_ROW` in `fswin_t.comp`, `coopmm.glsl` and `pipelines.json`;
+and `nr::build_cancel`, which stops a network build between pipelines and saves the cache first.
+Patches 2 to 4 leave the output byte-identical and are candidate upstream pull requests (not checked
+on RADV). Its "Build" and "Barriers and `NR_CHAIN`" sections record what was measured and not
+adopted.
+
+**Not in 0.4.0.** Held for a later release: a prefilter for the model-scale downscale
+(`MochizukiModelScale` below 1 shimmers in slow pans, so it is not recommended yet), memory
+residency priority, and an opt-in prewarm at session start. Open in the runtime: the persistent
+queue's 16-bit item index, which above about 21.8 MP of input (8K class) stalls a frame for about
+0.5 s with a wrong picture; depth input; a placement after SR. The danielblnc and lmxxf runtimes are
+unchanged, and so is what the zip ships besides `OptiScaler.dll`, the INI and the README. The
+in-game checks still pending are in `handoff/mochizuki-backend.md`, section 11.7, which has the
+whole record of the mochizuki work in Portuguese: architecture, measurements, tools, risks and open
+items.
 
 ---
 
