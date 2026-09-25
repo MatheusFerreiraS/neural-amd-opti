@@ -1,5 +1,6 @@
 #include "pch.h"
 #include <dlssnr/amd/AmdBridge.h>
+#include <dlssnr/backend/Selector.h>
 #include <dlssnr/amd/GraphicsTracker.h>
 #include <dlssnr/amd/GraphicsRestoreDx12.h>
 #include <dlssnr/amd/GraphicsInvocation.h>
@@ -3725,13 +3726,23 @@ void EvaluateAtSeam(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* par
         // ApplyAfterRR alone places the model. Every Super Resolution evaluate offers both seams, and
         // if both reached the backend, the size change between them would reset its settling check
         // on every call and neither would run. The seam not chosen is declined here.
-        const bool placedAfter = cfg.DlssNrApplyAfterRR.value_or_default();
+        //
+        // lmxxf and mochizuki run before Super Resolution only (their backend refuses the seam after
+        // it), so for them the key is ignored: a value left over from danielblnc would otherwise send
+        // every frame to the seam they refuse, and NR would stay off.
+        const auto kind = DlssNr::Backend::ActiveKindFromConfig();
+        const bool beforeSrOnly = kind == DlssNr::Backend::Kind::Lmxxf || kind == DlssNr::Backend::Kind::Mochizuki;
+        const bool placedAfter = cfg.DlssNrApplyAfterRR.value_or_default() && !beforeSrOnly;
 
         if (postPlacement != placedAfter)
         {
             // Every frame in the other placement offers the seam before the upscaler, so declining
             // it is routine and stays quiet. Only the seam after it is reported.
-            if (postPlacement)
+            if (postPlacement && beforeSrOnly)
+                ReportSkipOnce(forcePost ? "Ray Reconstruction is active; this AMD NR runtime runs before Super "
+                                           "Resolution only"
+                                         : "AMD neural: this NR runtime runs before Super Resolution only");
+            else if (postPlacement)
                 ReportSkipOnce(forcePost ? "Ray Reconstruction is active; choose \"After the finished frame\" to "
                                            "process its output"
                                          : "AMD neural: choose \"After the finished frame\" to run over it");
