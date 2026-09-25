@@ -25,10 +25,15 @@ set "NR_DEFINES=/DNR_GEMM_WIDE_MT=64 /DNR_GEMM_WIDE_NT=256 /DNR_GEMM_PROJ_MT=32 
 set "CFLAGS=/nologo /std:c++20 /O2 /EHsc /MT /utf-8 /bigobj /W3 /wd4244 /wd4267 /wd4305 /wd4018 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /DNDEBUG"
 set "INCLUDES=/I "%VULKAN_SDK%\Include" /I "%UP%\windows\src\core" /I "OptiScaler\dlssnr\backend\mochizuki_runtime\compat" /I "OptiScaler\dlssnr\backend\lmxxf_runtime""
 
-cl %CFLAGS% %NR_DEFINES% %INCLUDES% /c "%UP%\windows\src\core\nr_runtime.cpp" /Fo"%OBJ%\nr_runtime.obj" || goto fail
+rem The core's pipeline creation goes through mz_interpose.cpp (the parallel prewarm and its manifest): these six
+rem entry points are renamed for nr_runtime.cpp alone, which calls them directly, never through vkGetDeviceProcAddr.
+set "MZI=/DvkCreateComputePipelines=mzi_vkCreateComputePipelines /DvkCreateShaderModule=mzi_vkCreateShaderModule /DvkCreateDescriptorSetLayout=mzi_vkCreateDescriptorSetLayout /DvkCreatePipelineLayout=mzi_vkCreatePipelineLayout /DvkCreatePipelineCache=mzi_vkCreatePipelineCache /DvkDestroyPipelineCache=mzi_vkDestroyPipelineCache"
+
+cl %CFLAGS% %NR_DEFINES% %MZI% %INCLUDES% /c "%UP%\windows\src\core\nr_runtime.cpp" /Fo"%OBJ%\nr_runtime.obj" || goto fail
 cl %CFLAGS% %INCLUDES% /c "%UP%\windows\src\core\nr_native_plan.cpp" /Fo"%OBJ%\nr_native_plan.obj" || goto fail
+cl %CFLAGS% %INCLUDES% /c "OptiScaler\dlssnr\backend\mochizuki_runtime\mz_interpose.cpp" /Fo"%OBJ%\mz_interpose.obj" || goto fail
 cl %CFLAGS% %INCLUDES% /DLMXXF_NR_RUNTIME_EXPORTS /c "OptiScaler\dlssnr\backend\mochizuki_runtime\MochizukiNrRuntime.cpp" /Fo"%OBJ%\MochizukiNrRuntime.obj" || goto fail
-link /nologo /DLL /OUT:"%OUT%\MochizukiNrRuntime.dll" "%OBJ%\MochizukiNrRuntime.obj" "%OBJ%\nr_runtime.obj" "%OBJ%\nr_native_plan.obj" "%VULKAN_SDK%\Lib\vulkan-1.lib" d3d12.lib || goto fail
+link /nologo /DLL /OUT:"%OUT%\MochizukiNrRuntime.dll" "%OBJ%\MochizukiNrRuntime.obj" "%OBJ%\mz_interpose.obj" "%OBJ%\nr_runtime.obj" "%OBJ%\nr_native_plan.obj" "%VULKAN_SDK%\Lib\vulkan-1.lib" d3d12.lib || goto fail
 
 set "GLSLANG=%UP%\toolchain\glslang"
 if not exist "%GLSLANG%\bin\glslang.exe" (
