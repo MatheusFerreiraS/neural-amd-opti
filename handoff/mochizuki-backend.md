@@ -11,6 +11,10 @@ caminhos reais.
 **Estado:** funciona no Cyberpunk 2077 (testado pelo usuário). Instalado para teste no GTA V Enhanced,
 aguardando teste. **Nada commitado ainda.**
 
+**Atualização de 25/09/2026:** duas ondas de trabalho (24-25/09) acrescentaram controles, correções de
+estabilidade, desempenho e ferramentas de teste. Resumo, números e pendências na **seção 11**. O candidato à
+primeira versão é o snapshot `<REPO>/exports/mochizuki-test-wave2/`, ainda não testado em jogo.
+
 ---
 
 ## 1. Resumo
@@ -26,14 +30,14 @@ aguardando teste. **Nada commitado ainda.**
 - O runtime é `MochizukiNrRuntime.dll`, que implementa a ABI do lmxxf (`LmxxfNrApi.h`). O OptiScaler
   escolhe com `[DlssNr] NrBackend=mochizuki`.
 - Esta versão só liga e desliga (`Enable NR`), roda antes do Super Resolution e usa o histórico temporal
-  do próprio modelo com os vetores de movimento do jogo. Sem controles.
+  do próprio modelo com os vetores de movimento do jogo. Sem controles; a Fase 2 (§9) os acrescenta.
 
-| Número principal | Valor |
-|---|---|
-| GPU da rede em 1920x1080 (RX 9070 XT, driver 26.8.1) | 9,9 ms (lmxxf: 18,5 ms) |
-| Primeira construção da rede num jogo | ~55 s (compilação de pipelines, uma vez por executável) |
-| Construções seguintes | 1,5 a 3 s |
-| Estabilidade em movimento com histórico | 73% mais estável que sem histórico |
+| Número principal | 24/09 (0.3.0) | 25/09 (onda 2, §11.4) |
+|---|---|---|
+| GPU da rede em 1920x1080 (RX 9070 XT, driver 26.8.1) | 9,9 ms (lmxxf: 18,5 ms) | 8,9 ms |
+| Primeira construção da rede | ~55 s no jogo, 24,8 s no harness | 5,8-6,0 s no harness com o manifesto de prewarm; no jogo, não medido |
+| Construções seguintes | 1,5 a 3 s | 1,5 a 1,7 s no harness |
+| Estabilidade em movimento com histórico | 73% mais estável que sem histórico | igual (saída bit a bit idêntica) |
 
 ---
 
@@ -85,6 +89,9 @@ aguardando teste. **Nada commitado ainda.**
 ## 3. Resultados
 
 ### 3.1 Medições
+
+Números de 24/09, antes das ondas 1 e 2. Os atuais estão em §11.4 (o "~23 ms" em 1440p veio de média móvel e
+construção a frio; medido depois: 16,7-17,3 ms na 0.3.0).
 
 | Medida | Valor | Onde |
 |---|---|---|
@@ -174,10 +181,17 @@ A fila usada é a que executa a lista. A sincronização é toda pela fence comp
 fila do mesmo device serve. Entre frames, a cadeia sinal/espera ordena o reuso dos buffers e imagens.
 Três slots (command buffer + `VkFence`) protegem só o reuso dos command buffers no CPU.
 
+Desde a onda 2 (S3) são **duas** fences compartilhadas, uma por direção: `toVk` (a fila do jogo sinaliza
+`produced`, o Vulkan espera) e `fromVk` (o Vulkan sinaliza `finished`, a fila do jogo espera), de modo que
+nenhuma anda para trás. Um frame vindo de outra fila do jogo espera antes o último frame da fila anterior; o
+runtime declara `ANY_QUEUE`, então o host não recria a sessão ao trocar de fila. Um watchdog libera as filas do
+jogo se o lado Vulkan parar (§11.3).
+
 ### 4.3 Device Vulkan próprio
 
 - Instância Vulkan 1.3, sem camadas. Physical device escolhido pelo **LUID** do adaptador D3D12
-  (`VkPhysicalDeviceIDProperties::deviceLUID`). Família `GRAPHICS | COMPUTE`, uma fila.
+  (`VkPhysicalDeviceIDProperties::deviceLUID`). Família `GRAPHICS | COMPUTE`; desde a onda 2 (S4), duas filas
+  quando a família as tem (prioridades 1,0 e 0,5): os frames usam a primeira e a construção da rede a segunda.
 - Features: `cooperativeMatrix`; `shaderFloat8` e `shaderFloat8CooperativeMatrix`;
   `storageBuffer16BitAccess`; `storageBuffer8BitAccess`, `shaderFloat16`, `shaderInt8`,
   `vulkanMemoryModel`, `timelineSemaphore`; `subgroupSizeControl`, `synchronization2`;
@@ -185,7 +199,8 @@ Três slots (command buffer + `VkFence`) protegem só o reuso dos command buffer
 - Extensões: `VK_KHR_cooperative_matrix`, `VK_EXT_shader_float8`, `VK_KHR_workgroup_memory_explicit_layout`,
   `VK_KHR_external_memory_win32`, `VK_KHR_external_semaphore_win32`.
 - O construtor do `nr::Runtime` **checa** as features em vez de habilitá-las e faz submit na fila para
-  subir os pesos; por isso a fila tem um mutex compartilhado entre frames e construção.
+  subir os pesos; por isso, com uma fila só, ela tem um mutex compartilhado entre frames e construção. Com
+  duas, a construção não disputa a fila dos frames.
 
 ### 4.4 Interop
 
@@ -198,7 +213,7 @@ Três slots (command buffer + `VkFence`) protegem só o reuso dos command buffer
   O handle NT continua com quem o criou; fecha na destruição.
 - Fence: `CreateFence(D3D12_FENCE_FLAG_SHARED)` + `CreateSharedHandle`; no Vulkan, semaphore timeline e
   `vkImportSemaphoreWin32HandleKHR` com `VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT`. O contador é
-  o mesmo dos dois lados.
+  o mesmo dos dois lados. Desde a onda 2 são duas fences assim, uma por direção (§4.2).
 - Três buffers por geometria: entrada (cor), saída (resultado) e vetores.
 
 ### 4.5 Formatos e footprints
@@ -236,10 +251,18 @@ Três slots (command buffer + `VkFence`) protegem só o reuso dos command buffer
 
 - Por extensão e formato de cor, numa `std::thread`. Enquanto constrói, `PrepareFrame` devolve
   `LMXXF_NR_UNAVAILABLE` com "building the network" e o frame passa sem NR.
-- Troca de extensão ou formato: drena as duas filas, destrói a rede e reconstrói.
+- Troca de extensão ou formato (texto de 24/09; atualizado na onda 2, S4/S5): a thread de render não espera
+  mais a GPU (com uma fila de jogo só; com várias, os buffers antigos ainda são drenados). A rede antiga é
+  liberada por uma thread própria depois que o Vulkan termina o último frame dela, e a nova é construída na
+  segunda fila. Mudança só de passes, escala do modelo ou entrada linear: os frames
+  continuam na rede antiga até a nova ficar pronta ("keep serving"). Com `MochizukiDynamicResolution` em
+  `auto` (padrão) ou `always`, mudar o subrect de render dentro do balde não reconstrói nada (§9, Fase 2).
 - Cache de pipelines em `dlssnr-amd/pipeline.cache`. O driver AMD separa as entradas por executável:
-  a primeira vez em cada jogo compila tudo.
-- Build que falha marca a sessão como falha; o motivo fica no log.
+  a primeira vez em cada jogo compila tudo. Desde a onda 2 (P3), `dlssnr-amd/prewarm/manifest.txt` descreve
+  os 32 pipelines e o runtime os compila em paralelo (8 threads, prioridade abaixo do normal) antes do núcleo,
+  e o cache é gravado de novo depois dos adaptadores e dos temporais.
+- Build que falha (texto de 24/09): marcava a sessão como falha. Desde a onda 2 (S2) só a perda do device é
+  definitiva; falta de memória tenta de novo após 5, 30 e 120 s, os outros erros quando a chave muda.
 
 ### 4.8 Mudanças no OptiScaler
 
@@ -253,6 +276,9 @@ Três slots (command buffer + `VkFence`) protegem só o reuso dos command buffer
 | `Config.h` | comentário de `NrBackend` |
 | `dlssnr/backend/README.md` | seção mochizuki |
 | `.gitignore` | `third_party/mochizuki/toolchain/` (glslang baixado) |
+
+Mudanças das ondas 1 e 2 no OptiScaler (saída, backoff, chaves, menu, cancelamento de job, barreiras dos
+upscalers, resolução dinâmica): §11.2 e §11.3.
 
 ---
 
@@ -268,6 +294,11 @@ Três slots (command buffer + `VkFence`) protegem só o reuso dos command buffer
 | `exports/mochizuki-runtime/` | saída do build, fora do git, com `dlssnr-amd/` |
 | `exports/mochizuki-harness/` | `mz_bench.cpp`, `mz_phases.cpp`, `mz_pan.cpp`, `build-harness.cmd`, fora do git |
 | `exports/cyberpunk-test/` | `install-mochizuki.ps1`, `remove-test.ps1` e as listas instaladas, fora do git |
+| `OptiScaler/dlssnr/backend/mochizuki_runtime/MochizukiNrControls.h` | exports de controle (`MochizukiNrSetControls`, `GetInfo`, `GetControlDefaults`, `GetFeatures`), onda 1 |
+| `OptiScaler/dlssnr/backend/mochizuki_runtime/mz_interpose.cpp/.h` | captura dos pipelines, manifesto e prewarm paralelo, onda 2 (P3) |
+| `tools/sweep_mochizuki_knobs.py` | varredura dos knobs de `pipelines.json` numa cópia do upstream, onda 2 (P6) |
+| `exports/mochizuki-work/` | plano, goldens, ferramentas, relatórios (`wave1-report.md`, `wave2-report.md`) e saídas de cada pacote, fora do git |
+| `exports/mochizuki-test-wave2/` | snapshot congelado para o teste em jogo (candidato à primeira versão), fora do git |
 
 ---
 
@@ -323,6 +354,10 @@ mz_pan.exe ..\mochizuki-runtime\MochizukiNrRuntime.dll 60 n,p,w,s
 A saída de `printf` da DLL (CRT estático) se mistura com a do harness; os resultados confiáveis estão nas
 linhas do próprio harness e no `mochizuki_nr.log` ao lado da DLL.
 
+Desde a onda 1 há também `mz_timing`, `mz_stress`, `mz_compare.py` e os scripts de equivalência e desempenho
+em `exports/mochizuki-work/tools/`; os procedimentos exatos estão em `exports/mochizuki-work/PROCEDURES.txt` e
+o resumo em §11.5.
+
 ### 6.4 OptiScaler
 
 ```
@@ -340,6 +375,11 @@ $s = '<REPO>\exports\cyberpunk-test'
 A instalação copia o OptiScaler novo como `dxgi.dll` (com backup do anterior), a pasta `OptiScaler\`
 de dependências do pacote 0.3.0, `MochizukiNrRuntime.dll`, `dlssnr-amd\` e um `OptiScaler.ini` do pacote
 com `NrBackend=mochizuki` (só se não houver INI). No jogo: DLSS nas opções gráficas, Insert, `Enable NR`.
+
+Atenção (25/09): `install-mochizuki.ps1` copia o runtime de `exports\mochizuki-runtime\`, que ainda é o build
+anterior às ondas 1 e 2, e não copia `dlssnr-amd\prewarm\`. Para testar o snapshot da onda 2, copie à mão
+`exports\mochizuki-test-wave2\` (`OptiScaler.dll` como `dxgi.dll`, `MochizukiNrRuntime.dll` e `dlssnr-amd\`
+inteira, com `prewarm\manifest.txt`), ou use o script de instalação de snapshot quando existir (pacote D3).
 
 ---
 
@@ -386,56 +426,297 @@ com `NrBackend=mochizuki` (só se não houver INI). No jogo: DLSS nas opções g
 - Cyberpunk de novo com o histórico: conferir no log `motion 1920x1080 DXGI 10` e a imagem em movimento.
 - Mais jogos D3D12 com DLSS, incluindo um que mande vetores na resolução de saída.
 - Sessões longas: TDR, VRAM, alt-tab, menus que trocam a resolução, geração de frames ligada.
+- **Próximo passo:** testar no Cyberpunk o snapshot `exports/mochizuki-test-wave2/` (candidato à primeira
+  versão) com a lista de verificação de `exports/mochizuki-work/wave2-report.md` §7, que junta as pendências da
+  onda 1 (saída durante a construção, controles, alt-tab, barreiras dos upscalers) às da onda 2 (primeira
+  construção com prewarm, rede mantida durante a reconstrução, resolução dinâmica, VRAM, watchdog). Nada disso
+  foi rodado em jogo pelos agentes.
 
-### Fase 2: controles (próxima)
+### Fase 2: controles (implementada; falta o teste em jogo)
 
-- Detail e colour strength: `transfer_strength`/`color_strength` para `Controls.detail_strength` (0 a 2)
-  e `colour_strength` (0 a 4), mais `max_ratio`.
-- Controles do modelo: style, local tone, local structure, skin e automatic mask (os mesmos do
-  danielblnc; o núcleo já aceita).
-- `Controls.intensity` e `set_history_strength`.
-- Passes: construir com `max_passes` maior e usar `Controls.passes` (cada pass custa o tempo da rede e
-  uma imagem de histórico).
-- `model_scale`: rede abaixo da resolução do frame; custo cai com o quadrado da escala.
-- White point a partir do pré-exposure do jogo.
-- Seção do menu com esses controles.
+- Chaves próprias `[DlssNr] Mochizuki*` (Config.h, Config.cpp, INI do pacote, README). Os ajustes do
+  mochizuki não vêm de nenhuma chave do danielblnc, do lmxxf ou do NVIDIA (`TransferStrength`,
+  `ColourStrength`, `Passes`, `AmdModelScale`, `AmdDynamicScale`, `DlssNrRRWorkingScale` e as do modelo).
+  Todo padrão é o da rede, então um INI sem essas chaves roda como antes.
+- `AmdModelScale` e `AmdDynamicScale` não afetam o mochizuki: a espera de estabilização do
+  `AmdBridge::Run` ignora os dois para ele (S5). O aviso e o botão do menu saíram.
+- Resolução dinâmica: `MochizukiDynamicResolution` (`auto`, padrão; `exact`; `always`) vira o `drs_mode`
+  do runtime. Em `auto`, quando o subrect de render fica menor que a textura de cor, a rede roda num balde
+  (por eixo, o maior subrect visto, arredondado para 64 px, dentro da textura): mudar o subrect dentro dele
+  só zera o histórico, sem reconstruir a rede nem esperar a estabilização (a espera do bridge passa a
+  olhar a textura de cor). O balde cresce com um subrect maior e encolhe depois de 30 s de frames de uma
+  mesma textura de cor com subrects pelo menos 128 px menores nos dois eixos. `exact` reconstrói a cada
+  resolução, como antes; `always` usa o balde em todo frame, também entre realocações da textura. O padrão do
+  próprio runtime (struct zerada, `MochizukiNrGetControlDefaults`) é `exact`; quem pede `auto` é o host. Um
+  `drs_mode` acima de 2, ou vetores de movimento num formato que não permite blit, rodam como `exact` (o log diz
+  quando os vetores impedem o balde). O comentário de `drs_mode` em `MochizukiNrControls.h` descreve os três modos.
+- Por frame, em `LmxxfNrFrameInfo`: `MochizukiDetailStrength` (0 a 2), `MochizukiColourStrength` (0 a 4;
+  o lmxxf continua em 0 a 2; o padrão do host é 0, a cor do próprio jogo na luminância da rede, enquanto o
+  do runtime é 1), `MochizukiModelScale` (0,25 a 1, em passos de 0,05) e `MochizukiPasses`
+  (1 a 3). Escala e passes reconstroem a rede, construída para exatamente esse número de passes.
+- Pelo export `MochizukiNrSetControls` (`MochizukiNrControls.h`): intensity, style, local tone, local
+  structure, skin, automatic mask, highlight guard (`max_ratio`, 1 a 8), `set_history_strength`,
+  `set_white_point` (fixo em `MochizukiWhitePoint`, 1 por padrão; sem pré-exposure por enquanto), linear
+  input, apply model e os overrides dos passes 2 e 3. O host só chama quando algo muda ou a sessão é nova.
+- `MochizukiTemporal` liga o histórico; sem a chave, vale o `LmxxfTemporal`.
+- Seção do menu com esses controles; passes e resolução aplicam ao soltar o slider. O status mostra a
+  extensão do modelo, o tempo da rede (mediana e p95), a última construção e avisa quando os vetores de
+  movimento são recusados.
+- `EvaluateAtSeam` ignora `ApplyAfterRR` para lmxxf e mochizuki; o menu avisa e oferece um botão para
+  desligar a chave.
+- Falta no jogo: cada slider muda a imagem ao vivo; passes e resolução reconstroem uma vez, ao soltar; o
+  status mostra o tempo da rede. `MochizukiModelScale` abaixo de 1 ainda não é recomendado: em panorâmica
+  lenta sobra um resíduo alternado (ver C1).
 
-### Fase 3: qualidade e custo (depois)
+### Fase 3: qualidade e custo (em parte feita nas ondas 1 e 2)
 
+- Feito (§11): custo da rede −0,86 ms em 1080p e −1,23 ms em 1440p, saída bit a bit idêntica (P4, P6, P9);
+  primeira construção 24,8 → ~6 s no harness (P3); estabilidade (S1-S5, H1, S8); resolução dinâmica (S5).
+- Suspensos pelo usuário para a primeira versão: pré-filtro no downscale do núcleo para `MochizukiModelScale`
+  abaixo de 1 (C3; hoje há tremulação em panorâmica lenta), prioridade de residência de memória (P5) e prewarm
+  opcional no início da sessão (P8).
+- Candidatos medidos e não construídos (P18): fundir `gemmproj→gemmvqkvnorm` (0,15 ms de barreira em 1080p) e
+  `vitattn→gemmproj` (0,04-0,10 ms).
+- Guarda do índice de 16 bits da fila persistente (S9, em andamento à parte): só importa acima de ~21,8 MP de
+  entrada (8K).
 - Depth em `EngineFrame.depth` (melhora bordas em movimento).
 - Ler a cor sem supor o estado do recurso.
 - Menos cópias: conversão em compute no D3D12 ou importação direta de texturas.
 - Suporte depois do SR, para jogos com Ray Reconstruction.
+- Paridade com o Linux (6,2 ms) não é alcançável sem paridade de compilador (LLPC contra ACO).
 
-### Fase 4: lançamento (depois)
+### Fase 4: lançamento
 
-- Commit (quando o usuário pedir).
-- `tools/PACKAGE_RELEASE.ps1` levando `MochizukiNrRuntime.dll` e `dlssnr-amd\shaders\`, sem o modelo;
-  comentário do INI com `mochizuki`.
-- Instalador: instalar o runtime, os shaders e o modelo como os outros runtimes, conferindo
-  cada arquivo por hash.
-- Instalador: componente no `payload.json`, teste de versão e publicação.
-- Notas de release, `handoff/README.md` e este arquivo atualizados.
+- Lançado no 0.4.0-amd-nr (25/09):
+  - o zip do OptiScaler leva o suporte ao mochizuki (backend, as 29 chaves `Mochizuki*` no INI, o menu), mas não
+    o runtime;
+  - o instalador (AMD-NR ReShade Installer) instala o mochizuki como os outros runtimes: `MochizukiNrRuntime.dll`,
+    `dlssnr-amd\shaders\`, `dlssnr-amd\prewarm\manifest.txt` e o modelo `dlssnr.bin`, conferidos por hash;
+  - o manifesto de pré-aquecimento precisa ser regerado sempre que os shaders mudarem.
+- Pendente: ferramenta de extração nativa no Windows (`tools/extract-mochizuki-model.*`, pacote D1), que não
+  existe ainda.
 
 ### Fase 5: manutenção (contínua)
 
-- Acompanhar o upstream (nasceu em 24/09 e deve mudar rápido); script de sincronização como o do lmxxf.
-- A cada atualização: recompilar e rodar `mz_bench`, `mz_phases` e `mz_pan` antes de instalar.
+- Acompanhar o upstream (nasceu em 24/09 e deve mudar rápido); script de sincronização como o do lmxxf
+  (`tools/sync-mochizuki-upstream.ps1`, pacote D2, planejado à parte). Os patches locais a reaplicar estão em
+  `third_party/mochizuki/UPSTREAM.md` (entradas 1-5, §11.6).
+- A cada atualização: recompilar e rodar a equivalência contra os goldens (`tools/mz_equiv.py`), `mz_stress all`
+  e `mz_perf.py --baseline` (§11.5) antes de instalar; regerar o manifesto de prewarm se os shaders mudarem.
 
 ---
 
 ## 10. Decisões pendentes e riscos
 
 **Decisões do usuário:**
-- Em qual versão do instalador o mochizuki entra.
 - Se `NrBackend=auto` deve escolher o mochizuki quando ele estiver instalado.
 - Quando commitar e em qual versão lançar.
+- Dispensas de critério aceitas para a 0.4.0, registradas com números e motivo em
+  `exports/mochizuki-work/release/WAIVERS.md`:
+  - C1 (escala 0,5 e tremulação em 0,75): só com `MochizukiModelScale` abaixo de 1 (padrão 1).
+  - P3: adaptadores em 0,08 s na segunda execução, pagos em toda construção morna também no padrão (só custo de
+    início, a saída não muda); e a exceção à DECISIONS 7 sob falta de processador.
+  - S5 (faixa de ±30% em 2304x1296; análise do Q1 pendente): vale no padrão `MochizukiDynamicResolution=auto`
+    sempre que o subrect do jogo é menor que a textura de cor.
+  - As notas de medição do M0.
+  O usuário pode revogar qualquer uma antes do commit.
+- Quando retomar C3, P5 e P8 (suspensos para a primeira versão).
 
 **Riscos:**
 - GTA V Enhanced traz BattlEye: só modo história, com o BattlEye desligado. Nunca em jogo online.
-- Primeira execução de cada jogo: ~55 s sem NR enquanto os pipelines compilam.
-- ~0,55 GB de VRAM a mais em 1080p, num contexto Vulkan separado.
+- Primeira execução de cada jogo: ~55 s sem NR enquanto os pipelines compilam (24/09). Com o manifesto de
+  prewarm ao lado da DLL, 6 s no harness (contra 21,6 s sem ele); no jogo ainda não medido. Sem o manifesto o
+  runtime compila em série e o grava ao final.
+- VRAM: a rede de 1080p ocupa ~0,7 GB a mais (698 MB medidos pelo S2), num contexto Vulkan separado. Durante
+  uma reconstrução que mantém a rede antiga as duas coexistem (a checagem de VRAM conta as duas). A estimativa de
+  VRAM foi calibrada só nesta GPU e neste driver.
+- Uma espera de slot de 250 ms estourada 3 vezes seguidas conta como perda do device e desliga o NR até o fim
+  do processo; um travamento legítimo de ~1 s da GPU poderia disparar isso (não visto em teste). O watchdog
+  declara o device perdido após 5 s sem progresso do lado Vulkan.
+- Com `MochizukiDynamicResolution` em `auto`, quando a resolução de render cai a rede continua custando o
+  tamanho do balde; a primeira vez que o subrect fica menor que a textura custa um `PrepareFrame` de ~12-13 ms.
+- Resoluções de entrada acima de ~21,8 MP (8K) disparam o limite de 16 bits da fila persistente do upstream
+  (quadro de ~0,5 s e imagem errada) até o S9 entrar.
 - A cópia de entrada supõe o estado informado da cor; se o jogo estiver em outro, o debug layer do D3D12
   reclama.
 - Upstream em 0.0.1, com a árvore Windows descrita pelo autor como experimental.
-- Os sliders de força e passes do menu não chegam a este runtime.
+- Os controles do mochizuki usam só as chaves `Mochizuki*`: um valor ajustado para o danielblnc ou o lmxxf
+  (`TransferStrength`, `Passes`, `AmdModelScale`) não vale aqui, e vice-versa. Exceção: sem
+  `MochizukiTemporal`, vale o `LmxxfTemporal`. Cada mudança de passes, de escala do modelo ou do tamanho da
+  rede reconstrói a rede; desde a onda 2 (S4) passes e escala mantêm os frames na rede antiga durante a
+  reconstrução, e só a mudança de tamanho ainda deixa um ou dois segundos sem NR. Mais passes custam mais
+  VRAM. O tamanho da rede é a resolução de render com `MochizukiDynamicResolution=exact`; com `auto`
+  (padrão) ou `always` é o balde, que só muda quando chega um subrect maior, quando a textura de cor muda
+  ou quando ele encolhe (ver §9).
+
+---
+
+## 11. Ondas 1 e 2 (24-25/09/2026)
+
+Trabalho feito por agentes em pacotes, com plano, revisão independente de cada pacote e integração ao fim de
+cada onda. Plano e decisões do usuário em `exports/mochizuki-work/plan/` (`plan.md`, `DECISIONS.md`,
+`WAVE2.md`); relatórios de integração em `exports/mochizuki-work/wave1-report.md` e `wave2-report.md`.
+
+Regras seguidas: nada commitado, nada instalado em jogo; toda mudança no runtime ou nos shaders precisa manter a
+saída **bit a bit idêntica** aos goldens de 24/09 com os valores padrão; desempenho decidido por pares
+intercalados na mesma sessão (5 pares), nunca pela média do status.
+
+| Onda | Pacotes | Resultado |
+|---|---|---|
+| 1 (24/09 à noite a 25/09 04h) | M0 harness e goldens; S1 higiene do runtime; C1 controles no runtime; H1 ciclo de vida no host; C2 chaves, menu e docs; S8 cancelamento de job; S6 barreiras dos upscalers; S7 hooks Vulkan; P1 kit de ISA; P2 varreduras; P4 leituras em palavras | integrada; snapshot `exports/mochizuki-test-wave1/` |
+| 2 (25/09) | S2 erros e recuperação; S3 sincronização entre APIs; P3 prewarm paralelo; S4 construção fora do caminho do frame; S5 resolução dinâmica; P6 knobs do LLPC; P9 limpeza de codegen; P7 opções de unroll (nada adotado); P18 barreiras (nada adotado) | integrada; snapshot `exports/mochizuki-test-wave2/`, candidato à primeira versão |
+| suspensos pelo usuário | C3 estabilidade com escala do modelo abaixo de 1; P5 residência de memória; P8 prewarm opcional no início da sessão | para a primeira versão |
+
+### 11.1 Integração final (25/09, 17h20-17h50)
+
+| Verificação | Resultado |
+|---|---|
+| Build do runtime | BUILD_OK, 0 avisos; a DLL importa só `vulkan-1.dll` e `KERNEL32.dll` |
+| Equivalência com os goldens | exata (`mz_bench` 1080p x3 e 1440p, `mz_phases`, `mz_pan`); também com `drs_mode=1`, o padrão do host |
+| `mz_stress all` | 21 de 21 casos; com resolução dinâmica em `auto` (cópia do S5 com `drspad`), 22 de 22. Com o `mz_stress` do harness já com a resolução dinâmica (RL2): 21/21, e 22/22 em `auto` e em `always` |
+| Build do OptiScaler (Release x64) | 0 erros; 32 avisos, todos anteriores |
+| clang-format 20.1.8 | 0 violações nos 21 arquivos C/C++ alterados |
+| Chaves e padrões | 29 chaves `Mochizuki*` conferidas; padrões do host iguais aos da rede |
+| Mudanças inesperadas | nenhuma: 33 caminhos alterados desde o backup de 24/09, todos de algum pacote |
+
+### 11.2 Controles, chaves e menu
+
+Todas em `[DlssNr]`; o padrão de cada uma reproduz a saída de 24/09. Detalhes de cada controle em §9, Fase 2.
+
+| Chave | Padrão | Faixa e efeito |
+|---|---|---|
+| `MochizukiTemporal` | true (sem a chave, vale `LmxxfTemporal`) | histórico temporal |
+| `MochizukiHistoryStrength` | 1 | 0 a 1, ao vivo |
+| `MochizukiDetailStrength` / `MochizukiColourStrength` | 1 / 0 | 0 a 2 / 0 a 4, ao vivo; colour 0 mantém a cor do jogo, 1 aplica a cor da rede |
+| `MochizukiPasses` | 1 | 1 a 3, reconstrói (a rede antiga serve durante a construção) |
+| `MochizukiModelScale` | 1 | 0,25 a 1 em passos de 0,05, reconstrói; abaixo de 1 ainda não recomendado |
+| `MochizukiIntensity`, `MochizukiStyle`, `MochizukiLocalTone`, `MochizukiLocalStructure`, `MochizukiSkinStructure`, `MochizukiAutoMask` | 1, 0, 1, 1, −1, true | controles do modelo, ao vivo |
+| `MochizukiMaxRatio` | 2 | 1 a 8, proteção de realces |
+| `MochizukiWhitePoint` | 1 | 0,01 a 100, só cor linear, só no INI |
+| `MochizukiApplyModel` | true | false: roda a rede e mostra o quadro original |
+| `MochizukiLinearInput` | 0 | 0 auto, 1 sim, 2 não; reconstrói |
+| `MochizukiDynamicResolution` (onda 2) | `auto` | `auto`, `exact`, `always` |
+| `MochizukiPass2*` e `MochizukiPass3*` (12 chaves) | `auto` | herdam o passe 1, com local tone 0 |
+
+Variáveis de ambiente do runtime (não são chaves do INI): `MZ_COMPILE_THREADS` (threads do prewarm; padrão
+min(8, núcleos − 2); 1 desliga), `MZ_PROBE_PIPELINE_BINARY=1` (sonda da chave de pipeline binary) e os ganchos de
+falha `MZ_TEST_*` usados pelo `mz_stress` (lidos uma vez, sem custo quando ausentes).
+
+Menu (Neural → "DLSS Neural Rendering", runtime mochizuki): avisos de `ApplyAfterRR` (com botão "Run before Super
+Resolution") e de Ray Reconstruction; Temporal ("Temporal history", "History strength"); Effect ("Passes", "NR
+resolution (% of render)", ambos ao soltar; "Detail strength", "Colour strength", "Highlight guard"); Model
+("Style", "Intensity", "Local structure", "Local tone", "Skin structure", "Auto skin mask", nó "Pass 2/3");
+Advanced ("Linear input", "Dynamic resolution" (onda 2), "Network only (no effect)"); Status (extensão da rede,
+tempo de GPU mediana e p95, última construção, uso do histórico, vetores recusados, "Failed: ..."). O aviso e o
+botão de `AmdDynamicScale` saíram na onda 2.
+
+### 11.3 Estabilidade
+
+| Problema (24/09) | Correção | Pacote |
+|---|---|---|
+| Falha ao iniciar a sessão vazava a instância Vulkan e referências D3D12 a cada frame, sem espera | início desfeito sem vazamento; host espera de 2 a 60 s entre tentativas; `[unsupported]` registrado uma vez | S1, H1 |
+| Fences `done[]` ficavam sinalizadas depois de um `Drain` | `vkResetFences` | S1 |
+| Sair do jogo durante a construção travava até ~55 s | na saída do processo o host não chama `Destroy` nem `FreeLibrary`; fora da saída, `Destroy` espera no máximo 2 s e a construção termina sozinha; o núcleo pode parar entre pipelines guardando o cache | H1, S4 |
+| Qualquer erro desligava o NR até o fim do processo | só a perda do device é definitiva; um quadro que falha mostra a cor original (nunca preto); construção que falha tenta de novo | S2 |
+| Nenhuma checagem de VRAM | admissão antes de construir (D3DKMT), "insufficient VRAM", nova tentativa a cada 10 s; a rede é liberada se os buffers do quadro não couberem | S2 |
+| Fence única nos dois sentidos podia andar para trás; a fila do jogo ficava presa se o Vulkan morresse | duas fences; watchdog (5 s sem progresso); filas do jogo liberadas na perda do device | S3 |
+| Troca de fila destruía a sessão na thread de submit; `Retire` fora do lock | `ANY_QUEUE` (sem migração, o frame da fila nova espera o último da anterior); `Retire` sob lock; handles de job com geração | H1, S2, S3 |
+| Troca de resolução drenava a fila do jogo na thread de render (21-31 ms) | 0,4-0,6 ms; rede antiga liberada por uma thread; passes e escala reconstroem com a rede antiga servindo; segunda fila Vulkan para construir | S4 |
+| Resolução dinâmica reconstruía a rede a cada mudança | balde em `auto`: 0 reconstruções, NR em 100% dos quadros no teste | S5 |
+| Recursos liberados sob uma lista órfã ainda não executada | "cemitério" liberado depois | S2 |
+| Job pendente de uma lista nunca executada desligava o NR | cancelado no `Reset`/`Release` da lista | S8 |
+| Caminho com caracteres fora do ANSI fazia a construção falhar | raiz em UTF-8 | S1 |
+| `frameId` avançava em chamadas recusadas (histórico zerado a cada quadro com `DlssNrPreUpscale`) | deduplicado | H1 |
+| Barreiras de XeSS, FSR 2.2, FSR 2.1.2 e FSR 3.1 mexiam na textura de saída do NR | não mexem mais | S6 |
+| Hooks Vulkan do OptiScaler na instância e no device do runtime (Proton, overlays) | passam direto | S7 |
+| `ApplyAfterRR` punha o mochizuki depois do SR; `AmdModelScale`/`AmdDynamicScale` zeravam o histórico | ignorados para o mochizuki | C2, S5 |
+
+### 11.4 Desempenho (RX 9070 XT, 26.8.1; mesma sessão, pares intercalados)
+
+| Medida | 0.3.0 (24/09) | Onda 1 | Onda 2 | Total |
+|---|---|---|---|---|
+| Intervalo da rede na fila do jogo (`mz_timing`), 1080p | 10,23 ms | 9,80 ms | **9,39 ms** | −0,86 ms (−8,4%) |
+| O mesmo, 1440p | 17,32 ms | 16,76 ms | **16,10 ms** | −1,23 ms (−7,1%) |
+| Só a rede (`nr_graph --per-layer`), 1080p | 9,69 ms | 9,27 ms | **8,89 ms** | −0,80 ms |
+| O mesmo, 1440p | 15,82 ms | 15,26 ms | **14,65 ms** | −1,17 ms |
+| Status "network", 1080p / 1440p | 9,80 / 16,70 ms | 9,31 / 16,14 ms | 8,9 / 15,5 ms | |
+| Primeira construção no harness | 24,8 s | 23,2-23,7 s | **5,8-6,0 s** com o manifesto; 21,6 s sem | −76% |
+| `PrepareFrame` na troca de resolução | 31,0 / 21,6 ms | igual | **0,44 / 0,57 ms** | |
+| CPU do `EnqueueHip` | 0,098 ms | igual | igual | |
+
+- De onde vem o ganho da rede, sempre com saída idêntica: P4 (onda 1: pesos e4m3 lidos em palavras), P6
+  (`fswin32` com `NR_FWAVES=2`; `fswinfusedup128` com `NR_EXPAND_GROUP=2`) e P9 (conversões e4m3 em quádruplas,
+  `NR_QUAD`: `s_setreg` 7134 → 4158; blocos V em RowMajor, `NR_V_ROW`: `ds_load_u8` 512 → 0).
+- Primeira construção: 32 pipelines compilados em 8 threads em ~4,3 s a partir de
+  `dlssnr-amd/prewarm/manifest.txt`; o cache passou a incluir adaptadores e temporais (P3). No jogo não foi medido.
+- Não adotado: P7 (`--private-index` constrói em 18,6 s, mas a rede fica +3,3 ms mais lenta e a saída muda); P18
+  (o `NR_CHAIN` do upstream estoura o tempo em todo quadro; as formas seguras custam +0,2 a +0,8 ms; persistência em
+  C=32 é mais lenta e errada em 4K); N1 do P6 (`fswinpds256` sem spill, mas 12,7% mais lento).
+- O número do status do `mz_phases` varia muito entre sessões (16 ou 25 ms em 1440p para a mesma DLL): é o
+  clock da GPU nesse harness, como no `mz_pan`. Compare só `mz_timing`, `mz_bench` e `nr_graph`.
+
+### 11.5 Ferramentas novas (em `exports/`, fora do git)
+
+- `mochizuki-harness/`: `mz_bench`, `mz_phases` (tokens de resolução dinâmica `alloc=` e `sub=`), `mz_pan`,
+  `mz_timing` (tempos na fila D3D12: seg1, intervalo, seg2), `mz_stress` e `mz_compare.py`; todos aceitam
+  `--ctl`, caminhos UTF-16 e `--dump-dir`. `mz_stress` roda cada caso num processo filho: drain, drainval,
+  cancel, leak, leakfail, unsupported, enumfail, build-destroy, rebuild-serve, busy, retire-late, orphan,
+  timeout, enqthrow, oombuild, vram, vramband, lost, xq, drop e rerelease (`all`, 21 casos); `drspad` só pelo nome.
+  Com `MZ_STRESS_DRS_MODE=1` (auto) ou `2` (always) cada sessão recebe esse `drs_mode` e o `busy` espera que a
+  mudança de subrect mantenha a rede (adotado da cópia do S5 no pacote RL2, 25/09).
+- `mochizuki-work/golden/`: saídas de referência de 24/09 (bit a bit), tempos, construção a frio e o
+  resultado do `mz_stress` na 0.3.0.
+- `mochizuki-work/tools/`: `mz_equiv.py` (equivalência exata num comando, ~30 s), `mz_perf.py` (pares
+  intercalados com `--baseline`), clang-format 20.1.8 (venv `cf`) e RGA.
+- `mochizuki-work/isa/` (kit de ISA: `dump-isa.cmd`, `isa_count.py`), `sweeps/` (P2), `nrgraph/` (`nr_graph`
+  standalone e planos), `P4/ngbench.py` (`nr_graph` intercalado com checagem de imagem).
+- No repositório: `tools/sweep_mochizuki_knobs.py` (varredura de knobs de `pipelines.json`).
+- Procedimentos exatos (locks, builds, equivalência, desempenho, construção a frio, stress):
+  `exports/mochizuki-work/PROCEDURES.txt`.
+
+### 11.6 Patches no upstream (`third_party/mochizuki/UPSTREAM.md`)
+
+1. `nr_runtime.cpp`: cast para `VkImageAspectFlags` (24/09).
+2. `fswin_t.comp`: leituras dos pesos e4m3 e gravações das execuções persistentes em palavras (P4).
+3. `pipelines.json`: `fswin32` `NR_FWAVES` 1 → 2 e `fswinfusedup128` `NR_EXPAND_GROUP` 4 → 2 (P6).
+4. `fswin_t.comp`, `include/coopmm.glsl` e `pipelines.json`: `NR_QUAD` e `NR_V_ROW` (P9).
+5. `nr_runtime.hpp` e `nr_graph.cpp`: `nr::build_cancel`, parada da construção entre pipelines, gravando o cache
+   antes (S4).
+
+Seções só de registro: "## Build" (P7: variantes de unroll e `spirv-opt`, nenhuma adotada) e "## Barriers and
+`NR_CHAIN`" (P18: medições, candidatos de fusão, e o limite de 16 bits do índice da fila persistente). Os patches
+2 a 4 são candidatos a PR no upstream (saída idêntica; não conferidos em RADV/ACO).
+
+### 11.7 O que falta
+
+**Testes em jogo (usuário):** a lista completa, em português, está em `exports/mochizuki-work/wave2-report.md`
+§7 (29 itens) e junta as pendências da onda 1 às da onda 2. Os pontos principais: primeira construção com o
+manifesto e saída durante a construção; controles ao vivo; passes e resolução reconstruindo sem buraco sem NR;
+trocas de resolução sem engasgo; um jogo com resolução dinâmica; alt-tab; VRAM no limite; nenhum "watchdog" no
+log em jogo normal; barreiras dos upscalers com a camada de debug do D3D12 (S6).
+
+**Pendências abertas:**
+- Dispensas de critério: registradas em `exports/mochizuki-work/release/WAIVERS.md` (pacote RL2, 25/09): C1
+  (escala 0,5; tremulação em 0,75, correção adiada para o C3), P3 (adaptadores em 0,08 s na segunda execução,
+  contra 0,05; exceção à DECISIONS 7), S5 (faixa de ±30% em 2304x1296; a saída do balde é idêntica à da rede exata
+  no quadro com bordas estendidas; falta o relatório do Q1) e M0. O usuário pode revogar qualquer uma.
+- Textos corrigidos pelo RL2 (25/09, só comentários): `drs_mode` em `MochizukiNrControls.h` (os modos 0, 1 e 2), a
+  faixa de cor em `LmxxfNrApi.h:87` (0 a 2 no lmxxf, 0 a 4 no mochizuki) e um comentário em `LmxxfEvaluateCut.h`
+  explicando que o "output zeroed" da mensagem de troca de fila vale só para o lmxxf (a mensagem em si, que vai
+  para o `OptiScaler.log`, não mudou). Continua desatualizado o "about half a minute" do menu e do status,
+  anterior ao prewarm.
+- `PROCEDURES.txt` §8 e §9 descrevem agora os 21 casos, o `xq` obrigatório, os casos do S1 ao S5, os tokens de
+  resolução dinâmica do `mz_phases` e as checagens de chaves e padrões do S5; `build-mochizuki-runtime-stats.cmd`
+  (em `exports/mochizuki-work`) linka de novo (patch do P3 aplicado pelo RL2).
+- Estimativa de VRAM calibrada numa só GPU; uma falha de `CreateGeometry` por outro motivo mantém a rede
+  residente; uma rede aposentada espera o próximo quadro sem limite de tempo (0,3 a 0,9 GB se o jogo parar de
+  produzir quadros).
+- Uma construção por vez no processo; `Destroy` 1 s depois do início de uma construção a frio devolve em 2,0 s
+  (limite 2,5).
+- Margens estreitas no harness (wave2-final e as três rodadas limpas do RL2): `oombuild` pronto em 6,6-6,9 s
+  (limite 7), `drop` e `rerelease` em 5,2-5,5 s (limite 6).
+  Com o Cyberpunk aberto na mesma máquina, o `oombuild` levou 7,5 s e falhou (RL2, 25/09): rode o `mz_stress` com
+  a máquina quieta.
+- Limite de 16 bits da fila persistente (S9, à parte) e fusões candidatas do P18.
+- Nada testado em jogo: TDR real, troca de fila do jogo, D3DKMT sob o spoofing do OptiScaler, primeira construção
+  no jogo com o manifesto.
