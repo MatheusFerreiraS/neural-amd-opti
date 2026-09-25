@@ -35,6 +35,8 @@ inline std::atomic<bool> g_wrapOpenLists { false };
 inline std::mutex g_executeMu;
 inline BetweenFn g_between = nullptr;
 inline void* g_betweenCtx = nullptr;
+// g_onListRecycled, which a proxy calls once its recording can never be executed (a successful Reset, its final
+// Release), is defined in CommandListProxy.h: the proxy needs it, and this header includes that one.
 
 using PFN_CreateCommandList = HRESULT(WINAPI*)(ID3D12Device*, UINT, D3D12_COMMAND_LIST_TYPE, ID3D12CommandAllocator*,
                                                ID3D12PipelineState*, REFIID, void**);

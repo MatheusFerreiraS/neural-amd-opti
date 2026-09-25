@@ -9,6 +9,15 @@
 #define LOG_WARN(...) ((void) 0)
 #endif
 
+namespace DlssNr::Submission::Hooks
+{
+// Called with a proxy whose recording can never be executed: after its Reset succeeds, and at its final Release,
+// before the delete (so the address cannot be reused meanwhile). The listener compares the pointer and must not touch
+// the list. Set by the backend that holds a job recorded on a list (LmxxfBackend). It lives here, not beside the
+// other hooks in SubmissionHooks.h, because that header includes this one. Unset, it costs one atomic load.
+inline std::atomic<void (*)(ID3D12CommandList*)> g_onListRecycled { nullptr };
+} // namespace DlssNr::Submission::Hooks
+
 // COM proxy for ID3D12GraphicsCommandList1..10 (inherits List10).
 // QI accepts List1..List10 + base. Newer methods QI the live producer; if unsupported, fail-closed (no-op /
 // E_UNEXPECTED). Create/Execute wrap helpers live in SubmissionHooks.h (armed only by harness / future P3).
@@ -63,6 +72,13 @@ class CommandListProxy final : public ID3D12GraphicsCommandList10, public ILogic
     }
 
     ID3D12GraphicsCommandList* Cur() const { return logical.Current(); }
+
+    // The recording this proxy held is gone for good (Hooks::g_onListRecycled).
+    void NotifyRecycled()
+    {
+        if (auto* listener = Hooks::g_onListRecycled.load(std::memory_order_acquire))
+            listener(static_cast<ID3D12CommandList*>(static_cast<ID3D12GraphicsCommandList10*>(this)));
+    }
 
     template <typename TIface> TIface* CurAs() const
     {
@@ -168,7 +184,10 @@ class CommandListProxy final : public ID3D12GraphicsCommandList10, public ILogic
     {
         const ULONG n = refs.fetch_sub(1, std::memory_order_acq_rel) - 1;
         if (!n)
+        {
+            NotifyRecycled();
             delete this;
+        }
         return n;
     }
 
@@ -207,6 +226,8 @@ class CommandListProxy final : public ID3D12GraphicsCommandList10, public ILogic
         splitIneligibleReason = nullptr;
         if (initial)
             contState.OnPso(initial);
+        // The previous recording was discarded; an Execute can no longer reach it.
+        NotifyRecycled();
         return hr;
     }
     HRESULT STDMETHODCALLTYPE SplitSegments() override
