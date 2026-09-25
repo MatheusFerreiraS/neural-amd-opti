@@ -1,6 +1,7 @@
 #include <pch.h>
 #include <Config.h>
 #include <Util.h>
+#include <dlssnr/amd/AmdBridge.h>
 #include <proxies/FfxApi_Proxy.h>
 #include "FSR31Feature_Dx12.h"
 #include "NVNGX_Parameter.h"
@@ -55,6 +56,14 @@ static void TryResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12R
         InCommandList->ResourceBarrier(1, &desc);
     }
 }
+
+// The AMD NR replacement arrives in NON_PIXEL_SHADER_RESOURCE, without ALLOW_RENDER_TARGET, and must
+// remain there. The configurable colour barriers describe the original texture, not this one. The
+// barrier window has no parameter table to ask, so PrepareUpscalerInput, which this feature and the
+// FSR-RR feature built on it both run just before opening the window, records the feature whose Color
+// is the replacement. Per thread, like the replacement itself, which lasts until Restore after the evaluate.
+static thread_local const FSR31FeatureDx12* amdReplacementFeature = nullptr;
+
 using InputResources = FSR31FeatureDx12::InputResources;
 
 template <typename T>
@@ -391,6 +400,10 @@ bool FSR31FeatureDx12::PrepareUpscalerInput(ID3D12GraphicsCommandList* InCommand
     auto& cfg = *Config::Instance();
 
     _inputBuffers = {};
+
+    // HasReplacement only compares the table's address with the one AmdBridge substituted into.
+    amdReplacementFeature =
+        DlssNr::AmdBridge::HasReplacement(const_cast<NVSDK_NGX_Parameter*>(&inParams)) ? this : nullptr;
 
     ConfigureUpscaler(inParams, upscalerDesc);
 
@@ -758,7 +771,8 @@ void FSR31FeatureDx12::SetConfigurableBarriers(ID3D12GraphicsCommandList* InComm
     const auto& state = State::Instance();
     auto& cfg = *Config::Instance();
 
-    // Handle UE Quirks
+    // Handle UE Quirks. The colour state is recorded on replacement frames too: AmdBridge reads it as
+    // the game colour's state.
     if (state.NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL || state.gameQuirks & GameQuirk::ForceUnrealEngine)
     {
         if (!cfg.ColorResourceBarrier.has_value())
@@ -769,8 +783,9 @@ void FSR31FeatureDx12::SetConfigurableBarriers(ID3D12GraphicsCommandList* InComm
     }
 
     // Transition FSR inputs to SRVs for reading
-    TryResourceBarrier(InCommandList, _inputBuffers.Color, cfg.ColorResourceBarrier,
-                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    if (amdReplacementFeature != this)
+        TryResourceBarrier(InCommandList, _inputBuffers.Color, cfg.ColorResourceBarrier,
+                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     TryResourceBarrier(InCommandList, _inputBuffers.MotionVectors, cfg.MVResourceBarrier,
                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     TryResourceBarrier(InCommandList, _inputBuffers.Depth, cfg.DepthResourceBarrier,
@@ -790,8 +805,9 @@ void FSR31FeatureDx12::ResetConfigurableBarriers(ID3D12GraphicsCommandList* InCo
     const auto& cfg = *Config::Instance();
 
     // Restore Barriers
-    TryResourceBarrier(InCommandList, _inputBuffers.Color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                       cfg.ColorResourceBarrier);
+    if (amdReplacementFeature != this)
+        TryResourceBarrier(InCommandList, _inputBuffers.Color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                           cfg.ColorResourceBarrier);
     TryResourceBarrier(InCommandList, _inputBuffers.MotionVectors, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                        cfg.MVResourceBarrier);
     TryResourceBarrier(InCommandList, _inputBuffers.Depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
