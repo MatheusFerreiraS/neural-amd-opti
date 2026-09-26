@@ -55,20 +55,22 @@ Five GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
 The build reports itself as `0.4.0-amd-nr`, and the packager writes
 `dist/OptiScaler-0.4.0-amd-nr.zip`.
 
-The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer)
-installs this build as its OptiScaler route. v0.4.0 knows only `v0.1.1-amd-nr`; v0.5.0 and later
-offer every version its payload manifest lists, newest first, and install the newest with the
-lmxxf weights: `v0.3.0-amd-nr` until the manifest pins `v0.4.0-amd-nr`. The manifest pins each
-release zip by URL and SHA-256, and every file it extracts from it by hash. The runtime 0.3.1
-(`b108d640…`) and the lmxxf weights (`native-game-tiled-assets.zip`) come from the Hugging Face
-dataset `zmodelerlover/amd-nr`, never from this repository. For mochizuki the installer installs
+The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer) installs
+this build as its OptiScaler route. v0.4.0 knows only `v0.1.1-amd-nr`; v0.5.0 and later offer every
+version its payload manifest lists, newest first, and install the newest with the lmxxf weights. The
+manifest has pinned `v0.4.0-amd-nr` since installer v0.6.0 (2026-09-25); v0.5.x installs it without
+mochizuki. The manifest pins each release zip by URL and SHA-256, and every file it extracts from it
+by hash. The runtime 0.3.1 (`b108d640…`) and the lmxxf weights (`native-game-tiled-assets.zip`) come
+from the Hugging Face dataset `zmodelerlover/amd-nr`, never from this repository. v0.6.0 also offers
+mochizuki: with **NR runtime: mochizuki** ticked on an RDNA4 card it installs
 `MochizukiNrRuntime.dll` with `dlssnr-amd\shaders\`, `dlssnr-amd\prewarm\manifest.txt` and the
-model, `dlssnr-amd\dlssnr.bin`. The manifest is not in this repository and
-`tools\build-mochizuki-runtime.cmd` does not make it: the runtime writes it after its first serial
-build, and it holds only for the `dlssnr-amd\shaders\` it was made from (their file list and sizes),
-so the payload needs one made from the shaders it ships. Never replace an asset on a published tag:
-every installer would refuse the new bytes. A new release is a new tag, and then new pins in that
-installer's `payload/payload.json` (its `handoffs/HANDOFF-v0.5.0-2026-09-23.md` has the steps).
+model, `dlssnr-amd\dlssnr.bin`, and sets `NrBackend=mochizuki`. The manifest is not in this
+repository and `tools\build-mochizuki-runtime.cmd` does not make it: the runtime writes it after its
+first serial build, and it holds only for the `dlssnr-amd\shaders\` it was made from (their file
+list and sizes), so the payload needs one made from the shaders it ships. Never replace an asset on
+a published tag: every installer would refuse the new bytes. A new release is a new tag, and then
+new pins in that installer's `payload/payload.json` (its `handoffs/HANDOFF-v0.5.0-2026-09-23.md` has
+the steps, and `handoffs/HANDOFF-v0.6.0-2026-09-25.md` those for 0.4.0 and mochizuki).
 
 ---
 
