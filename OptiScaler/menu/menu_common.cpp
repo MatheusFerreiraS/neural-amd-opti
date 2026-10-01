@@ -9501,11 +9501,10 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
     auto& io = ctx.io;
     auto& currentFeature = ctx.currentFeature;
     auto& menuResScale = ctx.menuResScale;
+    auto& style = ImGui::GetStyle();
 
-    // BOTTOM LINE ---------------
-    ImGui::Spacing();
+    // BOTTOM LINE — single tight row, flush with the window bottom / resize grip
     ImGui::Separator();
-    ImGui::Spacing();
 
     if (currentFeature != nullptr && !currentFeature->IsFrozen())
     {
@@ -9576,36 +9575,37 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
     auto winSize = ImGui::GetWindowSize();
     auto winPos = ImGui::GetWindowPos();
 
-    ImGui::SameLine();
-
-    auto textSize = ImGui::CalcTextSize("Open Wiki (?)");
-    auto& style = ImGui::GetStyle();
-    textSize.x += style.FramePadding.x * 2.0f;
-    textSize.x += style.ItemSpacing.x;
-
-    float avail = ImGui::GetContentRegionAvail().x;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - textSize.x);
-
-    // Make button text underline
-    if (ImGui::Button("Open Wiki"))
+    // Open Wiki — right-aligned, hidden when it would overlap Close / other controls
+    // (GetWindowContentRegionMax was removed in newer ImGui; use window width - padding.)
     {
-        auto pIO = &ImGui::GetPlatformIO();
-        auto ctx = ImGui::GetCurrentContext();
-        pIO->Platform_OpenInShellFn(ctx, "https://github.com/optiscaler/OptiScaler/wiki");
-    }
-    ShowHelpMarker("Click to open the OptiScaler Wiki page\nin your default browser\n\n"
-                   "Compatibility list with known game issues\nand workarounds, FG options explained\n"
-                   "and other useful info");
+        const float helpGap = style.ItemSpacing.x + ImGui::GetFontSize() * 0.9f; // room for "(?)" marker
+        const float wikiBtnW =
+            ImGui::CalcTextSize("Open Wiki").x + style.FramePadding.x * 2.0f + helpGap;
+        const float leftLimit = ImGui::GetItemRectMax().x - winPos.x + style.ItemSpacing.x; // past Close
+        const float contentRight = ImGui::GetWindowWidth() - style.WindowPadding.x;
+        const float wikiStartX = contentRight - wikiBtnW;
 
-    ImGui::Spacing();
-    ImGui::Separator();
+        if (wikiStartX >= leftLimit)
+        {
+            ImGui::SameLine(0.0f, 0.0f);
+            ImGui::SetCursorPosX(wikiStartX);
+
+            if (ImGui::Button("Open Wiki"))
+            {
+                auto pIO = &ImGui::GetPlatformIO();
+                auto ctx = ImGui::GetCurrentContext();
+                pIO->Platform_OpenInShellFn(ctx, "https://github.com/optiscaler/OptiScaler/wiki");
+            }
+            ShowHelpMarker("Click to open the OptiScaler Wiki page\nin your default browser\n\n"
+                           "Compatibility list with known game issues\nand workarounds, FG options explained\n"
+                           "and other useful info");
+        }
+    }
 
     if (state.nvngxIniDetected)
     {
-        ImGui::Spacing();
         ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)),
                            "nvngx.ini detected, please move over to using OptiScaler.ini and delete the old config");
-        ImGui::Spacing();
     }
 
     if (lastPosition.x < -900.0f || (lastPosition.x >= winPos.x - 1.0f && lastPosition.y >= winPos.y - 1.0f &&
@@ -9993,6 +9993,7 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
     auto config = ctx.config;
+    auto& io = ctx.io;
     auto& frameTime = ctx.frameTime;
     auto& frameRate = ctx.frameRate;
     auto& frameTimesCalculated = ctx.frameTimesCalculated;
@@ -10033,7 +10034,16 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
     ImGuiWindowFlags flags = 0;
     flags |= ImGuiWindowFlags_NoSavedSettings;
     flags |= ImGuiWindowFlags_NoCollapse;
-    flags |= ImGuiWindowFlags_AlwaysAutoResize;
+    // Resizable: click-and-drag the bottom-right grip.
+    // Size is written to OptiScaler.ini (Menu Width/Height) when "Save Settings" is pressed.
+
+    // Default: ~50% of the display on both axes. Prefer saved values when present.
+    const float minMenuWidth = 280.0f * menuResScale;
+    const float minMenuHeight = 200.0f * menuResScale;
+    const float defaultMenuWidth =
+        config->MenuWidth.has_value() ? config->MenuWidth.value() : (io.DisplaySize.x * 0.50f);
+    const float defaultMenuHeight =
+        config->MenuHeight.has_value() ? config->MenuHeight.value() : (io.DisplaySize.y * 0.50f);
 
     if (lastMenuScale != menuResScale)
     {
@@ -10050,9 +10060,11 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
         style.ScaleAllSizes(menuResScale);
         style.MouseCursorScale = 1.0f;
         CopyMemory(style.Colors, styleold.Colors, sizeof(style.Colors)); // Restore colors
-
-        ImGui::SetNextWindowSize({ 1.0f, 1.0f });
     }
+
+    // First appearance / after load — keeps any size the user dragged to during the session
+    ImGui::SetNextWindowSize(ImVec2(defaultMenuWidth, defaultMenuHeight), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(minMenuWidth, minMenuHeight), ImVec2(FLT_MAX, FLT_MAX));
 
     // Main menu window
     if (windowTitle.empty())
@@ -10064,13 +10076,30 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
 
     if (ImGui::Begin(windowTitle.c_str(), NULL, flags))
     {
-        // Which of the game's upscaler routes are present, then any status message, then the tabs.
-        RenderMainMenuStatusPills(ctx);
-        RenderMainMenuHeaderMessages(ctx);
-        RenderMainMenuTabs(ctx);
+        // Keep live size in config so "Save Settings" can persist it
+        {
+            const ImVec2 sz = ImGui::GetWindowSize();
+            config->MenuWidth = sz.x;
+            config->MenuHeight = sz.y;
+        }
 
-        // Diagnostics and footer actions below the tabs.
-        RenderMainMenuGraphs(ctx);
+        // Pinned footer: body scrolls; bottom bar sits on the last row with the resize grip.
+        // One separator + one control row (+ optional nvngx warning line).
+        const float footerHeight = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y + 4.0f;
+
+        if (ImGui::BeginChild("##menu_body", ImVec2(0.0f, -footerHeight), false))
+        {
+            // Which of the game's upscaler routes are present, then any status message, then the tabs.
+            RenderMainMenuStatusPills(ctx);
+            RenderMainMenuHeaderMessages(ctx);
+            RenderMainMenuTabs(ctx);
+
+            // Diagnostics below the tabs (still scrollable with the body).
+            RenderMainMenuGraphs(ctx);
+        }
+        ImGui::EndChild();
+
+        // Footer is outside the child — always visible, no scroll needed.
         RenderMainMenuBottomBar(ctx);
 
         ImGui::End();

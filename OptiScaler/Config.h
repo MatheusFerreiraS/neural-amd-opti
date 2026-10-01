@@ -843,6 +843,9 @@ class Config
 
     // Menu
     CustomOptional<float, NoDefault> MenuScale;
+    // Main overlay size in pixels (saved when "Save Settings" is pressed)
+    CustomOptional<float, NoDefault> MenuWidth;
+    CustomOptional<float, NoDefault> MenuHeight;
     CustomOptional<bool> OverlayMenu { true };
     CustomOptional<int> ShortcutKey { VK_INSERT };
     CustomOptional<bool> ExtendedLimits { false };
