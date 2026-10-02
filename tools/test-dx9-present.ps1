@@ -62,7 +62,7 @@ $cases = @(
        Log = @("D3D9 bridge frame \d+: D3D9 present, NR true") },
     @{ Name = "timing-fg"; Args = @("--borderless", "--size", "1920x1080"); Fg = $true; Frames = 720
        Script = "150:mark=fg-moving,270:still,280:mark=fg-still,400:still,410:fg,420:mark=nr-only-moving,540:nr,550:mark=off-moving"
-       Log = @("D3D9 bridge frame \d+: XeFG presenter, NR true, FG true") }
+       Log = @("D3D9 bridge frame \d+: XeFG presenter, NR true at scale [0-9.]+, FG true") }
 )
 if ($Case) { $cases = @($cases | Where-Object { $_.Name -eq $Case }) }
 if ($cases.Count -eq 0) { throw "unknown case $Case" }
