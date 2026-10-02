@@ -683,6 +683,10 @@ void RenderMenu(Config* config, float menuResScale)
                                : "AMD NR runtime: pass1 not identified yet.");
         }
 
+        // The final image runs only in a danielblnc session without an upscaler; otherwise the upscaler path does.
+        const bool finalImage = AmdPresentExperimental::IsTarget() && !State::Instance().currentFeature &&
+                                DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
+
         // Temporal stabilization, frame slots and the wait mode: how the danielblnc runtime schedules its work.
         auto scheduling = [&]
         {
@@ -698,7 +702,7 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nmore flicker and shimmer. With the INI-only single slot (AmdSlots=1) the"
                        "\nrender thread also waits for the model every frame."
                        "\n\nChanging it restarts the model's history.");
-            float stabilizer = AmdPresentExperimental::IsTarget() && !config->AmdStabilizerStrength.has_value()
+            float stabilizer = finalImage && !config->AmdStabilizerStrength.has_value()
                                    ? .8f : config->AmdStabilizerStrength.value_or_default();
             if (ImGui::SliderFloat("Stabilizer", &stabilizer, 0.0f, 1.0f, "%.2f"))
                 config->AmdStabilizerStrength = stabilizer;
@@ -706,7 +710,7 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nvectors when available, after the runtime. Changes larger than the threshold"
                        "\npass through, and the game's own image is untouched. 0 turns it off; higher values can"
                        "\nsoften fine detail in motion. Final-image mode defaults to 0.8 with optical flow.");
-            float stabilizerThreshold = AmdPresentExperimental::IsTarget() && !config->AmdStabilizerThreshold.has_value()
+            float stabilizerThreshold = finalImage && !config->AmdStabilizerThreshold.has_value()
                                             ? 4.f : config->AmdStabilizerThreshold.value_or_default();
             if (ImGui::SliderFloat("Stabilizer threshold", &stabilizerThreshold, 0.5f, 8.0f, "%.1f / 255"))
                 config->AmdStabilizerThreshold = stabilizerThreshold;
@@ -786,9 +790,6 @@ void RenderMenu(Config* config, float menuResScale)
             }
         };
 
-        // The final image runs only in a danielblnc session without an upscaler; otherwise the upscaler path does.
-        const bool finalImage = AmdPresentExperimental::IsTarget() && !State::Instance().currentFeature &&
-                                DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
         if (finalImage)
         {
             if (DlssNr::AmdBridge::HasFiles())

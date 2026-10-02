@@ -893,6 +893,13 @@ bool Process(VkQueue queue, VkPresentInfoKHR& present)
                  config->NrBackend.value_or_default(), (int) State::Instance().swapchainApi);
     });
     std::lock_guard lock(mutex);
+    // A game with an upscaler runs NR inside the upscaler call, so the final image stands aside and hides its
+    // XeFG window in case the upscaler appeared mid-session.
+    if (State::Instance().currentFeature)
+    {
+        bridge.fg.Pause();
+        return true;
+    }
     if (bridge.swapchain == VK_NULL_HANDLE)
         AmdPresentExperimental::Report("Vulkan NR: the game made its swapchain before the final image was on; "
                                        "restart the game");
