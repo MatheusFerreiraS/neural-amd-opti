@@ -64,6 +64,35 @@ static void Check(HRESULT hr, const char* what)
         Fail(what, hr);
 }
 
+static std::string ReadAll(const fs::path& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    std::stringstream text;
+    text << file.rdbuf();
+    return text.str();
+}
+
+static int Count(const std::string& text, const std::string& needle)
+{
+    int n = 0;
+    for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1))
+        ++n;
+    return n;
+}
+
+// Runtime history resets for a settings change after startup, as a Model scale change makes.
+static int SettingsResets(const std::string& runtimeLog)
+{
+    int resets = 0;
+    for (size_t at = runtimeLog.find("AMD history reset: frame="); at != std::string::npos;
+         at = runtimeLog.find("AMD history reset: frame=", at + 1))
+    {
+        const auto line = runtimeLog.substr(at, runtimeLog.find("\n", at) - at);
+        resets += std::atoi(line.c_str() + 25) > 30 && line.find("settings=1") != std::string::npos;
+    }
+    return resets;
+}
+
 // ---------------------------------------------------------------- child
 
 // Any crash, on any thread: the faulting stack, symbolized when a PDB sits beside the module.
@@ -109,8 +138,9 @@ struct Options
 {
     std::string scenario;
     std::wstring logLevel = L"2";
-    double cpuMs = 0;  // simulated game CPU time per frame, before recording
-    bool dump = false; // writes each phase's first probe frame as <phase>.bmp
+    std::wstring modelScale = L"auto"; // AmdModelScale at start
+    double cpuMs = 0;                  // simulated game CPU time per frame, before recording
+    bool dump = false;                 // writes each phase's first probe frame as <phase>.bmp
     bool bgra = false;
     bool debugLayer = false;
 };
@@ -591,12 +621,21 @@ struct App
     // and closes the menu.
     void ChangeModelScale(bool (*pump)())
     {
-        PressKey(VK_INSERT, true, pump);
-        Render(1.0, pump);
-        if (options.dump)
-            Capture("scale-menu");
-        Click(372 + 126 / 5, 395, pump);
-        PressKey(VK_INSERT, true, pump);
+        // A click the menu misses (the window not yet in front, say) is tried once more.
+        const int before = SettingsResets(ReadAll(Here() / L"amd_presr.log"));
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            PressKey(VK_INSERT, true, pump);
+            Render(1.0, pump);
+            if (options.dump)
+                Capture("scale-menu");
+            Click(372 + 126 / 5, 395, pump);
+            PressKey(VK_INSERT, true, pump);
+            Render(0.5, pump);
+            if (SettingsResets(ReadAll(Here() / L"amd_presr.log")) > before)
+                break;
+            Out("scale-click missed, attempt %d", attempt + 1);
+        }
     }
 
     void DebugMessages(const char* phase)
@@ -741,13 +780,17 @@ static int Child(const Options& options)
         const UINT64 frameStart = app.frame;
         begin = Clock::now();
         std::vector<App::ProbeResult> probes;
-        double nextProbe = step.seconds / 8;
+        double nextProbe = step.seconds / 8, worst = 0;
         while (Seconds(begin) < step.seconds)
         {
             Pump();
             App::ProbeResult probe;
             const bool probeNow = Seconds(begin) >= nextProbe && probes.size() < 6;
+            const auto started = Clock::now();
             const HRESULT hr = app.Frame(probeNow ? &probe : nullptr);
+            // The longest frame that was not a probe: a stall in Present or in the frame before it.
+            if (!probeNow)
+                worst = std::max(worst, 1000 * Seconds(started));
             if (FAILED(hr))
                 Fail(step.phase, hr);
             if (probeNow)
@@ -771,9 +814,10 @@ static int Child(const Options& options)
             mean = std::max(mean, p.mean);
         }
         Out("phase %s frames=%llu seconds=%.2f fps=%.1f presents=%u ratio=%.2f changed=%.4f least=%.4f mean=%.3f "
-            "size=%ux%u",
+            "size=%ux%u worst=%.1fms",
             step.phase, frames, elapsed, frames / elapsed, presentEnd - presentStart,
-            frames ? double(presentEnd - presentStart) / frames : 0.0, changed, least, mean, app.width, app.height);
+            frames ? double(presentEnd - presentStart) / frames : 0.0, changed, least, mean, app.width, app.height,
+            worst);
         app.DebugMessages(step.phase);
     }
     app.Idle();
@@ -825,22 +869,6 @@ struct Lock
     }
 };
 
-static std::string ReadAll(const fs::path& path)
-{
-    std::ifstream file(path, std::ios::binary);
-    std::stringstream text;
-    text << file.rdbuf();
-    return text.str();
-}
-
-static int Count(const std::string& text, const std::string& needle)
-{
-    int n = 0;
-    for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1))
-        ++n;
-    return n;
-}
-
 struct PhaseResult
 {
     double ratio = 0, changed = -1, least = -1, fps = 0;
@@ -885,6 +913,7 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
         { L"FrameGen", { L"FGInput", fg ? L"upscaler" : L"nofg" } },
         { L"FrameGen", { L"FGOutput", fg ? L"xefg" : L"nofg" } },
         { L"XeFG", { L"InterpolationCount", L"2" } },
+        { L"DlssNr", { L"AmdModelScale", options.modelScale.c_str() } },
     };
     for (auto& [section, kv] : keys)
         WritePrivateProfileStringW(section, kv.first, kv.second, ini.c_str());
@@ -943,14 +972,7 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
     std::printf("info: NR runtime timeouts %d, frames left without NR while the runtime was busy %d\n",
                 Count(runtimeLog, "AMD timeout"), Count(log, "runtime still busy, frame left without NR"));
     // A Model scale change restarts the runtime's history for its settings.
-    int settingsResets = 0;
-    for (size_t at = runtimeLog.find("AMD history reset: frame="); at != std::string::npos;
-         at = runtimeLog.find("AMD history reset: frame=", at + 1))
-    {
-        const auto line = runtimeLog.substr(at, runtimeLog.find("\n", at) - at);
-        settingsResets += std::atoi(line.c_str() + 25) > 30 && line.find("settings=1") != std::string::npos;
-    }
-    expect(settingsResets >= 1, "Model scale changed from the menu during the session");
+    expect(SettingsResets(runtimeLog) >= 1, "Model scale changed from the menu during the session");
     for (auto name :
          { "steady", "menu-open", "menu-closed", "fg-off", "fg-on", "nr-on", "scale", "resized", "menu-resized" })
     {
@@ -1005,6 +1027,8 @@ int wmain(int argc, wchar_t** argv)
             options.dump = true;
         else if (arg == L"--cpu-ms" && i + 1 < argc)
             options.cpuMs = std::wcstod(argv[++i], nullptr);
+        else if (arg == L"--model-scale" && i + 1 < argc)
+            options.modelScale = argv[++i];
         else if (arg == L"--log-level" && i + 1 < argc)
             options.logLevel = argv[++i];
         else if (arg == L"--timeout" && i + 1 < argc)
