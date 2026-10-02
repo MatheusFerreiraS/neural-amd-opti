@@ -31,10 +31,21 @@ function Write-Ini([string[]]$lines) {
     $base = @('[Log]', 'LogToFile=true', 'LogLevel=1', '[Menu]', 'ShortcutKey=auto')
     Set-Content -Path (Join-Path $host64 'OptiScaler.ini') -Value ($base + $lines) -Encoding ascii
 }
-function Clear-Logs {
-    foreach ($name in 'OptiScaler.log', 'amd_presr.log', 'dx9-host.log', 'dx9-x86.log', 'dlssnr_on_amd.log') {
+function Clear-Logs([string]$case) {
+    foreach ($name in 'OptiScaler.log', 'OptiScaler.previous.log', 'amd_presr.log', 'dx9-host.log', 'dx9-x86.log',
+        'dlssnr_on_amd.log') {
         Remove-Item (Join-Path $host64 $name) -ErrorAction SilentlyContinue
     }
+    # The copies of the last run of this case, so none of them is taken for this run's.
+    Get-ChildItem $stage -Filter "$case.*" -ErrorAction SilentlyContinue | Remove-Item -ErrorAction SilentlyContinue
+}
+# The size the last completed NR frames ran at, from amd_presr.log ('' when none completed).
+function Last-NrSize {
+    $path = Join-Path $host64 'amd_presr.log'
+    if (-not (Test-Path $path)) { return '' }
+    $last = Select-String -Path $path -Pattern 'Completed AMD pre-SR passes=\d+ at (\d+x\d+)' | Select-Object -Last 1
+    if ($last) { return $last.Matches[0].Groups[1].Value }
+    return ''
 }
 function Count([string]$log, [string]$text) {
     $path = Join-Path $host64 $log
@@ -44,18 +55,20 @@ function Count([string]$log, [string]$text) {
 
 $results = [ordered]@{}
 $screen = $false
-# A case that needs keys runs again (twice at most) when another program held the foreground.
+$unhookedHosts = 0
+# A case that needs keys runs again (twice at most) when another program held the foreground, and a timed
+# case runs again when a host had to be replaced during it.
 function Run-Case([string]$name, [string[]]$ini, [string[]]$arguments, [scriptblock]$check) {
     if ($Only.Count -and $Only -notcontains $name) { return }
     for ($try = 0; $try -lt 3; $try++) {
         Run-Once $name $ini $arguments $check
-        if ($results[$name] -notlike '*skipped*') { return }
-        Write-Host "${name}: the test window was not in front; running it again"
+        if ($results[$name] -notlike '*skipped*' -and $results[$name] -notlike '*retry:*') { return }
+        Write-Host "${name}: $($results[$name]); running it again"
     }
 }
 function Run-Once([string]$name, [string[]]$ini, [string[]]$arguments, [scriptblock]$check) {
     Write-Ini $ini
-    Clear-Logs
+    Clear-Logs $name
     $out = Join-Path $stage "$name.out.txt"
     $process = Start-Process -FilePath $smoke -ArgumentList $arguments -WorkingDirectory $stage -PassThru `
         -NoNewWindow -RedirectStandardOutput $out
@@ -83,7 +96,11 @@ function Run-Once([string]$name, [string[]]$ini, [string[]]$arguments, [scriptbl
     if ($process.ExitCode -ne 0) { $problems += "exit $($process.ExitCode)" }
     if ($check) { $problems += @(& $check $text | Where-Object { $_ }) }
     if ($text -match 'SKIP ') { $problems += 'skipped: the test window could not take the foreground' }
+    # A host OptiScaler did not hook is replaced; said in the result, and counted for the whole run.
+    $unhooked = Count 'dx9-host.log' 'OptiScaler did not wrap the swap chain'
+    if ($name -ne 'unhooked') { $script:unhookedHosts += $unhooked }
     $results[$name] = if ($problems.Count) { 'FAIL (' + ($problems -join '; ') + ')' } else { 'PASS' }
+    if ($unhooked -and $name -ne 'unhooked') { $results[$name] += " ($unhooked host(s) without OptiScaler's hooks replaced)" }
     if ($text -match 'ms_per_frame=([0-9.]+)') { $results[$name] += " ($($Matches[1]) ms per frame)" }
     Write-Host "== $name : $($results[$name])"
     Write-Host $text
@@ -180,22 +197,73 @@ try {
         param($text)
         if ((Count 'dx9-x86.log' 'host 2 connected') -eq 0) { 'no second host' }
     }
+    # A key held before the menu opens and released while it is open: the game must see the release.
+    Run-Case 'stuck-key' $nr @('--frames', '320', '--expect-bridged', '--hold-key', '60', '160', '0x57', '--key-at', '100',
+        '0x2D', '--key-at', '220', '0x2D') $null
+    # Text typed into the menu: Ctrl + click on the final-image Model scale slider opens its text field,
+    # 0.6 and Enter set it, and NR must then run at 0.6 of 1280x720.
+    Run-Case 'text-input' $fg @('--frames', '520', '--expect-bridged', '--expect-fg', '--key-at', '100', '0x2D',
+        '--ctrl-click-at', '160', '470', '395', '--type-at', '200', '0.6', '--shot-at', '230', 'text-input.bmp',
+        '--key-at', '400', '0x2D') {
+        param($text)
+        $size = Last-NrSize
+        if ($size -ne '768x432') { "NR did not run at the typed model scale (last completed at '$size')" }
+    }
+    # The game releases its device and window and makes new ones: a new host for the new window.
+    Run-Case 'recreate' @() (@('--frames', '500', '--expect-bridged', '--recreate-at', '200', '--shot-at', '480',
+            'recreate.bmp') + $screenArg) {
+        param($text)
+        if ((Count 'dx9-x86.log' 'host 2 connected') -eq 0) { 'no host for the new window' }
+    }
+    Run-Case 'recreate-ex' @() (@('--ex', '--frames', '500', '--expect-bridged', '--recreate-at', '200') + $screenArg) {
+        param($text)
+        if ((Count 'dx9-x86.log' 'host 2 connected') -eq 0) { 'no host for the new window' }
+    }
+    Run-Case 'window-thread-fg' $fg (@('--ex', '--window-thread', '--frames', '600', '--expect-bridged', '--expect-fg') +
+        $screenArg) {
+        param($text)
+        if ((Count 'OptiScaler.log' 'XeFG swapchain created') -eq 0) { 'no XeFG swap chain' }
+    }
+    Run-Case 'minimize-fg' $fg (@('--frames', '700', '--expect-bridged', '--expect-fg', '--minimize-at', '250', '350') +
+        $screenArg) $null
+    # OptiScaler without its DXGI hooks (no overlay menu, no frame generation, no DXGI spoofing): each host
+    # must report it, be replaced, and after four the game presents natively.
+    Run-Case 'unhooked' @('[Menu]', 'OverlayMenu=false', '[Spoofing]', 'Dxgi=false') (@('--frames', '200',
+            '--expect-unhooked', '--timeout', '180') + $screenArg) {
+        param($text)
+        if ((Count 'dx9-host.log' 'OptiScaler did not wrap the swap chain') -lt 4) { 'the hosts did not report it' }
+    }
+
     # Frame time at 1920x1080 with 8 ms of game CPU per frame: native, the bridge, NR, each pipelined
-    # and waiting for the host at every Present. Reported, not judged.
+    # and waiting for the host at every Present. The time is reported, not judged; each case must have
+    # done what it times, in one host.
     $timing = @('--size', '1920x1080', '--frames', '300', '--work', '8')
+    $oneHost = {
+        param($text)
+        if ($text -notmatch 'hostStarts=1 faults=0 ') { 'retry: the host was replaced during the timed frames' }
+        if ((Count 'dx9-host.log' 'presented') -eq 0) { 'the host logged no presented frame' }
+    }
+    $timedNr = {
+        param($text)
+        & $oneHost $text
+        $done = Count 'amd_presr.log' 'Completed AMD pre-SR passes'
+        if ($done -lt 3) { "NR did not run ($done completed log lines)" }
+        if ((Last-NrSize) -ne '1920x1080') { "NR did not run at 1920x1080 (last completed at '$(Last-NrSize)')" }
+    }
     Run-Case 'time-native' @() (@('--native') + $timing) $null
-    Run-Case 'time-bridge' @() ($timing + @('--expect-bridged')) $null
-    Run-Case 'time-bridge-sync' @('[Dx9X86]', 'Pipelined=false') ($timing + @('--expect-bridged')) $null
-    Run-Case 'time-nr' $nr ($timing + @('--expect-bridged')) $null
-    Run-Case 'time-nr-sync' ($nr + @('[Dx9X86]', 'Pipelined=false')) ($timing + @('--expect-bridged')) $null
-    Run-Case 'time-nr-ex' $nr ($timing + @('--ex', '--expect-bridged')) $null
-    Run-Case 'time-nr-fg' $fg ($timing + @('--expect-bridged')) $null
+    Run-Case 'time-bridge' @() ($timing + @('--expect-bridged')) $oneHost
+    Run-Case 'time-bridge-sync' @('[Dx9X86]', 'Pipelined=false') ($timing + @('--expect-bridged')) $oneHost
+    Run-Case 'time-nr' $nr ($timing + @('--expect-bridged')) $timedNr
+    Run-Case 'time-nr-sync' ($nr + @('[Dx9X86]', 'Pipelined=false')) ($timing + @('--expect-bridged')) $timedNr
+    Run-Case 'time-nr-ex' $nr ($timing + @('--ex', '--expect-bridged')) $timedNr
+    Run-Case 'time-nr-fg' $fg ($timing + @('--expect-bridged', '--expect-fg')) $timedNr
 }
 finally {
     Remove-Item $lock -Force -Recurse -ErrorAction SilentlyContinue
 }
 
 Write-Host ''
+Write-Host "hosts that came up without OptiScaler's DXGI hooks (outside the 'unhooked' case): $unhookedHosts"
 $failed = 0
 foreach ($entry in $results.GetEnumerator()) {
     Write-Host ("{0,-18} {1}" -f $entry.Key, $entry.Value)

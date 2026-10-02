@@ -10,8 +10,12 @@
 
 namespace dx9wire
 {
-constexpr uint32_t Magic = 0x39445850, Version = 1;
+constexpr uint32_t Magic = 0x39445850, Version = 2;
 constexpr DWORD IpcTimeoutMs = 5000, StartupTimeoutMs = 60000;
+// How long the game side waits for the answer to a build or a frame: the host's first frames load the
+// NR runtime and frame generation, and a runtime job can hold the GPU for seconds. Each side waits for
+// its own GPU copies for less than that, so the host answers before the game side gives up on it.
+constexpr DWORD AnswerTimeoutMs = 30000, GpuWaitMs = 20000;
 
 enum class Kind : uint32_t
 {
@@ -26,7 +30,9 @@ enum class Result : uint32_t
     Ready = 1,
     Presented = 2,
     Failed = 3,
-    DeviceLost = 4
+    DeviceLost = 4,
+    // The swap chain was made, but OptiScaler did not wrap it: no NR, frame generation or menu.
+    Unhooked = 5
 };
 // How a frame crosses: a D3D9 shared texture the host opens by its handle, or a section of
 // memory the game side fills from a system-memory copy of the back buffer.
@@ -35,8 +41,9 @@ enum class Transport : uint32_t
     SharedTexture = 1,
     SharedMemory = 2
 };
-// Ack::state, OptiScaler's own state read by the host after each Present.
-constexpr uint32_t StateMenu = 1, StateFrameGen = 2;
+// Ack::state, OptiScaler's own state read by the host after each Present. StateHooked: OptiScaler
+// wrapped a swap chain.
+constexpr uint32_t StateMenu = 1, StateFrameGen = 2, StateHooked = 4;
 
 #pragma pack(push, 1)
 struct Header
@@ -61,10 +68,12 @@ struct Build
     Transport transport = Transport::SharedTexture;
     uint32_t window = 0;
 };
+// text: characters typed into the game's window while the menu is open, for OptiScaler's text fields.
 struct Frame
 {
     uint64_t generation = 0, id = 0;
-    uint32_t syncInterval = 0, reserved = 0;
+    uint32_t syncInterval = 0, textCount = 0;
+    wchar_t text[16] {};
 };
 struct Ack
 {
@@ -75,15 +84,18 @@ struct Ack
     uint32_t state = 0, reserved = 0;
 };
 #pragma pack(pop)
-static_assert(sizeof(Header) == 16 && sizeof(Hello) == 16 && sizeof(Build) == 40 && sizeof(Frame) == 24);
+static_assert(sizeof(Header) == 16 && sizeof(Hello) == 16 && sizeof(Build) == 40 && sizeof(Frame) == 56);
 static_assert(sizeof(Ack) == 48 && offsetof(Ack, state) == 40);
 static_assert(std::is_trivially_copyable_v<Build> && std::is_trivially_copyable_v<Ack>);
 
 // The game side's counters, read by tests\dx9_x86_smoke.cpp through the proxy's
-// OptiScalerX86Status export. transport is a Transport value; state is the last Ack::state.
+// OptiScalerX86Status export. transport is a Transport value; state is the last Ack::state; typed
+// counts the characters passed to the host; unhooked counts hosts ended because OptiScaler did not
+// wrap their swap chain.
 struct ProxyStatus
 {
-    uint32_t hostStarts, faults, bridged, native, menuFrames, blockedInput, state, transport, disabled, width, height;
+    uint32_t hostStarts, faults, bridged, native, menuFrames, blockedInput, state, transport, disabled, width, height,
+        typed, unhooked;
 };
 
 inline uint32_t BodyBytes(Kind kind)

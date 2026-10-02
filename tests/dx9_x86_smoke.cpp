@@ -15,6 +15,15 @@
 //   --drag-at F X0 Y0 X1 Y1  drag with the left button from X0,Y0 to X1,Y1 (client pixels) from frame F on
 //   --reset-at F WxH     Reset the device to a new size at frame F
 //   --kill-host-at F     end the host process at frame F; the proxy must start another
+//   --hold-key F0 F1 VK  press VK at F0 and release it at F1; the game must see the release
+//   --ctrl-click-at F X Y  Ctrl + left click at X,Y (client pixels) from frame F on
+//   --type-at F TEXT     type TEXT (digits, letters, '.') then Enter from frame F on; the proxy must
+//                        pass the characters to the host
+//   --recreate-at F      release the device and the window at F and make new ones; the new window
+//                        must be presented by a new host, without a failure counted (not with
+//                        --window-thread)
+//   --minimize-at F0 F1  minimize the window at F0 and restore it at F1
+//   --expect-unhooked    OptiScaler must be reported unhooked in each host, and the session native
 //   --screen             fail when the window's pixels on screen stop changing
 //   --shot-at F FILE     save what the window shows on screen at frame F as a BMP
 //   --work MS            spend MS milliseconds of CPU on each frame, as a game would
@@ -26,6 +35,7 @@
 #include <d3d9.h>
 #include <tlhelp32.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -36,7 +46,9 @@
 
 namespace
 {
-long mouseMessages = 0, keyMessages = 0;
+long mouseMessages = 0, keyMessages = 0, charMessages = 0;
+// The last key message the game's window procedure saw for watchVk (--hold-key).
+UINT watchVk = 0, watchLast = 0;
 
 LRESULT CALLBACK Proc(HWND window, UINT message, WPARAM w, LPARAM l)
 {
@@ -44,6 +56,10 @@ LRESULT CALLBACK Proc(HWND window, UINT message, WPARAM w, LPARAM l)
         ++mouseMessages;
     if (message == WM_KEYDOWN || message == WM_KEYUP || message == WM_CHAR)
         ++keyMessages;
+    if (message == WM_CHAR)
+        ++charMessages;
+    if ((message == WM_KEYDOWN || message == WM_KEYUP) && watchVk && w == watchVk)
+        watchLast = message;
     if (message == WM_CLOSE)
         return 0;
     return DefWindowProcW(window, message, w, l);
@@ -266,8 +282,11 @@ DWORD WINAPI Watchdog(LPVOID seconds)
 int main(int argc, char** argv)
 {
     bool ex = false, native = false, vsync = false, windowThread = false, expectBridged = false, expectFg = false,
-         screen = false;
+         screen = false, expectUnhooked = false;
     int frames = 240, menuAt = -1, resetAt = -1, killAt = -1, timeout = 120, shotAt = -1;
+    int holdDown = -1, holdUp = -1, ctrlAt = -1, ctrlX = 0, ctrlY = 0, typeAt = -1, recreateAt = -1, minimizeAt = -1,
+        restoreAt = -1;
+    std::string typeText;
     const char* shotPath = nullptr;
     double work = 0;
     UINT width = 1280, height = 720, resetWidth = 0, resetHeight = 0;
@@ -295,6 +314,32 @@ int main(int argc, char** argv)
             expectFg = true;
         else if (a == "--screen")
             screen = true;
+        else if (a == "--expect-unhooked")
+            expectUnhooked = true;
+        else if (a == "--hold-key")
+        {
+            holdDown = atoi(next());
+            holdUp = atoi(next());
+            watchVk = static_cast<UINT>(strtoul(next(), nullptr, 0));
+        }
+        else if (a == "--ctrl-click-at")
+        {
+            ctrlAt = atoi(next());
+            ctrlX = atoi(next());
+            ctrlY = atoi(next());
+        }
+        else if (a == "--type-at")
+        {
+            typeAt = atoi(next());
+            typeText = next();
+        }
+        else if (a == "--recreate-at")
+            recreateAt = atoi(next());
+        else if (a == "--minimize-at")
+        {
+            minimizeAt = atoi(next());
+            restoreAt = atoi(next());
+        }
         else if (a == "--frames")
             frames = atoi(next());
         else if (a == "--timeout")
@@ -440,6 +485,8 @@ int main(int argc, char** argv)
     long mouseWhileMenu = 0;
     bool menuOpenNow = false;
     unsigned bridgedAtReset = 0;
+    dx9wire::ProxyStatus atRecreate {};
+    unsigned newHostBridged = 0;
     // The proxy starts its host on a thread of its own and presents natively until the host is up, so
     // present until it is: the frames counted below are then the bridge's.
     dx9wire::ProxyStatus warm {};
@@ -514,6 +561,82 @@ int main(int argc, char** argv)
             if (open && frame >= menuAt + 20 && frame < menuAt + 50)
                 inputSent += MoveMouse(window, 100 + (frame % 10) * 20, 100 + (frame % 7) * 15) ? 1 : 0;
         }
+        if (frame == holdDown || frame == holdUp)
+            (Key(window, static_cast<WORD>(watchVk), frame == holdUp) ? keysSent : keysSkipped)++;
+        // Ctrl + click: the cursor there, a relative nudge there and back, Ctrl down, the button down and
+        // up, Ctrl up; one event every other frame.
+        if (ctrlAt >= 0 && frame >= ctrlAt && frame <= ctrlAt + 14 && !((frame - ctrlAt) & 1))
+        {
+            const int step = frame - ctrlAt;
+            const bool sent = step == 0    ? MoveMouse(window, ctrlX, ctrlY)
+                              : step == 2  ? NudgeMouse(window, 1, 0)
+                              : step == 4  ? NudgeMouse(window, -1, 0)
+                              : step == 6  ? Key(window, VK_CONTROL, false)
+                              : step == 8  ? NudgeMouse(window, 0, 0, MOUSEEVENTF_LEFTDOWN)
+                              : step == 12 ? NudgeMouse(window, 0, 0, MOUSEEVENTF_LEFTUP)
+                              : step == 14 ? Key(window, VK_CONTROL, true)
+                                           : true;
+            (sent ? keysSent : keysSkipped)++;
+        }
+        // One character every six frames (down, then up three frames later), then Enter.
+        if (typeAt >= 0 && frame >= typeAt && (frame - typeAt) % 3 == 0)
+        {
+            const size_t index = (frame - typeAt) / 6;
+            if (index <= typeText.size())
+            {
+                const char c = index < typeText.size() ? typeText[index] : '\r';
+                const WORD vk = c == '\r'  ? VK_RETURN
+                                : c == '.' ? VK_OEM_PERIOD
+                                           : static_cast<WORD>(toupper(static_cast<unsigned char>(c)));
+                (Key(window, vk, (frame - typeAt) % 6 != 0) ? keysSent : keysSkipped)++;
+            }
+        }
+        if (frame == recreateAt)
+        {
+            atRecreate = Status();
+            device->Release();
+            DestroyWindow(window);
+            window = MakeWindow(width, height);
+            params.hDeviceWindow = window;
+            device = nullptr;
+            deviceEx = nullptr;
+            const HRESULT hr =
+                ex ? apiEx->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, flags, &params, nullptr,
+                                           &deviceEx)
+                   : api->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, flags, &params, &device);
+            if (FAILED(hr))
+                return Fail("the device could not be made again");
+            if (ex)
+                device = deviceEx;
+            // As at the start: present until a new host presents, so the frames counted are its (the old
+            // host's last answer may still be counted once the new device presents).
+            const ULONGLONG until = GetTickCount64() + 60000;
+            int rewarm = 0;
+            bool newHost = false;
+            for (dx9wire::ProxyStatus now; !(now = Status()).disabled && GetTickCount64() < until;)
+            {
+                if (!newHost && now.hostStarts > atRecreate.hostStarts)
+                {
+                    newHost = true;
+                    newHostBridged = now.bridged;
+                }
+                else if (newHost && now.bridged > newHostBridged)
+                    break;
+                Pump();
+                Draw(device, width, height, rewarm++);
+                ex ? deviceEx->PresentEx(nullptr, nullptr, nullptr, nullptr, 0)
+                   : device->Present(nullptr, nullptr, nullptr, nullptr);
+            }
+            printf("made a new device and window at frame %d (bridged %u), %d frames until a new host presented it\n",
+                   frame, atRecreate.bridged, rewarm);
+        }
+        if (frame == minimizeAt)
+            ShowWindow(window, SW_MINIMIZE);
+        if (frame == restoreAt)
+        {
+            ShowWindow(window, SW_RESTORE);
+            Foreground(window);
+        }
         if (frame == killAt)
         {
             bridgedAtKill = Status().bridged;
@@ -574,9 +697,9 @@ int main(int argc, char** argv)
     const bool covered = samples[0] == CLR_INVALID || samples[1] == CLR_INVALID;
     const bool screenMoves = !covered && samples[0] != samples[1];
     printf("status: bridged=%u native=%u hostStarts=%u faults=%u disabled=%u transport=%u size=%ux%u state=%u "
-           "menuFrames=%u blockedInput=%u\n",
+           "menuFrames=%u blockedInput=%u typed=%u unhooked=%u\n",
            s.bridged, s.native, s.hostStarts, s.faults, s.disabled, s.transport, s.width, s.height, s.state,
-           s.menuFrames, s.blockedInput);
+           s.menuFrames, s.blockedInput, s.typed, s.unhooked);
     printf("screen=%s samples=%06lX,%06lX foreground=%d keysSent=%u keysSkipped=%u ms_per_frame=%.2f\n",
            covered       ? "covered"
            : screenMoves ? "ok"
@@ -587,7 +710,7 @@ int main(int argc, char** argv)
     if (screen && !screenMoves)
         failed = Fail("the window's pixels on screen did not change between samples");
     // A Reset or an ended host may cost a host restart, presented natively meanwhile.
-    const unsigned allowance = 8 + (killAt >= 0 || resetAt >= 0 ? 300 : 0);
+    const unsigned allowance = 8 + (killAt >= 0 || resetAt >= 0 || recreateAt >= 0 ? 300 : 0);
     if (expectBridged && (s.bridged - warm.bridged + allowance < unsigned(frames) || s.disabled))
         failed = Fail("frames were not presented by the host");
     if (expectFg && !(s.state & dx9wire::StateFrameGen))
@@ -601,6 +724,31 @@ int main(int argc, char** argv)
         if (s.hostStarts < 2 || s.faults < 1 || s.bridged < bridgedAtKill + 30)
             failed = Fail("the host was not started again after it ended");
     }
+    if (watchVk)
+    {
+        printf("held key 0x%X: the game's last message for it was %s\n", watchVk,
+               watchLast == WM_KEYDOWN ? "a key down"
+               : watchLast == WM_KEYUP ? "a key up"
+                                       : "none");
+        if (!keysSkipped && watchLast != WM_KEYUP)
+            failed = Fail("a key released while the menu was open stayed down in the game");
+    }
+    if (typeAt >= 0)
+    {
+        printf("typed: %u characters passed to the host, %ld reached the game\n", s.typed, charMessages);
+        if (!keysSkipped && s.typed < typeText.size())
+            failed = Fail("the characters typed into the menu did not reach the host");
+    }
+    if (recreateAt >= 0)
+    {
+        printf("recreate: bridged before %u, when the new host started %u, at the end %u, starts %u, faults %u\n",
+               atRecreate.bridged, newHostBridged, s.bridged, s.hostStarts, s.faults);
+        if (s.hostStarts < atRecreate.hostStarts + 1 || s.faults != atRecreate.faults ||
+            s.bridged + 8 < newHostBridged + unsigned(frames - recreateAt))
+            failed = Fail("the new window was not presented by a new host");
+    }
+    if (expectUnhooked && (s.unhooked < 4 || !s.disabled || s.bridged))
+        failed = Fail("hosts without OptiScaler's hooks were not detected and the session did not go native");
     if (menuAt >= 0)
     {
         printf("menu: opened at %u, closed at %u, mouse moves sent %u, mouse messages the game saw %ld, held %u\n",
@@ -612,7 +760,7 @@ int main(int argc, char** argv)
         else if (inputSent && (mouseWhileMenu != 0 || s.blockedInput == 0))
             failed = Fail("mouse input reached the game while the menu was open");
     }
-    if (!keys.empty() && keysSkipped)
+    if ((!keys.empty() || holdDown >= 0 || ctrlAt >= 0 || typeAt >= 0) && keysSkipped)
         printf("SKIP keys: %u key events not sent (window not in front)\n", keysSkipped);
 
     device->Release();

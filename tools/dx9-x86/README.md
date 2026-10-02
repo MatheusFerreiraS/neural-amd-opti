@@ -6,8 +6,11 @@ them. This folder holds a pair that brings the 64-bit OptiScaler to such a game 
 - `proxy.cpp` builds a 32-bit `d3d9.dll`. It forwards every export to the system `d3d9.dll`, starts
   the host and, at each Present of the device's own swap chain, copies the back buffer to the host.
 - `host.cpp` builds `OptiScalerDx9Host.exe` (x64). It loads `OptiScaler.dll` from its own folder
-  before it creates anything, then creates a D3D11 device on the game's adapter and a swap chain on a
-  child window of the game's window. Each frame it receives is copied into that swap chain and
+  before it creates anything, waits for the thread OptiScaler starts as it loads (it makes a DXGI
+  factory and installs hooks; Detours runs one transaction at a time, and a DXGI factory made here at
+  the same moment left OptiScaler without its factory hooks twice in about 32 starts), then
+  creates a D3D11 device on the game's adapter and a swap chain on a child window of the game's
+  window. Each frame it receives is copied into that swap chain and
   presented, so OptiScaler sees an ordinary D3D11 program: final-image NR (`PresentWithoutUpscaler`),
   XeFG through its D3D11-to-D3D12 swap chain and the full menu all run as they do in a D3D11 game,
   from the same `OptiScaler.ini`.
@@ -29,10 +32,14 @@ into that. The child takes no input (it is disabled and transparent to hit testi
 keys still reach the game's window, and it follows the game window's size. It is asked for, and ended,
 with posted messages: an engine that renders on a thread of its own may keep its window thread waiting
 for that very thread, so the Present never waits for the window thread (the game presents natively for
-the frame or two until the child exists).
+the frame or two until the child exists; with no child after 3 s it is asked for again).
 
-When the host does not answer, reports its device lost, refuses a new back buffer size or dies, the
-proxy closes the pipe (the host releases its swap chain and leaves; one still there after five
+A game that releases its device and window and makes new ones gets a new host on the new window
+(not counted as a failure); the host's swap chain stays on the child window it was made for.
+
+When the host does not answer, reports its device lost, refuses a new back buffer size, dies, or
+reports that OptiScaler did not wrap its swap chain (no DXGI hooks, so no NR, frame generation or
+menu), the proxy closes the pipe (the host releases its swap chain and leaves; one still there after five
 seconds is ended), destroys the child window, presents that frame natively, and starts a new host
 with a new child window: a second later, or at once when the host refused a new size (XeFG cannot
 resize while anything holds a back buffer, so a Reset to a new size with frame generation on costs a
@@ -62,7 +69,15 @@ The host draws OptiScaler's menu into its swap chain. OptiScaler's input layer s
 belongs to another process and reads the keyboard and mouse itself (polled keys and cursor, raw mouse
 through an input sink). While the menu is open, the proxy holds the game's mouse and keyboard
 messages, `WM_INPUT`, and `GetCursorPos`/`SetCursorPos` from the game, so the camera does not move
-under the menu. Games that read the mouse through DirectInput still see it.
+under the menu. It does so with a message hook (`WH_GETMESSAGE`) on the game window's thread, which
+sees every queued message before the game whatever window procedures are installed later; the cursor
+calls are patched in the import tables of every module loaded when a host starts and when the menu
+opens. A key or mouse button the game saw go down before the menu opened still gets its release, so
+nothing stays held in the game. Games that read the mouse through DirectInput still see it.
+
+Text typed while the menu is open (Ctrl+click on a slider, input fields) is turned into characters on
+the game window's thread and sent to the host with the next frame, which hands them to OptiScaler's
+menu (`OptiScalerAddText`): OptiScaler cannot hook a window procedure in another process.
 
 ## Install
 
@@ -120,6 +135,8 @@ with a runtime and XeFG, and runs `tests\dx9_x86_smoke.cpp` through every case u
 native D3D9, the bridge on D3D9 and D3D9Ex, the memory transport, NR with its toggle key, NR with
 XeFG with the frame generation key and a device Reset to a new size, NR and frame generation both
 turned off, the menu with mouse input held from the game, a Reset without frame generation, the window
-on a thread that is blocked while the game renders (with and without a host replacement), the host
-ended mid-run with and without frame generation, the final-image Model scale dragged in the menu with
-XeFG on, and frame times at 1920x1080.
+on a thread that is blocked while the game renders (with and without a host replacement, and with
+XeFG), the host ended mid-run with and without frame generation, the final-image Model scale dragged
+in the menu with XeFG on, a key held across the menu, a value typed into the menu, a device and window
+made again, the window minimized with XeFG on, OptiScaler without its DXGI hooks, and frame times at
+1920x1080 (each timed case must have run what it times, in one host).

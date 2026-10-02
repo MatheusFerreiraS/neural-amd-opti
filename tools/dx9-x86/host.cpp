@@ -7,7 +7,10 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_6.h>
+#include <psapi.h>
+#include <tlhelp32.h>
 #include <wrl/client.h>
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <filesystem>
@@ -39,11 +42,44 @@ void Log(const char* format, ...)
     }
 }
 
+// OptiScaler starts a thread of its own when it loads (getGpuInfo: it makes a DXGI factory, which
+// OptiScaler hooks, and hooks amdxc64). Detours runs one transaction at a time, so a DXGI factory made
+// here at the same moment can leave OptiScaler without its factory hooks ("Failed to hook IDXGIFactory:
+// 10DD"), and then without NR, frame generation and menu. Waits up to 10 s for the threads that start
+// in OptiScaler.dll's own code to finish.
+void WaitForOptiScalerThreads(HMODULE opti)
+{
+    MODULEINFO module {};
+    using Query = LONG(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+    const auto query =
+        reinterpret_cast<Query>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread"));
+    const Handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
+    if (!query || !snapshot || !GetModuleInformation(GetCurrentProcess(), opti, &module, sizeof(module)))
+        return;
+    const auto begin = static_cast<BYTE*>(module.lpBaseOfDll), end = begin + module.SizeOfImage;
+    const ULONGLONG deadline = GetTickCount64() + 10000;
+    THREADENTRY32 entry { sizeof(entry) };
+    for (BOOL more = Thread32First(snapshot.value, &entry); more; more = Thread32Next(snapshot.value, &entry))
+    {
+        if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId())
+            continue;
+        const Handle thread(OpenThread(SYNCHRONIZE | THREAD_QUERY_INFORMATION, FALSE, entry.th32ThreadID));
+        BYTE* start = nullptr;
+        // 9: ThreadQuerySetWin32StartAddress.
+        if (!thread || query(thread.value, 9, &start, sizeof(start), nullptr) != 0 || start < begin || start >= end)
+            continue;
+        const ULONGLONG now = GetTickCount64();
+        const DWORD waited = WaitForSingleObject(thread.value, now < deadline ? DWORD(deadline - now) : 0);
+        Log("OptiScaler thread %lu %s", entry.th32ThreadID, waited == WAIT_OBJECT_0 ? "finished" : "still running");
+    }
+}
+
 struct Host
 {
     Handle pipe, game;
-    HWND window = nullptr;
+    HWND window = nullptr, surface = nullptr;
     uint32_t (*overlayState)() = nullptr;
+    void (*addText)(const wchar_t*, uint32_t) = nullptr;
     ComPtr<IDXGIFactory2> factory;
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
@@ -118,10 +154,18 @@ struct Host
         return true;
     }
 
-    bool Build(const dx9wire::Build& request)
+    Result Build(const dx9wire::Build& request)
     {
         Release();
         build = request;
+        // One swap chain per host, on the child window it was made for: a game that moves to a new
+        // window gets a new host.
+        const HWND target = reinterpret_cast<HWND>(static_cast<uintptr_t>(request.window));
+        if (swap && target != surface)
+        {
+            Log("stage %llu is for window %08X, the swap chain is on %p", request.generation, request.window, surface);
+            return Result::Failed;
+        }
         if (request.transport == Transport::SharedTexture)
         {
             // A D3D9 shared handle is not a kernel handle: the same value opens it in any process,
@@ -130,7 +174,7 @@ struct Host
             if (FAILED(device->OpenSharedResource(handle, IID_PPV_ARGS(&shared))))
             {
                 Log("OpenSharedResource failed for %08llX", request.handle);
-                return false;
+                return Result::Failed;
             }
             D3D11_TEXTURE2D_DESC desc {};
             shared->GetDesc(&desc);
@@ -139,7 +183,7 @@ struct Host
             {
                 Log("shared texture is %ux%u format %u, expected %ux%u format %u", desc.Width, desc.Height, desc.Format,
                     request.width, request.height, request.format);
-                return false;
+                return Result::Failed;
             }
         }
         else
@@ -147,7 +191,7 @@ struct Host
             section.reset(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(request.handle)));
             view = MapViewOfFile(section.value, FILE_MAP_READ, 0, 0, SIZE_T(request.pitch) * request.height);
             if (!view)
-                return false;
+                return Result::Failed;
         }
         if (!swap)
         {
@@ -170,19 +214,24 @@ struct Host
                       allowed;
             desc.Flags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
             // The game side's child window, made for this host alone.
-            const HWND surface = reinterpret_cast<HWND>(static_cast<uintptr_t>(request.window));
-            if (!IsWindow(surface) || GetAncestor(surface, GA_ROOT) != GetAncestor(window, GA_ROOT))
+            if (!IsWindow(target) || GetAncestor(target, GA_ROOT) != GetAncestor(window, GA_ROOT))
             {
                 Log("window %08X is not a child of the game's window", request.window);
-                return false;
+                return Result::Failed;
             }
-            const HRESULT hr = factory->CreateSwapChainForHwnd(device.Get(), surface, &desc, nullptr, nullptr, &swap);
+            const HRESULT hr = factory->CreateSwapChainForHwnd(device.Get(), target, &desc, nullptr, nullptr, &swap);
             if (FAILED(hr))
             {
                 Log("CreateSwapChainForHwnd failed %08lX", hr);
-                return false;
+                return Result::Failed;
             }
+            surface = target;
             factory->MakeWindowAssociation(surface, DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER);
+            if (overlayState && !(overlayState() & StateHooked))
+            {
+                Log("OptiScaler did not wrap the swap chain (no DXGI hooks): no NR, frame generation or menu");
+                return Result::Unhooked;
+            }
         }
         else
         {
@@ -195,14 +244,14 @@ struct Host
                 if (FAILED(hr))
                 {
                     Log("ResizeBuffers failed %08lX", hr);
-                    return false;
+                    return Result::Failed;
                 }
             }
         }
         built = true;
         Log("stage %llu: %ux%u format %u through %s", request.generation, request.width, request.height, request.format,
             request.transport == Transport::SharedTexture ? "a shared texture" : "shared memory");
-        return true;
+        return Result::Ready;
     }
 
     // Answers the frame; false only when the device is gone and the host should exit.
@@ -210,6 +259,8 @@ struct Host
     {
         if (!built || frame.generation != build.generation)
             return Reply(Kind::Frame, Result::Failed, 0, frame.id);
+        if (addText && frame.textCount)
+            addText(frame.text, std::min<uint32_t>(frame.textCount, ARRAYSIZE(frame.text)));
         {
             ComPtr<ID3D11Texture2D> back;
             if (FAILED(swap->GetBuffer(0, IID_PPV_ARGS(&back))))
@@ -230,7 +281,7 @@ struct Host
             return false;
         }
         // The game side writes the shared texture again next frame: the copy out of it must be done.
-        const ULONGLONG deadline = GetTickCount64() + 2000;
+        const ULONGLONG deadline = GetTickCount64() + GpuWaitMs;
         HRESULT done = S_FALSE;
         while ((done = context->GetData(copied.Get(), nullptr, 0, 0)) == S_FALSE && GetTickCount64() < deadline)
             YieldProcessor();
@@ -273,7 +324,7 @@ struct Host
                 break;
             case Kind::Build:
                 build.generation = body.build.generation;
-                ok = Reply(Kind::Build, Build(body.build) ? Result::Ready : Result::Failed);
+                ok = Reply(Kind::Build, Build(body.build));
                 break;
             case Kind::Frame:
                 if (!Frame(body.frame))
@@ -314,6 +365,8 @@ int wmain(int argc, wchar_t** argv)
     if (!opti)
         return 66;
     host.overlayState = reinterpret_cast<uint32_t (*)()>(GetProcAddress(opti, "OptiScalerOverlayState"));
+    host.addText = reinterpret_cast<void (*)(const wchar_t*, uint32_t)>(GetProcAddress(opti, "OptiScalerAddText"));
+    WaitForOptiScalerThreads(opti);
     host.pipe.reset(
         CreateFileW(argv[1], GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr));
     ULONG server = 0;

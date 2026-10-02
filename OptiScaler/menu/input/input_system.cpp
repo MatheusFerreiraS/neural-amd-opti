@@ -1336,6 +1336,17 @@ void SetMenuVisible(bool visible)
     ApplyMenuVisibilityChangeLocked(visible);
 }
 
+void AddTextInput(const wchar_t* text, size_t count)
+{
+    std::unique_lock lock(_state.Mutex);
+
+    for (size_t i = 0; i < count; i++)
+    {
+        if (text[i] >= 0x20)
+            _state.TextInput.push_back(text[i]);
+    }
+}
+
 bool IsFocused()
 {
     std::unique_lock lock(_state.Mutex);

@@ -204,6 +204,9 @@ void FeedImGui(bool menuVisible);
 void EndFrame(bool menuVisible);
 
 void SetMenuVisible(bool visible);
+
+// Characters for ImGui's text fields from a source other than this process's window messages.
+void AddTextInput(const wchar_t* text, size_t count);
 void ResetMenuInputTransientState();
 
 bool IsFocused();
