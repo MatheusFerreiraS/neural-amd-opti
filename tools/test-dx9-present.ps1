@@ -25,26 +25,31 @@ foreach ($file in @($opti, (Join-Path $Runtime "dlssnr_amd_pass1.dll"), (Join-Pa
 $nrScript = "90:mark=nr-on,150:motion=nr-on,170:menu,190:shot=menu-open,200:menu,215:shot=menu-closed," +
             "230:nr,240:mark=nr-off,300:motion=nr-off,310:nr,320:mark=nr-on-again,380:reset=1600x900," +
             "390:mark=after-reset,450:motion=after-reset,460:shot=after-reset"
-$fgScript = "150:mark=fg-on,200:motion=fg-on,220:menu,240:shot=fg-menu-open,250:menu,265:shot=fg-menu-closed," +
-            "280:fg,290:mark=fg-off,330:motion=fg-off,340:fg,350:mark=fg-on-again,420:motion=fg-on-again," +
-            "430:nr,440:mark=nr-off,480:motion=nr-off,490:nr,500:mark=nr-on,580:motion=nr-on," +
-            "590:reset=1600x900,600:mark=after-reset,700:motion=after-reset,705:shot=fg-after-reset"
+# With FG, the open menu's model scale slider (at 380,395 in the 1280x720 window) is dragged to the left end.
+$fgScript = "150:mark=fg-on,200:motion=fg-on,220:menu,232:shot=fg-menu-open,235:press=380x395,241:release," +
+            "246:shot=fg-scale-set,250:menu,265:shot=fg-menu-closed,280:fg,290:mark=fg-off,330:motion=fg-off," +
+            "340:fg,350:mark=fg-on-again,420:motion=fg-on-again,430:nr,440:mark=nr-off,480:motion=nr-off,490:nr," +
+            "500:mark=nr-on,580:motion=nr-on,650:reset=1600x900,660:mark=after-reset,760:motion=after-reset," +
+            "765:shot=fg-after-reset"
 $nrLog = @("OptiScaler working as d3d9.dll", "D3D9 device hooks installed", "D3D9 bridge: D3D12 device",
-           "D3D9 menu ready", "D3D9 bridge: menu open", "D3D9 bridge: menu closed",
+           "D3D9 menu ready", "D3D9 bridge frame \d+: menu open", "D3D9 bridge frame \d+: menu closed",
            "D3D9 bridge frame \d+: D3D9 present, NR true", "Final-image NR \(FidelityFX Optical Flow",
            "Reset.*: 0, 1600x900", "D3D9 bridge: 1600x900")
 $fgLog = @("OptiScaler working as d3d9.dll", "D3D9 device hooks installed", "D3D9 bridge: XeFG presenter",
-           "D3D9 bridge: menu open", "D3D9 bridge: menu closed",
-           "D3D9 bridge frame \d+: XeFG presenter, NR true, FG true, XeFG last present [2-9] frames",
+           "D3D9 bridge frame \d+: menu open", "D3D9 bridge frame \d+: menu closed",
+           "D3D9 bridge frame \d+: NR scale 1.00 -> 0.[5-9]",
+           "D3D9 bridge frame 2[89]\d: frame generation off", "D3D9 bridge frame 3[4-9]\d: frame generation on",
+           "D3D9 bridge frame 4[3-9]\d: frame generation off", "D3D9 bridge frame [45]\d\d: frame generation on",
+           "D3D9 bridge frame 601: XeFG presenter, NR true at scale 0.[5-9]\d, FG true, XeFG last present [2-9] frames",
            "Reset.*: 0, 1600x900", "XeFG presenter 1280x720 -> 1600x900: 0")
 
 $cases = @(
     @{ Name = "classic-nr"; Args = @(); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
     @{ Name = "ex-nr"; Args = @("--ex"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
     @{ Name = "chain-nr"; Args = @("--chain"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
-    @{ Name = "classic-fg"; Args = @(); Fg = $true; Frames = 710; Script = $fgScript; Log = $fgLog },
-    @{ Name = "ex-fg"; Args = @("--ex"); Fg = $true; Frames = 710; Script = $fgScript; Log = $fgLog },
-    @{ Name = "msaa-fg"; Args = @("--msaa"); Fg = $true; Frames = 710; Script = $fgScript; Log = $fgLog },
+    @{ Name = "classic-fg"; Args = @(); Fg = $true; Frames = 770; Script = $fgScript; Log = $fgLog },
+    @{ Name = "ex-fg"; Args = @("--ex"); Fg = $true; Frames = 770; Script = $fgScript; Log = $fgLog },
+    @{ Name = "msaa-fg"; Args = @("--msaa"); Fg = $true; Frames = 770; Script = $fgScript; Log = $fgLog },
     # Frame times at 1920x1080 borderless with the scene moving and still, NR or FG on and off.
     @{ Name = "timing-nr"; Args = @("--borderless", "--size", "1920x1080"); Fg = $false; Frames = 600
        Script = "100:mark=nr-moving,220:still,230:mark=nr-still,350:still,360:nr,370:mark=off-moving,480:still,490:mark=off-still"

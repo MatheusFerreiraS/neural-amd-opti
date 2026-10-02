@@ -4,8 +4,8 @@
 // samples. It prints the frame time of each scripted phase and whether sampled frames still change on screen.
 //   dx9_present_smoke.exe [--ex] [--chain] [--msaa] [--vsync] [--borderless] [--size WxH] [--frames N] [--shots folder]
 //                         [--script "frame:action,..."]
-// Actions: menu (Insert), nr (Numpad 5), fg (End), still (stops or restarts the scrolling), reset=WxH, shot=name,
-// motion=name, mark=name.
+// Actions: menu (Insert), nr (Numpad 5), fg (End), still (stops or restarts the scrolling), press=XxY (moves the
+// cursor there and holds the left button), release, minimize, restore, reset=WxH, shot=name, motion=name, mark=name.
 #define NOMINMAX
 #include <windows.h>
 #include <d3d9.h>
@@ -363,6 +363,28 @@ int main(int argc, char** argv)
                 PostKey(VK_END);
             else if (action == "still")
                 still = !still;
+            else if (action == "minimize" || action == "restore")
+            {
+                ShowWindow(window, action == "minimize" ? SW_MINIMIZE : SW_RESTORE);
+
+                if (action == "restore")
+                    SetForegroundWindow(window);
+            }
+            else if (action.rfind("press=", 0) == 0 || action == "release")
+            {
+                POINT point {};
+
+                if (std::sscanf(action.c_str(), "press=%ldx%ld", &point.x, &point.y) == 2)
+                {
+                    ClientToScreen(window, &point);
+                    SetCursorPos(point.x, point.y);
+                }
+
+                INPUT input {};
+                input.type = INPUT_MOUSE;
+                input.mi.dwFlags = action == "release" ? MOUSEEVENTF_LEFTUP : MOUSEEVENTF_LEFTDOWN;
+                SendInput(1, &input, sizeof(input));
+            }
             else if (action.rfind("mark=", 0) == 0)
                 endPhase(action.substr(5));
             else if (action.rfind("shot=", 0) == 0)

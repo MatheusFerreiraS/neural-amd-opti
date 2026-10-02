@@ -149,6 +149,8 @@ struct Bridge
 
     UINT64 frames = 0;
     bool menuVisible = false;
+    bool fgGenerating = false;
+    float nrScale = 1.0f;
     double spentCapture = 0, spentNeural = 0, spentBack = 0, spentMenu = 0, spentPresent = 0;
     UINT timed = 0;
 
@@ -489,6 +491,8 @@ struct Bridge
             return false;
         }
 
+        // The game never sees this swapchain: Alt+Enter and mode changes stay with the D3D9 device.
+        factory->MakeWindowAssociation(window, DXGI_MWA_NO_WINDOW_CHANGES);
         swapWidth = width;
         swapHeight = height;
         swapFlags = desc.Flags;
@@ -527,10 +531,18 @@ struct Bridge
         }
 
         auto start = Util::MillisecondsNow();
-        const bool captured = Capture(back);
+
+        // Without the frame the swapchain would show stale buffers: give the window back to D3D9.
+        if (!Capture(back))
+        {
+            LOG_ERROR("D3D9 bridge: the frame could not be read back");
+            ReleasePresenter();
+            return false;
+        }
+
         ComPtr<ID3D12Resource> buffer;
 
-        if (captured && Begin() && SUCCEEDED(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&buffer))))
+        if (Begin() && SUCCEEDED(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&buffer))))
         {
             auto destination = Subresource(buffer.Get());
             auto source = Footprint(upload.Get());
@@ -548,7 +560,7 @@ struct Bridge
 
         AmdPresentExperimental::Guides guides;
         const bool ready =
-            captured && NrWanted() &&
+            NrWanted() &&
             AmdPresentExperimental::Render(swap.Get(), queue12, Util::DllPath().parent_path(), NrSettings(), &guides);
         FeedFrameGeneration(device12, width, height, ready, guides);
         spentNeural += Util::MillisecondsNow() - start;
@@ -581,25 +593,40 @@ struct Bridge
 
     void Report()
     {
+        const auto fg = State::Instance().currentFG;
+        const bool generating = fg != nullptr && fg->IsActive() && !fg->IsPaused();
+        const float scale = Config::Instance()->AmdNrScale.value_or_default();
+
         if (MenuOverlayBase::IsVisible() != menuVisible)
         {
             menuVisible = !menuVisible;
-            LOG_INFO("D3D9 bridge: menu {}", menuVisible ? "open" : "closed");
+            LOG_INFO("D3D9 bridge frame {}: menu {}", frames, menuVisible ? "open" : "closed");
+        }
+
+        if (generating != fgGenerating)
+        {
+            fgGenerating = generating;
+            LOG_INFO("D3D9 bridge frame {}: frame generation {}", frames, generating ? "on" : "off");
+        }
+
+        if (scale != nrScale)
+        {
+            LOG_INFO("D3D9 bridge frame {}: NR scale {:.2f} -> {:.2f}", frames, nrScale, scale);
+            nrScale = scale;
         }
 
         if (++timed < 300 && frames != 1)
             return;
 
-        const auto fg = State::Instance().currentFG;
         xefg_swapchain_present_status_t status {};
         const bool queried = swap != nullptr && fg != nullptr && fg->SwapchainContext() != nullptr &&
                              XeFGProxy::GetLastPresentStatus() != nullptr &&
                              XeFGProxy::GetLastPresentStatus()((xefg_swapchain_handle_t) fg->SwapchainContext(),
                                                                &status) == XEFG_SWAPCHAIN_RESULT_SUCCESS;
-        LOG_INFO("D3D9 bridge frame {}: {}, NR {}, FG {}, XeFG last present {} frames; average ms capture {:.2f}, "
-                 "NR {:.2f}, copy back {:.2f}, menu {:.2f}, present {:.2f}; {}",
-                 frames, swap != nullptr ? "XeFG presenter" : "D3D9 present", NrWanted(),
-                 fg != nullptr && fg->IsActive() && !fg->IsPaused(), queried ? status.framesPresented : 0,
+        LOG_INFO("D3D9 bridge frame {}: {}, NR {} at scale {:.2f}, FG {}, XeFG last present {} frames; average ms "
+                 "capture {:.2f}, NR {:.2f}, copy back {:.2f}, menu {:.2f}, present {:.2f}; {}",
+                 frames, swap != nullptr ? "XeFG presenter" : "D3D9 present", NrWanted(), scale, generating,
+                 queried ? status.framesPresented : 0,
                  spentCapture / timed, spentNeural / timed, spentBack / timed, spentMenu / timed, spentPresent / timed,
                  AmdPresentExperimental::Status());
         spentCapture = spentNeural = spentBack = spentMenu = spentPresent = 0;
