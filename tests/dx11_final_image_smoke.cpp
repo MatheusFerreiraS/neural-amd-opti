@@ -7,7 +7,7 @@
 // the PDB, the same fields the menu writes. Checks read OptiScaler.log, amd_presr.log, the DXGI
 // present count, the RivaTuner Statistics Server shared memory when RTSS runs, and the screen.
 //
-//   dx11_final_image_smoke.exe fg|nr|keys [seconds per phase] [log level]
+//   dx11_final_image_smoke.exe fg|nr|keys|focus [seconds per phase] [log level] [Section/Key=Value ...]
 #define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
@@ -76,7 +76,7 @@ static void SetIni(std::vector<std::string>& lines, const std::string& section, 
         throw std::runtime_error("INI section not found: " + section);
     lines.insert(lines.begin() + header + 1, key + "=" + value);
 }
-static void WriteIni(bool fg, const wchar_t* logLevel)
+static void WriteIni(bool fg, const wchar_t* logLevel, const std::vector<std::wstring>& extra)
 {
     std::ifstream in(dir / "OptiScaler.template.ini");
     std::vector<std::string> lines;
@@ -95,6 +95,13 @@ static void WriteIni(bool fg, const wchar_t* logLevel)
     SetIni(lines, "Menu", "ShowFps", "true");
     SetIni(lines, "Menu", "DisableSplash", "true");
     SetIni(lines, "Hotfix", "CheckForUpdate", "false");
+    for (const auto& setting : extra) // Section/Key=Value
+    {
+        const std::string text(setting.begin(), setting.end());
+        const size_t slash = text.find('/'), equals = text.find('=');
+        if (slash != std::string::npos && equals > slash)
+            SetIni(lines, text.substr(0, slash), text.substr(slash + 1, equals - slash - 1), text.substr(equals + 1));
+    }
     std::ofstream out(dir / "OptiScaler.ini", std::ios::trunc);
     for (auto& line : lines)
         out << line << "\n";
@@ -674,10 +681,10 @@ int wmain(int argc, wchar_t** argv)
         dir = fs::path(self).parent_path();
         const std::wstring mode = argc > 1 ? argv[1] : L"fg";
         const double phase = argc > 2 ? _wtof(argv[2]) : 4.0;
-        const bool fg = mode == L"fg" || mode == L"focus";
+        const bool fg = mode == L"fg" || mode == L"focus" || mode == L"fgoff";
         fs::remove(dir / "OptiScaler.log");
         fs::remove(dir / "amd_presr.log");
-        WriteIni(fg, argc > 3 ? argv[3] : nullptr);
+        WriteIni(fg, argc > 3 ? argv[3] : nullptr, std::vector<std::wstring>(argv + std::min(argc, 4), argv + argc));
 
         // Nothing must hang: a phase that stops presenting for 30 s fails the run.
         HANDLE mainThread = nullptr;
@@ -750,6 +757,30 @@ int wmain(int argc, wchar_t** argv)
         }
         const double expected = fg ? 3.0 : 1.0;
         auto FgShowing = [&](const Stats& s) { return s.presentsPerFrame > expected - 0.5; };
+        if (mode == L"fgoff")
+        {
+            // FG off and on only: what an overlay counts, and NR once per game frame.
+            for (int round = 0; round < 2; ++round)
+            {
+                Stats on = Run("FG on", phase);
+                Press(VK_END);
+                Run("FG off settle", 1, true);
+                Stats off = Run("FG off", phase);
+                expect(off.presentsPerFrame < 1.5, "End turns XeFG off (one present per game frame)");
+                expect(off.nr > off.frames * 9 / 10 && off.nr <= off.frames + 2, "NR once per frame with FG off");
+                char text[160];
+                std::snprintf(text, sizeof(text), "RTSS reports %.1f fps for %.1f game fps with FG off", off.rtss,
+                              off.appFps);
+                expect(off.rtss > 0 && off.rtss < off.appFps * 1.3, text);
+                std::snprintf(text, sizeof(text), "RTSS reports %.1f fps for %.1f game fps with FG on", on.rtss,
+                              on.appFps);
+                expect(on.rtss > on.appFps * 2.5, text);
+                Press(VK_END);
+                Run("FG on settle", 2, true);
+            }
+            std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
+            return failures ? 1 : 0;
+        }
         if (mode != L"focus")
         {
 

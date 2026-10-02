@@ -1964,6 +1964,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             // Optical flow is generated at output resolution; synthetic depth is not inverted.
             Config::Instance()->FGXeFGHighResMV.set_volatile_value(true);
             Config::Instance()->FGXeFGDepthInverted.set_volatile_value(false);
+            // With the extra pacing XeFG held the game's Present for 60 to 100 ms at a time through the D3D11
+            // bridge; without it every real frame took 25 ms at 3X on a 120 Hz display.
+            if (!Config::Instance()->FGXeFGExtraPacing.has_value())
+                Config::Instance()->FGXeFGExtraPacing.set_volatile_value(false);
         }
         else if (Config::Instance()->DlssNrPresent.value_or_default() &&
                  Config::Instance()->FGInput.value_or_default() == FGInput::Upscaler)
