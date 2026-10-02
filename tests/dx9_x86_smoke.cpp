@@ -27,7 +27,6 @@
 //                        --window-thread)
 //   --minimize-at F0 F1  minimize the window at F0 and restore it at F1
 //   --hide-cursor        no cursor over the client area (a game in play hides it)
-//   --away-at F0 F1      another window takes the foreground at F0 (as Alt+Tab would), the game's at F1
 //   --subclass-at F      at F, make the window procedure one that calls nothing installed before it, as
 //                        an engine or overlay that replaces it after the device exists would
 //   --expect-unhooked    OptiScaler must be reported unhooked in each host, and the session native
@@ -446,8 +445,7 @@ int main(int argc, char** argv)
         int at, x0, y0, x1, y1;
     };
     std::vector<Drag> drags;
-    int pinX = -1, pinY = -1, awayAt = -1, backAt = -1;
-    HWND away = nullptr;
+    int pinX = -1, pinY = -1;
     for (int i = 1; i < argc; ++i)
     {
         const std::string a = argv[i];
@@ -550,11 +548,6 @@ int main(int argc, char** argv)
         }
         else if (a == "--hide-cursor")
             hideCursor = true;
-        else if (a == "--away-at")
-        {
-            awayAt = atoi(next());
-            backAt = atoi(next());
-        }
         else if (a == "--pin")
         {
             pinX = atoi(next());
@@ -907,13 +900,6 @@ int main(int argc, char** argv)
         // process's window follows a mouse by its relative moves, from where the cursor was), button
         // down, twelve relative steps, button up; one event a frame, as OptiScaler reads the mouse once a
         // frame.
-        if (frame == awayAt)
-            away = MakeWindow(320, 200, 20, 600);
-        if (frame == backAt && away)
-        {
-            (Foreground(window) ? keysSent : keysSkipped)++;
-            DestroyWindow(away);
-        }
         // With --pin the menu can only follow the mouse by its relative moves, from where they left it.
         if (pinX >= 0 && !drags.empty() && frame >= drags.front().at && frame <= drags.back().at + 25)
         {
