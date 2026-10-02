@@ -444,6 +444,9 @@ bool XeFG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQu
     }
 
     LOG_INFO("XeFG swapchain created");
+    // A new XeFG swapchain starts at its maximum interpolation count; the next dispatch sets the configured one.
+    if (Config::Instance()->DlssNrPresent.value_or_default())
+        _framesToInterpolate = -1;
     result = XeFGProxy::D3D12GetSwapChainPtr()(_swapChainContext, IID_PPV_ARGS(swapChain));
     if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
     {
@@ -614,6 +617,9 @@ bool XeFG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
     }
 
     LOG_INFO("XeFG swapchain created");
+    // A new XeFG swapchain starts at its maximum interpolation count; the next dispatch sets the configured one.
+    if (Config::Instance()->DlssNrPresent.value_or_default())
+        _framesToInterpolate = -1;
     result = XeFGProxy::D3D12GetSwapChainPtr()(_swapChainContext, IID_PPV_ARGS(swapChain));
     if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
     {

@@ -683,10 +683,22 @@ inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::fil
         Check(swap->GetDevice(IID_PPV_ARGS(&d)));
         if (!context)
             context = new Context(d.Get(), queue);
-        if (context->device.Get() != d.Get() || context->queue.Get() != queue)
+        if (context->device.Get() != d.Get())
         {
-            status = "Final-image NR: device/queue changed; restart required";
+            status = "Final-image NR: device changed; restart required";
             return false;
+        }
+        // A game that recreates its swapchain gets a new bridge queue on the same device: NR moves to it once its
+        // work on the old one is done (the runtime orders its own submissions across the change).
+        if (context->queue.Get() != queue)
+        {
+            if (!context->WaitForFrame())
+            {
+                context->stopped = true;
+                status = "Final-image NR: GPU timeout; stopped";
+                return false;
+            }
+            context->queue = queue;
         }
         ComPtr<ID3D12Resource> b;
         Check(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&b)));

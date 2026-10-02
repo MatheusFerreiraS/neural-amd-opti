@@ -288,6 +288,16 @@ ULONG STDMETHODCALLTYPE Dx11wDx12SC::Release()
 
         State::Instance().swapchainInteropApi = SwapchainInteropApi::None;
 
+        // Same order as ResizeBuffers with final-image NR: the menu stays off and NR's motion and depth live until
+        // XeFG's swapchain is gone.
+        const bool finalImage = AmdPresentExperimental::IsTarget();
+        const auto guides = finalImage ? AmdPresentExperimental::LastGuides() : AmdPresentExperimental::Guides {};
+        if (finalImage)
+        {
+            MenuOverlayDx::HoldForResize(true);
+            MenuOverlayDx::CleanupRenderTarget(false, _handle);
+        }
+
         auto fg = State::Instance().currentFG;
         if (fg != nullptr && fg->Mutex.getOwner() != 1 && fg->SwapchainContext() != nullptr)
         {
@@ -298,6 +308,9 @@ ULONG STDMETHODCALLTYPE Dx11wDx12SC::Release()
         ResTrack_Dx11::OnDeviceReleased(_dx11Device);
 
         delete this;
+
+        if (finalImage)
+            MenuOverlayDx::HoldForResize(false);
     }
 
     return ret;
@@ -755,6 +768,8 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
     if (_real3 != nullptr)
         realResult = _real3->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask,
                                             ppPresentQueue);
+    else if (!finalImage)
+        realResult = ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
     else if (_real != nullptr)
         realResult = _real->ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
 
