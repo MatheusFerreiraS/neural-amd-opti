@@ -31,6 +31,8 @@ inline bool IsTarget()
 }
 inline std::string status = "Final-image NR: waiting for a D3D11 or D3D12 frame";
 inline std::mutex mutex;
+// The runtime loads once per process and stays on the device it was built on.
+inline bool runtimeLoaded = false;
 inline void Check(HRESULT h)
 {
     if (FAILED(h))
@@ -407,14 +409,10 @@ struct Context
             retired[0].Reset();
             retired[1].Reset();
         }
-        if (neural && backend && !backend->Ready())
-        {
-            stableLast = false;
-            status = backend->Status();
-            if (++busyFrames <= 3 || busyFrames % 300 == 0)
-                LOG_INFO("Final-image NR: runtime still busy, frame left without NR ({})", busyFrames);
-            return false;
-        }
+        // A busy runtime skips NR on this frame; the guides are still made.
+        const bool busy = neural && backend && !backend->Ready();
+        if (busy && (++busyFrames <= 3 || busyFrames % 300 == 0))
+            LOG_INFO("Final-image NR: runtime still busy, frame left without NR ({})", busyFrames);
         auto desc = back->GetDesc();
         if (!input)
         {
@@ -445,8 +443,12 @@ struct Context
             status = "Final-image NR: output size changed; waiting for swapchain reset";
             return false;
         }
-        if (neural && !backend)
+        if (neural && !backend && !runtimeLoaded)
+        {
             backend = new AmdPreSr::Backend(device.Get(), queue.Get(), directory);
+            runtimeLoaded = true;
+        }
+        const bool record = neural && backend && !busy;
         heldBack = back;
         Check(allocator->Reset());
         Check(cmd->Reset(allocator.Get(), nullptr));
@@ -510,8 +512,8 @@ struct Context
         settings.passes = std::clamp(settings.passes, 1u, 3u);
         settings.modelScale = std::clamp(settings.modelScale, 0.5f, 1.f);
         settings.fixedSeed = true;
-        const auto before = neural ? backend->RecordedFrames() : 0;
-        auto result = neural ? backend->Record(cmd.Get(), f, settings) : nullptr;
+        const auto before = record ? backend->RecordedFrames() : 0;
+        auto result = record ? backend->Record(cmd.Get(), f, settings) : nullptr;
         const bool modified = result && backend->RecordedFrames() != before;
         if (modified)
         {
@@ -558,7 +560,10 @@ struct Context
                       : flowFailed ? "synthetic guides; Optical Flow unavailable"
                                    : "Optical Flow warming up") +
                      (realDepth ? ", real depth" : ", synthetic depth") + (sceneCut ? ", scene reset" : "") +
-                     ", stabilized): " + (neural ? backend->Status() : std::string("NR off, guides only"));
+                     ", stabilized): " +
+                     (!neural   ? std::string("NR off, guides only")
+                      : backend ? backend->Status()
+                                : std::string("NR runs on the game's other D3D12 device; restart the game for NR"));
         return modified && !stopped;
     }
     ComPtr<ID3D12DescriptorHeap> composeHeap;
@@ -667,6 +672,39 @@ struct Context
     }
 };
 inline Context* context = nullptr;
+// One per D3D12 device the game presented from, kept for the process like the runtime.
+inline std::vector<Context*> contexts;
+// A game can present from another queue or device than before, as Red Dead Redemption does when its frame
+// generation swapchain replaces the first one. Every frame waits for its own work, so after that wait the
+// context moves to the new queue; the runtime orders its own work across the move.
+inline bool Follow(ID3D12Device* device, ID3D12CommandQueue* queue)
+{
+    static UINT moves = 0;
+    if (context && context->device.Get() != device)
+    {
+        context->BeforeResize();
+        context = nullptr;
+        for (auto c : contexts)
+            if (c->device.Get() == device)
+                context = c;
+        if (++moves <= 3 || moves % 300 == 0)
+            LOG_INFO("Final-image NR: the game presents from another D3D12 device ({})", moves);
+    }
+    if (!context)
+        context = contexts.emplace_back(new Context(device, queue));
+    if (context->queue.Get() == queue)
+        return true;
+    if (!context->WaitForFrame())
+    {
+        context->stopped = true;
+        status = "Final-image NR: GPU timeout; stopped";
+        return false;
+    }
+    context->queue = queue;
+    if (++moves <= 3 || moves % 300 == 0)
+        LOG_INFO("Final-image NR: the game presents from another D3D12 queue ({})", moves);
+    return true;
+}
 struct Guides
 {
     ComPtr<ID3D12Resource> motion, depth;
@@ -694,12 +732,13 @@ inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::fil
         ComPtr<IDXGISwapChain3> swap;
         Check(sc->QueryInterface(IID_PPV_ARGS(&swap)));
         ComPtr<ID3D12Device> d;
-        Check(swap->GetDevice(IID_PPV_ARGS(&d)));
-        if (!context)
-            context = new Context(d.Get(), queue);
-        if (context->device.Get() != d.Get() || context->queue.Get() != queue)
+        Check(queue->GetDevice(IID_PPV_ARGS(&d)));
+        if (!Follow(d.Get(), queue))
+            return false;
+        // Without the runtime on this device only frame generation's guides are left to make.
+        if (!guides && !context->backend && runtimeLoaded)
         {
-            status = "Final-image NR: device/queue changed; restart required";
+            status = "Final-image NR: NR runs on the game's other D3D12 device; restart the game for NR";
             return false;
         }
         ComPtr<ID3D12Resource> b;
