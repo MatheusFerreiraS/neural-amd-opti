@@ -41,14 +41,16 @@ $nrLog = @("OptiScaler working as d3d9.dll", "D3D9 device hooks installed", "D3D
            "Reset.*: 0, 1600x900", "D3D9 bridge: 1600x900", "D3D9 bridge frame 4\d\d: menu open")
 $fgLog = @("OptiScaler working as d3d9.dll", "D3D9 device hooks installed", "D3D9 bridge: XeFG presenter",
            "D3D9 bridge frame \d+: menu open", "D3D9 bridge frame \d+: menu closed",
-           "D3D9 bridge frame \d+: NR scale 1.00 -> 0.[5-9]",
            "D3D9 bridge frame 2[89]\d: frame generation off", "D3D9 bridge frame 3[4-9]\d: frame generation on",
            "D3D9 bridge frame 4[3-9]\d: frame generation off", "D3D9 bridge frame [45]\d\d: frame generation on",
-           "D3D9 bridge frame 601: XeFG presenter, NR true at scale 0.[5-9]\d, FG true, XeFG last present [2-9] frames",
+           "D3D9 bridge frame 601: XeFG presenter, NR true at scale [01]\.\d\d, FG true, XeFG last present [2-9] frames",
            "Reset.*: 0, 1600x900", "XeFG presenter 1280x720 -> 1600x900: 0", "D3D9 bridge frame 8[4-9]\d: menu open")
 
-# Generation stays on through the scale change and the visit to the Frame Generation section.
+# Generation stays on through the scale change.
 $fgNotLog = @("D3D9 bridge frame 2[0-7]\d: frame generation off")
+# Checked when the smoke's clicks reach the menu (see --cursor in the smoke).
+$fgClickLog = @("D3D9 bridge frame \d+: NR scale 1.00 -> 0.[5-9]",
+                "D3D9 bridge frame 601: XeFG presenter, NR true at scale 0.[5-9]\d")
 
 $cases = @(
     # Final image off (the default): the D3D9 route only draws the menu, no D3D12 device.
@@ -66,15 +68,22 @@ $cases = @(
     @{ Name = "ex-nr"; Args = @("--ex"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
     @{ Name = "chain-nr"; Args = @("--chain"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
     @{ Name = "msaa-nr"; Args = @("--msaa"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
-    @{ Name = "classic-fg"; Args = @("--cursor", "380x395"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
-    @{ Name = "ex-fg"; Args = @("--ex", "--cursor", "380x395"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
-    @{ Name = "msaa-fg"; Args = @("--msaa", "--cursor", "380x395"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
-    # The menu's Frame Generation section (its sidebar button at 337,241) is opened with XeFG running: generation
-    # stays on. Opening that tab turned frame generation off in the archived D3D9 build.
+    @{ Name = "classic-fg"; Args = @("--cursor", "380x395"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog
+       ClickLog = $fgClickLog },
+    @{ Name = "ex-fg"; Args = @("--ex", "--cursor", "380x395"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog
+       ClickLog = $fgClickLog },
+    @{ Name = "msaa-fg"; Args = @("--msaa", "--cursor", "380x395"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog
+       ClickLog = $fgClickLog },
+    # The menu's Frame Generation section (its sidebar button at 337,241) is opened with XeFG running over a still
+    # scene: the menu changes on screen and generation stays on. Opening that tab turned frame generation off in the
+    # archived D3D9 build.
     @{ Name = "fg-section"; Args = @("--cursor", "337x241"); Fg = $true; Frames = 320
-       Script = "150:menu,160:shot=fg-section-before,165:press,170:release,180:shot=fg-section,200:menu,300:motion=after"
+       Script = "130:still,150:menu,160:shot=fg-section-before,163:diff=fg-section-before,165:press,170:release," +
+                "180:shot=fg-section,183:diff=fg-section-before,200:menu,210:still,300:motion=after"
        Log = @("D3D9 bridge frame \d+: frame generation on", "D3D9 bridge frame \d+: menu open")
-       NotLog = @("D3D9 bridge frame (1[5-9]\d|2\d\d|3\d\d): frame generation off") },
+       NotLog = @("D3D9 bridge frame (1[5-9]\d|2\d\d|3\d\d): frame generation off")
+       ClickOut = @("(?s)diff fg-section-before: [0-9.]+ of the pixels changed, mean difference 0\.[0-4].*" +
+               "diff fg-section-before: [0-9.]+ of the pixels changed, mean difference (?:[1-9]|0\.[5-9])") },
     # The game moves to a new window: after two quiet seconds on the old one the bridge follows it. With FG the
     # presenter is released and D3D9 presents from then on, with the menu on the D3D9 device.
     @{ Name = "window-nr"; Args = @(); Fg = $false; Frames = 700
@@ -166,13 +175,20 @@ foreach ($c in $cases) {
     foreach ($pattern in $c.Log) { if ($log -notmatch $pattern) { $problems += "log lacks: $pattern" } }
     foreach ($pattern in $c.NotLog) { if ($log -match $pattern) { $problems += "log has: $pattern" } }
     foreach ($pattern in $c.Out) { if ($stdout -notmatch $pattern) { $problems += "output lacks: $pattern" } }
+    $note = ""
+    if ($stdout -match "injected mouse input does not reach the desktop") {
+        if ($c.ClickLog -or $c.ClickOut) { $note = " (menu clicks did not reach the desktop: click checks skipped)" }
+    } else {
+        foreach ($pattern in $c.ClickLog) { if ($log -notmatch $pattern) { $problems += "log lacks: $pattern" } }
+        foreach ($pattern in $c.ClickOut) { if ($stdout -notmatch $pattern) { $problems += "output lacks: $pattern" } }
+    }
     foreach ($line in ($stdout -split "`r?`n" | Where-Object { $_ -match "^motion (\S+): ([0-9.]+)" })) {
         $null = $line -match "^motion (\S+): ([0-9.]+)"
         if ([double]$Matches[2] -lt 0.02) { $problems += "frozen on screen: $line" }
     }
     if ($log -match "\[error\].*D3D9") { $problems += "D3D9 error in the log" }
 
-    Write-Host "== $($c.Name): $(if ($problems.Count) { 'FAIL' } else { 'PASS' })"
+    Write-Host "== $($c.Name): $(if ($problems.Count) { 'FAIL' } else { 'PASS' })$note"
     $stdout -split "`r?`n" | Where-Object { $_ -match "^(phase|motion|shot|reset|diff)" } | ForEach-Object { Write-Host "   $_" }
     foreach ($p in $problems) { Write-Host "   $p" }
     if ($problems.Count) { $failed += $c.Name }

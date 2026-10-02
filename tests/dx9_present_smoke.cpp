@@ -51,6 +51,22 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM w, LPARAM l)
     return DefWindowProcW(hwnd, message, w, l);
 }
 
+// A left-button press or release as a mouse would send it. OptiScaler drops the game's own SendInput mouse events
+// while its menu is open, so this goes to win32u directly, below that hook.
+void Click(bool down)
+{
+    using SendInputFn = UINT(WINAPI*)(UINT, LPINPUT, int);
+    static const auto send =
+        reinterpret_cast<SendInputFn>(GetProcAddress(LoadLibraryW(L"win32u.dll"), "NtUserSendInput"));
+
+    INPUT input {};
+    input.type = INPUT_MOUSE;
+    input.mi.dwFlags = down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
+
+    if (send == nullptr || send(1, &input, sizeof(INPUT)) != 1)
+        std::printf("  the mouse %s could not be sent\n", down ? "press" : "release");
+}
+
 void Pump()
 {
     MSG message;
@@ -271,16 +287,18 @@ int main(int argc, char** argv)
 
     // Before OptiScaler's menu holds the cursor: this is where the script's clicks land. A process started in the
     // background cannot take the foreground with SetForegroundWindow, and the first click on an inactive window
-    // only activates it, so click once here.
+    // only activates it, so click once here. Another program on the desktop can keep injected input from landing
+    // at all (the cursor stays put, the button never reads as down); the runner then skips its click checks.
     if (cursor.x >= 0 && ClientToScreen(window, &cursor))
     {
         SetCursorPos(cursor.x, cursor.y);
-        INPUT click[2] {};
-        click[0].type = click[1].type = INPUT_MOUSE;
-        click[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-        click[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
-        SendInput(2, click, sizeof(INPUT));
+        Click(true);
+        const bool landed = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+        Click(false);
         Pump();
+
+        if (!landed)
+            std::printf("injected mouse input does not reach the desktop\n");
     }
 
     IDirect3D9* api = nullptr;
@@ -405,10 +423,7 @@ int main(int argc, char** argv)
             }
             else if (action == "press" || action == "release")
             {
-                INPUT input {};
-                input.type = INPUT_MOUSE;
-                input.mi.dwFlags = action == "release" ? MOUSEEVENTF_LEFTUP : MOUSEEVENTF_LEFTDOWN;
-                SendInput(1, &input, sizeof(INPUT));
+                Click(action == "press");
             }
             else if (action.rfind("mark=", 0) == 0)
                 endPhase(action.substr(5));
