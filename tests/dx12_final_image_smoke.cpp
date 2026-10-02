@@ -3,7 +3,8 @@
 //
 //   dx12_final_image_smoke.exe <nr|fg> [--bgra] [--debug-layer] [--lock <dir>] [--timeout <seconds>]
 //                              [--log-level <OptiScaler LogLevel, 2 by default>] [--cpu-ms <game CPU ms per frame>]
-//                              [--dump] [--lifecycle] [--nr-off-start] [--no-probe] [--set <Section/Key=Value>]
+//                              [--dump] [--lifecycle] [--nr-off-start] [--bad-runtime] [--r10] [--no-probe]
+//                              [--set <Section/Key=Value>]
 //
 // The parent writes OptiScaler.ini from OptiScaler.template.ini, takes the GPU lock, runs itself as a
 // child with a timeout and asserts on the child's results and on OptiScaler.log. The child renders a
@@ -15,6 +16,8 @@
 // object to WARP and back. Named rdr.exe, the test gets Red Dead Redemption's quirk: a plain first swapchain,
 // XeFG's on the next.
 // --nr-off-start starts with NR off in the INI and turns it on with Numpad 5.
+// --bad-runtime puts another DLL in dlssnr_amd_pass1.dll's place for the run, so the runtime fails to load.
+// --r10 presents R10G10B10A2 frames, which final-image NR leaves alone and XeFG gets no guides for.
 #define NOMINMAX
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
@@ -182,9 +185,11 @@ struct Options
     double cpuMs = 0;                   // simulated game CPU time per frame, before recording
     bool dump = false;                  // writes each phase's first probe frame as <phase>.bmp
     bool bgra = false;
+    bool r10 = false;
     bool debugLayer = false;
     bool lifecycle = false;   // swapchain on a new queue and again, the FG page, minimize, restore (nr: WARP device)
     bool nrOffStart = false;  // NR disabled in the INI and turned on with Numpad 5 later
+    bool badRuntime = false;  // another DLL as dlssnr_amd_pass1.dll: the runtime fails to load
     bool noProbe = false;     // no probe in the measured phases, so nothing but the game and OptiScaler use the frame
     bool stallStacks = false; // every thread's stack into stall-stacks.txt when a frame takes over 120 ms
 };
@@ -292,7 +297,9 @@ struct App
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         Check(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue)), "CreateCommandQueue");
 
-        format = options.bgra ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
+        format = options.r10    ? DXGI_FORMAT_R10G10B10A2_UNORM
+                 : options.bgra ? DXGI_FORMAT_B8G8R8A8_UNORM
+                                : DXGI_FORMAT_R8G8B8A8_UNORM;
         BOOL tearing = FALSE;
         factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof(tearing));
         swapFlags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
@@ -889,11 +896,11 @@ static int Child(const Options& options)
     { return std::chrono::duration<double>(Clock::now() - since).count(); };
 
     // Warm-up: the runtime loads, optical flow settles, XeFG starts. Ends when a probe sees NR, or after a few
-    // seconds when NR starts off.
+    // seconds when NR starts off or cannot load.
     auto start = Clock::now();
     auto lastProbe = start;
     bool warm = false;
-    while (Seconds(start) < (options.nrOffStart ? 6 : 60) && !warm)
+    while (Seconds(start) < (options.nrOffStart || options.badRuntime || options.r10 ? 6 : 60) && !warm)
     {
         if (!Pump())
             break;
@@ -1175,9 +1182,35 @@ static void WriteStacks(HANDLE process, DWORD pid, const fs::path& file, const c
     SymCleanup(process);
 }
 
+// Another DLL in the runtime's place for one run; the runtime goes back after it.
+struct BadRuntime
+{
+    fs::path runtime = Here() / L"dlssnr_amd_pass1.dll", kept = Here() / L"dlssnr_amd_pass1.kept";
+    bool swapped = false;
+    explicit BadRuntime(bool on)
+    {
+        std::error_code ec;
+        if (!on)
+            return;
+        fs::rename(runtime, kept, ec);
+        swapped = !ec;
+        if (swapped)
+            fs::copy_file(Here() / L"OptiScaler" / L"libxell.dll", runtime, ec);
+    }
+    ~BadRuntime()
+    {
+        std::error_code ec;
+        if (!swapped)
+            return;
+        fs::remove(runtime, ec);
+        fs::rename(kept, runtime, ec);
+    }
+};
+
 static int Parent(const Options& options, const std::wstring& lock, DWORD timeoutSeconds, const std::wstring& args)
 {
     const auto dir = Here();
+    const BadRuntime badRuntime(options.badRuntime);
     std::error_code ec;
     if (!fs::copy_file(dir / L"OptiScaler.template.ini", dir / L"OptiScaler.ini", fs::copy_options::overwrite_existing,
                        ec))
@@ -1313,7 +1346,8 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
         expect(Count(log, "OptiInput::ApplyMenuVisibilityChangeLocked menu visibility changed 1 -> 0") >= 2,
                "menu closed twice");
         // A Model scale change restarts the runtime's history for its settings.
-        expect(SettingsResets(runtimeLog) >= 1, "Model scale changed from the menu during the session");
+        if (!options.badRuntime && !options.r10)
+            expect(SettingsResets(runtimeLog) >= 1, "Model scale changed from the menu during the session");
         withNr = {
             "steady", "menu-open", "menu-closed", "fg-off", "fg-on", "nr-on", "scale", "resized", "menu-resized"
         };
@@ -1322,6 +1356,36 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
         generating = { "steady", "menu-open", "menu-closed", "fg-on",       "nr-off",
                        "nr-on",  "scale",     "resized",     "menu-resized" };
         single = { "fg-off" };
+    }
+    // Final-image NR takes 8-bit frames only, and XeFG's guides come from the same frame.
+    if (options.r10)
+    {
+        expect(Count(log, "Final-image NR: backbuffer format 24 is not RGBA8 or BGRA8") == 1,
+               "OptiScaler.log names the R10G10B10A2 backbuffer once");
+        for (auto name : withNr)
+            if (std::string(name) != "menu-open" && std::string(name) != "menu-resized")
+                withoutNr.push_back(name);
+        withNr.clear();
+        single.insert(single.end(), generating.begin(), generating.end());
+        generating.clear();
+    }
+    // A runtime that cannot load leaves every frame as the game drew it, and without frame generation it costs
+    // no GPU work: the frame ends before the copy and the optical flow.
+    if (options.badRuntime)
+    {
+        expect(badRuntime.swapped && Count(runtimeLog, "Private AMD runtime hash mismatch") >= 1,
+               "the runtime fails to load");
+        expect(Count(log, "Final-image NR: runtime failed") == 1, "OptiScaler.log names the failed runtime once");
+        expect(Count(log, "runtime still busy") == 0, "a failed runtime is not reported as busy");
+        for (auto name : withNr)
+            if (std::string(name) != "menu-open" && std::string(name) != "menu-resized")
+                withoutNr.push_back(name);
+        withNr.clear();
+        if (!fg)
+        {
+            std::printf("info: steady %.1f fps, nr-off %.1f fps\n", phase("steady").fps, phase("nr-off").fps);
+            expect(phase("steady").fps > 0.6 * phase("nr-off").fps, "a failed runtime runs as fast as NR off");
+        }
     }
     if (!options.noProbe)
     {
@@ -1403,6 +1467,8 @@ int wmain(int argc, wchar_t** argv)
             child = true;
         else if (arg == L"--bgra")
             options.bgra = true;
+        else if (arg == L"--r10")
+            options.r10 = true;
         else if (arg == L"--debug-layer")
             options.debugLayer = true;
         else if (arg == L"--lock" && i + 1 < argc)
@@ -1413,6 +1479,8 @@ int wmain(int argc, wchar_t** argv)
             options.lifecycle = true;
         else if (arg == L"--nr-off-start")
             options.nrOffStart = true;
+        else if (arg == L"--bad-runtime")
+            options.badRuntime = true;
         else if (arg == L"--no-probe")
             options.noProbe = true;
         else if (arg == L"--stall-stacks")
@@ -1434,18 +1502,20 @@ int wmain(int argc, wchar_t** argv)
     if (options.scenario != "nr" && options.scenario != "fg")
     {
         std::printf("usage: dx12_final_image_smoke.exe <nr|fg> [--bgra] [--debug-layer] [--lifecycle] "
-                    "[--nr-off-start] [--no-probe] [--lock <dir>] [--timeout <seconds>]\n");
+                    "[--nr-off-start] [--bad-runtime] [--r10] [--no-probe] [--lock <dir>] [--timeout <seconds>]\n");
         return 2;
     }
     if (child)
         return Child(options);
     std::wstring args(options.scenario.begin(), options.scenario.end());
     args += options.bgra ? L" --bgra" : L"";
+    args += options.r10 ? L" --r10" : L"";
     args += options.debugLayer ? L" --debug-layer" : L"";
     args += options.cpuMs > 0 ? L" --cpu-ms " + std::to_wstring(options.cpuMs) : L"";
     args += options.dump ? L" --dump" : L"";
     args += options.lifecycle ? L" --lifecycle" : L"";
     args += options.nrOffStart ? L" --nr-off-start" : L"";
+    args += options.badRuntime ? L" --bad-runtime" : L"";
     args += options.noProbe ? L" --no-probe" : L"";
     args += options.stallStacks ? L" --stall-stacks" : L"";
     return Parent(options, lock, timeout, args);

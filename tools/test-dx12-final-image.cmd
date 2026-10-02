@@ -5,8 +5,10 @@ rem Needs the AMD GPU; each scenario holds wt\locks\gpu while it renders when th
 rem   tools\test-dx12-final-image.cmd <dlssnr_amd_pass1.dll or version.dll> <dlssnr_on_amd_weights.bin>
 rem                                   <folder with libxess_fg.dll and libxell.dll> [scenario args...]
 rem Without scenario args it runs: nr, fg, fg --bgra, fg --cpu-ms 6 (a game's CPU time per frame),
-rem fg --debug-layer, nr --lifecycle, fg --lifecycle, fg --lifecycle --nr-off-start, and fg --lifecycle
-rem as rdr.exe (Red Dead Redemption's quirk: a plain first swapchain, XeFG's on the next).
+rem fg --debug-layer, nr --lifecycle, fg --lifecycle, fg --lifecycle --nr-off-start, nr and fg with
+rem --bad-runtime (another DLL in the runtime's place), fg --r10 (a 10-bit backbuffer, which final-image
+rem NR leaves alone), and fg --lifecycle as rdr.exe (Red Dead Redemption's quirk: a plain first
+rem swapchain, XeFG's on the next).
 rem With scenario args, set SMOKE_EXE=rdr.exe first to run them under that name.
 setlocal
 cd /d "%~dp0.."
@@ -42,6 +44,9 @@ call :run fg --debug-layer
 call :run nr --lifecycle
 call :run fg --lifecycle
 call :run fg --lifecycle --nr-off-start
+call :run nr --bad-runtime
+call :run fg --bad-runtime
+call :run fg --r10
 set "SMOKE_EXE=rdr.exe"
 call :run fg --lifecycle
 :done
