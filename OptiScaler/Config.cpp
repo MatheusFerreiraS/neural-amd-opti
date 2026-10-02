@@ -1713,9 +1713,9 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "AmdEffectStrength",
                      GetFloatValue(Instance()->AmdEffectStrength.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdStabilizerStrength",
-                     GetFloatValue(Instance()->AmdStabilizerStrength.value_for_config()).c_str());
+                     GetFloatValue(Instance()->AmdStabilizerStrength.value_for_config_ignore_default()).c_str());
         ini.SetValue("DlssNr", "AmdStabilizerThreshold",
-                     GetFloatValue(Instance()->AmdStabilizerThreshold.value_for_config()).c_str());
+                     GetFloatValue(Instance()->AmdStabilizerThreshold.value_for_config_ignore_default()).c_str());
         ini.SetValue("DlssNr", "RenoComposition",
                      GetBoolValue(Instance()->DlssNrRenoComposition.value_for_config()).c_str());
         ini.SetValue("DlssNr", "RenoIntensity",

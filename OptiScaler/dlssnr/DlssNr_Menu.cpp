@@ -242,6 +242,10 @@ void RenderMenu(Config* config, float menuResScale)
                    "\nFidelityFX estimates motion. D3D11 uses a bound shader-readable depth buffer when available."
                    "\nVulkan shares the image with D3D12 when the driver permits; otherwise host readback adds latency."
                    "\nScene cuts reset history; the runtime noise seed is fixed on supported versions.");
+        if (present && DlssNr::Backend::ActiveKindFromConfig() != DlssNr::Backend::Kind::Daniel)
+            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f),
+                               "The final image runs on the danielblnc runtime only. This session's runtime"
+                               "\nruns inside an upscaler call, so a game without one gets no NR.");
 
         // With more than one runtime installed, choose the one the next launch uses. This session keeps the
         // one it started with: each installs its own D3D12 hooks as the device is created.
@@ -786,9 +790,15 @@ void RenderMenu(Config* config, float menuResScale)
                 scheduling();
             ImGui::TextWrapped(
                 "Final-image neural: optical flow, scene resets, fixed noise seed and depth when available. Includes game HUD.");
-            ImGui::TextUnformatted("D3D11/D3D12 final image; HUD included.");
-            float scale = std::clamp(config->AmdNrScale.value_or_default(), .5f, 1.f);
-            if (ImGui::SliderFloat("Model scale", &scale, .5f, 1.f))
+            ImGui::TextUnformatted("D3D11, D3D12 and Vulkan. RenoDX composition does not apply here.");
+            static float scale = 1.f;
+            static bool editingScale = false;
+            if (!editingScale)
+                scale = std::clamp(config->AmdNrScale.value_or_default(), .5f, 1.f);
+            ImGui::SliderFloat("Model scale", &scale, .5f, 1.f);
+            editingScale = ImGui::IsItemActive();
+            // Commit once on release: every change rebuilds the model.
+            if (ImGui::IsItemDeactivatedAfterEdit())
                 config->AmdNrScale = scale;
             ImGui::TextWrapped("%s", AmdPresentExperimental::Status().c_str());
         }
@@ -915,7 +925,7 @@ void RenderMenu(Config* config, float menuResScale)
                     }
                 // One strength for both ways of putting the network back: the runtime's Scale, or with the RenoDX
                 // composition on, the composition's intensity.
-                const bool composing = config->DlssNrRenoComposition.value_or_default();
+                const bool composing = !finalImage && config->DlssNrRenoComposition.value_or_default();
                 ImGui::BeginDisabled(!hasScale && !composing);
                 static float strength = 100.f;
                 static bool editingStrength = false;
@@ -956,7 +966,9 @@ void RenderMenu(Config* config, float menuResScale)
             neuralSlider("Lightning Strength", config->AmdNeuralLightingStrength, 0, 1);
             neuralSlider("AMD structure", config->DlssNrLocalStructure, 0, 2);
             neuralSlider("AMD character structure", config->DlssNrSkinStructure, 0, 2);
+            ImGui::BeginDisabled(finalImage);
             RenoCompositionControls(config, false);
+            ImGui::EndDisabled();
             ImGui::SeparatorText("Colour");
             ImGui::BeginDisabled(!hasToneCurve);
             int style = std::clamp(config->AmdStyle.value_or_default(), 0, 2);
@@ -1142,7 +1154,7 @@ void RenderMenu(Config* config, float menuResScale)
 
             if (ImGui::TreeNode("Info"))
             {
-                if (!finalImage)
+                if (!finalImage || State::Instance().currentFeature)
                     ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
                 ImGui::TextWrapped("AMD HIP backend. Each pass owns independent temporal history. More passes increase "
                                    "GPU time and memory. Restart the game after a backend failure.");

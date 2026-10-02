@@ -271,7 +271,7 @@ class Config
     // DLSS Neural Rendering: a detail-synthesis pass over the upscaler's output. Off by default -- it is
     // an undocumented feature driven directly through its snippet, not something NVIDIA exposes.
     CustomOptional<bool> DlssNrEnabled { false };
-    // Run AMD NR on the final D3D11/D3D12 swapchain image when the game has no upscaler.
+    // Run AMD NR (danielblnc) on the final D3D11, D3D12 or Vulkan swapchain image when the game has no upscaler.
     CustomOptional<bool> DlssNrPresent { false };
     // Run the NR pass on the upscaler's colour input, at render resolution, immediately before SR.
     // Off preserves the v0.2.0 post-upscale placement.
