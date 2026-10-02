@@ -6,6 +6,8 @@ rem and a build with its PDB (tools\build-optiscaler-fast.cmd writes one; OPTI_B
 rem   tools\test-dx11-final-image.cmd <runtime folder> <release OptiScaler folder> [fg^|nr^|all] [seconds per phase]
 rem <runtime folder> holds dlssnr_amd_pass1.dll and dlssnr_on_amd_weights.bin; <release OptiScaler
 rem folder> is the OptiScaler\ folder of a release zip (libxess_fg.dll, libxell.dll, FidelityFX).
+rem all runs nr and fg, then fgoff (FG off and on), resize (nine ResizeBuffers with FG on, every other one with the
+rem menu open) and pace (XeFG's present cadence, and one present per game frame with FG off).
 setlocal
 cd /d "%~dp0.."
 if "%~2"=="" goto usage
@@ -29,6 +31,9 @@ if not %errorlevel%==0 exit /b 2
 set "RESULT=0"
 if /i not "%MODE%"=="fg" call :Run nr %4
 if /i not "%MODE%"=="nr" call :Run fg %4
+if /i "%MODE%"=="all" call :Run fgoff %4
+if /i "%MODE%"=="all" call :Run resize 2
+if /i "%MODE%"=="all" call :Run pace %4
 exit /b %RESULT%
 
 :Run

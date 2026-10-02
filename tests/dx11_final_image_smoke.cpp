@@ -7,7 +7,8 @@
 // the PDB, the same fields the menu writes. Checks read OptiScaler.log, amd_presr.log, the DXGI
 // present count, the RivaTuner Statistics Server shared memory when RTSS runs, and the screen.
 //
-//   dx11_final_image_smoke.exe fg|nr|keys|focus [seconds per phase] [log level] [Section/Key=Value ...]
+//   dx11_final_image_smoke.exe fg|nr|keys|focus|fgoff|resize|menu|pace [seconds per phase] [log level]
+//   [Section/Key=Value ...]
 #define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
@@ -21,6 +22,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -116,7 +118,9 @@ struct Opti
     ULONG configType = 0;
     bool* menuVisible = nullptr;
     int* menuSection = nullptr;
+    // The NR status the menu shows and the mutex it is read under (same toolset and CRT as OptiScaler).
     const std::string* nrStatus = nullptr;
+    std::mutex* nrStatusMutex = nullptr;
 
     void Load(HMODULE module)
     {
@@ -131,7 +135,8 @@ struct Opti
         config = *(BYTE**) configPointer;
         menuVisible = (bool*) Address(L"MenuCommon::_isVisible");
         menuSection = (int*) Address(L"selectedTab");
-        nrStatus = (const std::string*) Address(L"AmdPresentExperimental::status");
+        nrStatus = (const std::string*) Address(L"AmdPresentExperimental::shown");
+        nrStatusMutex = (std::mutex*) Address(L"AmdPresentExperimental::shownMutex");
         SYMBOL_INFOW type {};
         type.SizeOfStruct = sizeof(type);
         check(SymGetTypeFromNameW(process, base, L"Config", &type) ? S_OK : E_FAIL, "Config type");
@@ -177,11 +182,16 @@ struct Opti
         std::memcpy(field, &value, sizeof(T));
         field[sizeof(T)] = 1;
     }
+    std::string Status() const
+    {
+        std::lock_guard lock(*nrStatusMutex);
+        return *nrStatus;
+    }
     // Frames the NR runtime completed, from the status line the Neural section shows.
     unsigned NrFrames() const
     {
         static unsigned last = 0;
-        const std::string text = *nrStatus;
+        const std::string text = Status();
         const size_t at = text.find("completed frames=");
         if (at != std::string::npos)
             last = (unsigned) std::strtoul(text.c_str() + at + 17, nullptr, 10);
@@ -209,7 +219,9 @@ static void PrintFrame(DWORD64 address)
     if (module)
         GetModuleFileNameA(module, moduleName, MAX_PATH);
     const bool named = SymFromAddr(GetCurrentProcess(), address, &displacement, symbol);
-    std::printf("    %s!%s+0x%llx\n", fs::path(moduleName).filename().string().c_str(), named ? symbol->Name : "?",
+    if (!named)
+        displacement = address - (DWORD64) module; // module offset when there are no symbols
+    std::printf("    %s!%s+0x%llx\n", fs::path(moduleName).filename().string().c_str(), named ? symbol->Name : "",
                 (unsigned long long) displacement);
 }
 // Where a thread is stuck.
@@ -259,6 +271,7 @@ static LONG CALLBACK Crash(EXCEPTION_POINTERS* info)
         return EXCEPTION_CONTINUE_SEARCH;
     std::printf("exception 0x%08X at %p during \"%s\"\n", (unsigned) code, info->ExceptionRecord->ExceptionAddress,
                 phaseName.load());
+    PrintFrame((DWORD64) info->ExceptionRecord->ExceptionAddress);
     void* frames[48];
     const USHORT count = RtlCaptureStackBackTrace(0, 48, frames, nullptr);
     std::vector<BYTE> storage(sizeof(SYMBOL_INFO) + 256);
@@ -275,8 +288,10 @@ static LONG CALLBACK Crash(EXCEPTION_POINTERS* info)
         if (module)
             GetModuleFileNameA(module, moduleName, MAX_PATH);
         const bool named = SymFromAddr(GetCurrentProcess(), (DWORD64) frames[i], &displacement, symbol);
+        if (!named)
+            displacement = (DWORD64) frames[i] - (DWORD64) module;
         std::printf("  %2u %s!%s+0x%llx\n", i, fs::path(moduleName).filename().string().c_str(),
-                    named ? symbol->Name : "?", (unsigned long long) displacement);
+                    named ? symbol->Name : "", (unsigned long long) displacement);
     }
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -601,8 +616,8 @@ struct Game
 // ---- Phases -----------------------------------------------------------------------------------
 struct Stats
 {
-    double average = 0, p99 = 0, worst = 0, presentsPerFrame = 0, rtss = 0, appFps = 0;
-    unsigned frames = 0, nr = 0;
+    double average = 0, median = 0, p99 = 0, worst = 0, presentsPerFrame = 0, rtss = 0, appFps = 0;
+    unsigned frames = 0, nr = 0, slow = 0; // slow: frames over 2.5 times the median
 };
 static Stats Run(const char* name, double seconds, bool quiet = false)
 {
@@ -640,15 +655,17 @@ static Stats Run(const char* name, double seconds, bool quiet = false)
     std::sort(sorted.begin(), sorted.end());
     for (double t : times)
         s.average += t / times.size();
+    s.median = sorted[sorted.size() / 2];
     s.p99 = sorted[(size_t) (sorted.size() * 0.99)];
     s.worst = sorted.back();
+    s.slow = (unsigned) std::count_if(times.begin(), times.end(), [&](double t) { return t > s.median * 2.5; });
     s.presentsPerFrame = double(presents1 - presents0) / times.size();
     s.appFps = 1000.0 / s.average;
     s.rtss = rtss;
     if (!quiet)
         std::printf("  [%-22s] frames %5u  avg %6.2f ms  p99 %6.2f ms  max %7.2f ms  app %6.1f fps  "
-                    "presents/frame %4.2f  rtss %6.1f fps  NR %u\n",
-                    name, s.frames, s.average, s.p99, s.worst, s.appFps, s.presentsPerFrame, s.rtss, s.nr);
+                    "presents/frame %4.2f  rtss %6.1f fps  NR %u  slow %u\n",
+                    name, s.frames, s.average, s.p99, s.worst, s.appFps, s.presentsPerFrame, s.rtss, s.nr, s.slow);
     return s;
 }
 static void Press(WORD vk)
@@ -659,6 +676,37 @@ static void Press(WORD vk)
     Key(vk, true);
     Run("key up", 0.25, true);
 }
+// ---- Present cadence ----------------------------------------------------------------------------
+// At debug level OptiScaler logs the time since the previous present of the swapchain XeFG presents to ("Frametime:").
+// Presents a few ms apart reach a 120 Hz screen as one; generated frames bunched that way are not seen.
+struct Cadence
+{
+    unsigned presents = 0, bunched = 0;
+    double p10 = 0, p50 = 0, p90 = 0;
+};
+static Cadence PresentCadence(const Logs& from)
+{
+    Cadence c;
+    const std::string log = ReadShared(dir / "OptiScaler.log");
+    std::vector<double> gaps;
+    const char* token = "LocalPresent SyncInterval: ";
+    for (size_t at = log.find(token, from.opti); at != std::string::npos; at = log.find(token, at + 1))
+    {
+        const size_t time = log.find("Frametime: ", at);
+        if (time != std::string::npos && time < log.find('\n', at))
+            gaps.push_back(std::atof(log.c_str() + time + 11));
+    }
+    if (gaps.empty())
+        return c;
+    std::sort(gaps.begin(), gaps.end());
+    c.presents = (unsigned) gaps.size();
+    c.bunched = (unsigned) std::count_if(gaps.begin(), gaps.end(), [](double g) { return g < 4.0; });
+    c.p10 = gaps[gaps.size() / 10];
+    c.p50 = gaps[gaps.size() / 2];
+    c.p90 = gaps[gaps.size() * 9 / 10];
+    return c;
+}
+
 // The image on screen keeps moving: two looks a little apart differ.
 static bool Moving()
 {
@@ -681,10 +729,12 @@ int wmain(int argc, wchar_t** argv)
         dir = fs::path(self).parent_path();
         const std::wstring mode = argc > 1 ? argv[1] : L"fg";
         const double phase = argc > 2 ? _wtof(argv[2]) : 4.0;
-        const bool fg = mode == L"fg" || mode == L"focus" || mode == L"fgoff";
+        const bool fg = mode == L"fg" || mode == L"focus" || mode == L"fgoff" || mode == L"resize" || mode == L"menu" ||
+                        mode == L"pace";
         fs::remove(dir / "OptiScaler.log");
         fs::remove(dir / "amd_presr.log");
-        WriteIni(fg, argc > 3 ? argv[3] : nullptr, std::vector<std::wstring>(argv + std::min(argc, 4), argv + argc));
+        WriteIni(fg, argc > 3 ? argv[3] : (mode == L"pace" ? L"1" : nullptr),
+                 std::vector<std::wstring>(argv + std::min(argc, 4), argv + argc));
 
         // Nothing must hang: a phase that stops presenting for 30 s fails the run.
         HANDLE mainThread = nullptr;
@@ -757,6 +807,59 @@ int wmain(int argc, wchar_t** argv)
         }
         const double expected = fg ? 3.0 : 1.0;
         auto FgShowing = [&](const Stats& s) { return s.presentsPerFrame > expected - 0.5; };
+        if (mode == L"pace")
+        {
+            // How XeFG spaces its presents with FG on, and how many presents a game frame makes with FG off.
+            Logs mark;
+            mark.Mark();
+            const Stats on = Run("FG on", phase);
+            const Cadence fgOn = PresentCadence(mark);
+            std::printf("  FG on: %u presents for %u game frames, time between presents p10 %.2f p50 %.2f p90 %.2f ms, "
+                        "%u under 4 ms\n",
+                        fgOn.presents, on.frames, fgOn.p10, fgOn.p50, fgOn.p90, fgOn.bunched);
+            expect(fgOn.presents > on.frames * 5 / 2, "FG on: XeFG presents about 3 frames per game frame");
+            // Measured, not checked: on the test machine about one present per game frame comes under 4 ms after the
+            // previous one, with XeFG ExtraPacing on or off.
+            Press(VK_END);
+            Run("FG off settle", 1, true);
+            mark.Mark();
+            const Stats off = Run("FG off", phase);
+            const Cadence fgOff = PresentCadence(mark);
+            std::printf("  FG off: %u presents for %u game frames\n", fgOff.presents, off.frames);
+            expect(fgOff.presents <= off.frames + 2, "FG off: one present per game frame");
+            std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
+            return failures ? 1 : 0;
+        }
+        if (mode == L"resize")
+        {
+            // ResizeBuffers over and over with FG on, every other one with the menu open.
+            static const UINT sizes[][2] = { { 1600, 900 }, { 1280, 720 }, { 1440, 810 } };
+            for (int round = 0; round < 9; ++round)
+            {
+                const bool menu = round % 2 == 1;
+                if (menu)
+                    Press(VK_INSERT);
+                RECT frame { 0, 0, (LONG) sizes[round % 3][0], (LONG) sizes[round % 3][1] };
+                AdjustWindowRect(&frame, WS_OVERLAPPEDWINDOW, FALSE);
+                SetWindowPos(window, nullptr, 0, 0, frame.right - frame.left, frame.bottom - frame.top,
+                             SWP_NOMOVE | SWP_NOZORDER);
+                Run("resize settle", 2, true);
+                Stats after = Run(menu ? "resized, menu open" : "resized", phase);
+                expect(width == sizes[round % 3][0], "window resized");
+                expect(after.nr > after.frames * 9 / 10, "NR runs after ResizeBuffers");
+                expect(FgShowing(after), "XeFG presents generated frames after ResizeBuffers");
+                if (menu)
+                {
+                    expect(*opti.menuVisible, "menu stays open through ResizeBuffers");
+                    Press(VK_INSERT);
+                }
+            }
+            const auto log = ReadShared(dir / "OptiScaler.log");
+            expect(Count(log, "DEVICE_HUNG") == 0 && Count(log, "887A0005") == 0 && Count(log, "Device removed") == 0,
+                   "no device removal");
+            std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
+            return failures ? 1 : 0;
+        }
         if (mode == L"fgoff")
         {
             // FG off and on only: what an overlay counts, and NR once per game frame.
@@ -768,13 +871,18 @@ int wmain(int argc, wchar_t** argv)
                 Stats off = Run("FG off", phase);
                 expect(off.presentsPerFrame < 1.5, "End turns XeFG off (one present per game frame)");
                 expect(off.nr > off.frames * 9 / 10 && off.nr <= off.frames + 2, "NR once per frame with FG off");
-                char text[160];
-                std::snprintf(text, sizeof(text), "RTSS reports %.1f fps for %.1f game fps with FG off", off.rtss,
-                              off.appFps);
-                expect(off.rtss > 0 && off.rtss < off.appFps * 1.3, text);
-                std::snprintf(text, sizeof(text), "RTSS reports %.1f fps for %.1f game fps with FG on", on.rtss,
-                              on.appFps);
-                expect(on.rtss > on.appFps * 2.5, text);
+                if (off.rtss > 0 && on.rtss > 0)
+                {
+                    char text[160];
+                    std::snprintf(text, sizeof(text), "RTSS reports %.1f fps for %.1f game fps with FG off", off.rtss,
+                                  off.appFps);
+                    expect(off.rtss < off.appFps * 1.3, text);
+                    std::snprintf(text, sizeof(text), "RTSS reports %.1f fps for %.1f game fps with FG on", on.rtss,
+                                  on.appFps);
+                    expect(on.rtss > on.appFps * 2.5, text);
+                }
+                else
+                    std::printf("  RTSS is not running: its counter is not checked\n");
                 Press(VK_END);
                 Run("FG on settle", 2, true);
             }
@@ -822,6 +930,16 @@ int wmain(int argc, wchar_t** argv)
             std::snprintf(text, sizeof(text), "%s frame time %.2f ms vs %.2f ms closed", sections[i], open[i].average,
                           closed.average);
             expect(gap < std::max(1.5, closed.average * 0.25), text);
+            // Stalls hide in an average: the slowest frames of each section against the closed menu, before and after.
+            const double reference = std::max(closed.p99, after.p99);
+            std::snprintf(text, sizeof(text), "%s p99 %.2f ms vs %.2f ms closed", sections[i], open[i].p99, reference);
+            expect(open[i].p99 < std::max(reference * 1.5, reference + 8), text);
+        }
+
+        if (mode == L"menu")
+        {
+            std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
+            return failures ? 1 : 0;
         }
 
         // Camera: a fast pan costs no more than a still one.
@@ -859,7 +977,7 @@ int wmain(int argc, wchar_t** argv)
         opti.Set<uint32_t>(L"DlssNrPasses", 2);
         Run("passes settle", 3);
         Stats two = Run("NR 2 passes", phase);
-        expect(opti.nrStatus->find("passes=2") != std::string::npos && two.nr > two.frames * 9 / 10, "NR runs 2 passes");
+        expect(opti.Status().find("passes=2") != std::string::npos && two.nr > two.frames * 9 / 10, "NR runs 2 passes");
         if (fg)
             expect(FgShowing(two), "XeFG presents generated frames with 2 NR passes");
         expect(Moving(), "image moves with 2 NR passes");
@@ -931,7 +1049,9 @@ int wmain(int argc, wchar_t** argv)
 
         const auto log = ReadShared(dir / "OptiScaler.log");
         expect(Count(log, "GPU timeout") == 0 && Count(log, "restart required") == 0, "no NR stop in OptiScaler.log");
-        expect(Count(log, "DEVICE_REMOVED") == 0 && Count(log, "device removed") == 0, "no device removal");
+        expect(Count(log, "DEVICE_REMOVED") == 0 && Count(log, "DEVICE_HUNG") == 0 && Count(log, "887A0005") == 0 &&
+                   Count(log, "Device removed") == 0,
+               "no device removal");
         std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
         std::fflush(stdout);
         // Leave like a game that closes its window.
