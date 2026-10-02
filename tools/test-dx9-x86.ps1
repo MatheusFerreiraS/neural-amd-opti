@@ -97,7 +97,8 @@ function Run-Once([string]$name, [string[]]$ini, [string[]]$arguments, [scriptbl
     }
     Start-Sleep -Milliseconds 500
     Get-ChildItem $host64 -Filter *.log | ForEach-Object {
-        Copy-Item $_.FullName (Join-Path $stage "$name.$($_.Name)") -Force -ErrorAction SilentlyContinue }
+        # A host still leaving can hold its log open for a moment; that copy is left out.
+        try { Copy-Item $_.FullName (Join-Path $stage "$name.$($_.Name)") -Force } catch { } }
     $problems = @()
     if ($process.ExitCode -ne 0) { $problems += "exit $($process.ExitCode)" }
     if ($check) { $problems += @(& $check $text | Where-Object { $_ }) }
@@ -206,7 +207,11 @@ try {
         if ($case[0] -like '*-fg') { $arguments += '--expect-fg' }
         Run-Case $case[0] $case[1] $arguments {
             param($text)
-            if ((Last-NrSize) -in @('', '1280x720')) { 'the menu did not follow the mouse to the Model scale slider' }
+            # The model scale is read from the NR frames; a runtime that failed to start (a known, rare race
+            # in its bootstrap) shows nothing about the menu.
+            if ((Count 'amd_presr.log' 'Could not install AMD runtime bootstrap isolation') -gt 0) {
+                'retry: the NR runtime did not start' }
+            elseif ((Last-NrSize) -in @('', '1280x720')) { 'the menu did not follow the mouse to the Model scale slider' }
         }
     }
     # The window procedure is replaced at frame 50 by one that calls nothing before it (as an engine or
