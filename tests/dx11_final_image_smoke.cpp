@@ -8,8 +8,8 @@
 // present count, the RivaTuner Statistics Server shared memory when RTSS runs, and the screen (Desktop Duplication
 // counts what the compositor shows).
 //
-//   dx11_final_image_smoke.exe fg|nr|keys|focus|fgoff|resize|recreate|menu|pace [seconds per phase] [log level]
-//   [Section/Key=Value ...] [sync=1]
+//   dx11_final_image_smoke.exe fg|nr|keys|focus|fgoff|resize|recreate|menu|pace|artefacts
+//   [seconds per phase] [log level] [Section/Key=Value ...] [sync=1] [bgra=1] [tearing=1]
 #define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
@@ -18,6 +18,7 @@
 #include <dbghelp.h>
 #include <wrl/client.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <atomic>
 #include <cstdio>
@@ -29,6 +30,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "screen_look.h"
 
 using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
@@ -38,6 +40,8 @@ static int failures = 0;
 static std::atomic<unsigned> progress { 0 };
 static std::atomic<const char*> phaseName { "start" };
 static UINT syncInterval = 0; // sync=1 on the command line presents with vsync
+static bool bgra = false;     // bgra=1: a B8G8R8A8 back buffer, as the 32-bit D3D9 host has
+static bool tearing = false; // tearing=1: a swapchain that allows tearing, presented with it at interval 0, as the host
 
 static void check(HRESULT hr, const char* what)
 {
@@ -511,7 +515,7 @@ struct Game
     ComPtr<ID3D11PixelShader> ps;
     ComPtr<ID3D11Buffer> constants;
     ComPtr<ID3D11DepthStencilState> depthState;
-    float panX = 0, panY = 0, speed = 4, gpuLoad = 64, cpuMs = 2;
+    float panX = 0, panY = 0, speed = 4, gpuLoad = 64, cpuMs = 2, clock = 1, tilt = 0;
     double time = 0;
 
     void Create()
@@ -534,13 +538,14 @@ struct Game
         DXGI_SWAP_CHAIN_DESC desc {};
         desc.BufferDesc.Width = width;
         desc.BufferDesc.Height = height;
-        desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.BufferDesc.Format = bgra ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
         desc.SampleDesc.Count = 1;
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         desc.BufferCount = 2;
         desc.OutputWindow = window;
         desc.Windowed = TRUE;
         desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        desc.Flags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
         check(factory->CreateSwapChain(device.Get(), &desc, &swap), "CreateSwapChain");
     }
     // What a game does on a display mode or graphics settings change in many engines: drop the swapchain, make another.
@@ -597,7 +602,9 @@ struct Game
         target.Reset();
         depthView.Reset();
         context->Flush();
-        check(swap->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0), "ResizeBuffers");
+        check(swap->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN,
+                                  tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0),
+              "ResizeBuffers");
         Views();
     }
     HRESULT Frame()
@@ -607,9 +614,10 @@ struct Game
             resized = false;
             Resize();
         }
-        time += 1.0 / 60.0;
+        time += clock / 60.0;
         panX += speed;
-        panY += speed * 0.35f;
+        // tilt: the view also swings up and down, like a mouse look.
+        panY += speed * 0.35f + tilt * (float) std::sin(time * 3.0);
         const float data[8] = { panX, panY, (float) time, gpuLoad, (float) width, (float) height, 0, 0 };
         context->UpdateSubresource(constants.Get(), 0, nullptr, data, 0, 0);
         D3D11_VIEWPORT viewport { 0, 0, (float) width, (float) height, 0, 1 };
@@ -631,7 +639,7 @@ struct Game
             QueryPerformanceCounter(&now);
         while ((now.QuadPart - start.QuadPart) * 1000.0 / f.QuadPart < cpuMs);
         // The depth buffer stays bound through Present, as in most D3D11 games.
-        return swap->Present(syncInterval, 0);
+        return swap->Present(syncInterval, tearing && !syncInterval ? DXGI_PRESENT_ALLOW_TEARING : 0);
     }
 } game;
 
@@ -732,70 +740,28 @@ static Cadence PresentCadence(const Logs& from)
 // ---- What reaches the screen -------------------------------------------------------------------
 // Desktop Duplication hands over one frame per desktop update that touches the window. A present the compositor
 // replaces before the next refresh never reaches the screen and is not counted. It runs as a second copy of this exe
-// ("screens"), which loads the system dxgi.dll and never OptiScaler.
-static int CountScreenUpdates(double seconds, RECT area)
+// ("screens"), which loads the system dxgi.dll and never OptiScaler. With "look <name> [reference]" it also reads
+// every one of those frames back (tests\screen_look.h).
+static int CountScreenUpdates(double seconds, RECT area, const wchar_t* name = nullptr,
+                              const wchar_t* reference = nullptr)
 {
-    LoadLibraryExW(L"dxgi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    using FactoryFn = HRESULT(WINAPI*)(REFIID, void**);
-    auto create = (FactoryFn) GetProcAddress(GetModuleHandleW(L"dxgi.dll"), "CreateDXGIFactory1");
-    ComPtr<IDXGIFactory1> factory;
-    check(create ? create(IID_PPV_ARGS(&factory)) : E_FAIL, "CreateDXGIFactory1");
-    ComPtr<IDXGIAdapter1> adapter;
-    ComPtr<IDXGIOutput1> output;
-    DXGI_OUTPUT_DESC where {};
-    const POINT centre { (area.left + area.right) / 2, (area.top + area.bottom) / 2 };
-    for (UINT a = 0; !output && factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a)
-    {
-        ComPtr<IDXGIOutput> o;
-        for (UINT i = 0; !output && adapter->EnumOutputs(i, &o) != DXGI_ERROR_NOT_FOUND; ++i)
-            if (SUCCEEDED(o->GetDesc(&where)) && PtInRect(&where.DesktopCoordinates, centre))
-                o.As(&output);
-        if (!output)
-            adapter.Reset();
-    }
-    check(output ? S_OK : E_FAIL, "output holding the window");
-    ComPtr<ID3D11Device> device;
-    check(D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &device,
-                            nullptr, nullptr),
-          "D3D11CreateDevice");
-    ComPtr<IDXGIOutputDuplication> duplication;
-    check(output->DuplicateOutput(device.Get(), &duplication), "DuplicateOutput");
-    OffsetRect(&area, -where.DesktopCoordinates.left, -where.DesktopCoordinates.top);
-    unsigned updates = 0;
-    std::vector<BYTE> rects;
-    const ULONGLONG end = GetTickCount64() + ULONGLONG(seconds * 1000);
-    while (GetTickCount64() < end)
-    {
-        DXGI_OUTDUPL_FRAME_INFO info {};
-        ComPtr<IDXGIResource> image;
-        const HRESULT hr = duplication->AcquireNextFrame(50, &info, &image);
-        if (hr == DXGI_ERROR_WAIT_TIMEOUT)
-            continue;
-        check(hr, "AcquireNextFrame");
-        bool window = false;
-        if (info.LastPresentTime.QuadPart && info.TotalMetadataBufferSize)
-        {
-            rects.resize(info.TotalMetadataBufferSize);
-            UINT size = 0;
-            if (SUCCEEDED(duplication->GetFrameDirtyRects((UINT) rects.size(), (RECT*) rects.data(), &size)))
-                for (UINT i = 0; i < size / sizeof(RECT) && !window; ++i)
-                {
-                    RECT overlap;
-                    window = IntersectRect(&overlap, (RECT*) rects.data() + i, &area);
-                }
-        }
-        updates += window;
-        duplication->ReleaseFrame();
-    }
-    std::printf("%u\n", updates);
+    const ScreenLook l = LookAtScreen(seconds, area, dir.wstring(), name, reference);
+    check(l.error.empty() ? S_OK : E_FAIL, l.error.c_str());
+    if (!name)
+        std::printf("%u\n", l.updates);
+    else
+        std::printf("%u %u %u %u %u %u %u %.3f %.3f %.3f %.3f\n", l.updates, l.frames, l.black, l.rows, l.run, l.top,
+                    l.bottom, l.p10, l.p50, l.p90, l.mean);
     return 0;
 }
 // Starts counting what reaches the screen inside the window for the given time; Visible() returns frames per second.
+// With a name, Seen() returns what the screen showed (see CountScreenUpdates).
 struct ScreenCounter
 {
     HANDLE process = nullptr, output = nullptr;
     double seconds = 0;
-    void Start(double time)
+    std::string text;
+    void Start(double time, const wchar_t* name = nullptr, const wchar_t* reference = nullptr)
     {
         seconds = time;
         RECT client;
@@ -805,10 +771,11 @@ struct ScreenCounter
         HANDLE write = nullptr;
         CreatePipe(&output, &write, &inherit, 0);
         SetHandleInformation(output, HANDLE_FLAG_INHERIT, 0);
-        wchar_t self[MAX_PATH], line[400];
+        wchar_t self[MAX_PATH], line[600];
         GetModuleFileNameW(nullptr, self, MAX_PATH);
-        std::swprintf(line, 400, L"\"%s\" screens %.2f %ld %ld %ld %ld", self, seconds, client.left, client.top,
-                      client.right, client.bottom);
+        std::swprintf(line, 600, L"\"%s\" screens %.2f %ld %ld %ld %ld %s %s %s", self, seconds, client.left,
+                      client.top, client.right, client.bottom, name ? L"look" : L"", name ? name : L"",
+                      reference ? reference : L"");
         STARTUPINFOW si { sizeof(si) };
         si.dwFlags = STARTF_USESTDHANDLES;
         si.hStdOutput = si.hStdError = write;
@@ -820,18 +787,32 @@ struct ScreenCounter
         }
         CloseHandle(write);
     }
-    double Visible()
+    void Wait()
     {
+        text.clear();
         if (!process)
-            return 0;
-        WaitForSingleObject(process, 10000);
+            return;
+        WaitForSingleObject(process, 15000);
         CloseHandle(process);
-        char text[256] {};
+        char buffer[512] {};
         DWORD read = 0;
-        ReadFile(output, text, sizeof(text) - 1, &read, nullptr);
+        ReadFile(output, buffer, sizeof(buffer) - 1, &read, nullptr);
         CloseHandle(output);
         process = output = nullptr;
-        return std::atof(text) / seconds;
+        text = buffer;
+    }
+    double Visible()
+    {
+        Wait();
+        return std::atof(text.c_str()) / seconds;
+    }
+    ScreenLook Seen()
+    {
+        Wait();
+        ScreenLook l;
+        sscanf_s(text.c_str(), "%u %u %u %u %u %u %u %lf %lf %lf %lf", &l.updates, &l.frames, &l.black, &l.rows, &l.run,
+                 &l.top, &l.bottom, &l.p10, &l.p50, &l.p90, &l.mean);
+        return l;
     }
 };
 
@@ -858,12 +839,17 @@ int wmain(int argc, wchar_t** argv)
         const std::wstring mode = argc > 1 ? argv[1] : L"fg";
         const double phase = argc > 2 ? _wtof(argv[2]) : 4.0;
         if (mode == L"screens" && argc > 6)
-            return CountScreenUpdates(phase, { _wtol(argv[3]), _wtol(argv[4]), _wtol(argv[5]), _wtol(argv[6]) });
+            return CountScreenUpdates(phase, { _wtol(argv[3]), _wtol(argv[4]), _wtol(argv[5]), _wtol(argv[6]) },
+                                      argc > 8 ? argv[8] : nullptr, argc > 9 ? argv[9] : nullptr);
         for (int i = 3; i < argc; ++i)
             if (wcsncmp(argv[i], L"sync=", 5) == 0)
                 syncInterval = (UINT) _wtoi(argv[i] + 5);
+            else if (wcsncmp(argv[i], L"bgra=", 5) == 0)
+                bgra = _wtoi(argv[i] + 5) != 0;
+            else if (wcsncmp(argv[i], L"tearing=", 8) == 0)
+                tearing = _wtoi(argv[i] + 8) != 0;
         const bool fg = mode == L"fg" || mode == L"focus" || mode == L"fgoff" || mode == L"resize" || mode == L"menu" ||
-                        mode == L"pace" || mode == L"recreate";
+                        mode == L"pace" || mode == L"recreate" || mode == L"artefacts";
         fs::remove(dir / "OptiScaler.log");
         fs::remove(dir / "amd_presr.log");
         WriteIni(fg, argc > 3 ? argv[3] : (mode == L"pace" ? L"1" : nullptr),
@@ -983,6 +969,72 @@ int wmain(int argc, wchar_t** argv)
             std::printf("  FG off: %u presents for %u game frames; on screen %.1f fps for %.1f game fps\n",
                         fgOff.presents, off.frames, visibleOff, off.appFps);
             expect(fgOff.presents <= off.frames + 2, "FG off: one present per game frame");
+            std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
+            return failures ? 1 : 0;
+        }
+        if (mode == L"artefacts")
+        {
+            // What the screen shows with XeFG on. Moving: rows of black, which the scene never has, while the view
+            // pans and swings up and down, at the game's own rate and at a quarter of the refresh rate (where every
+            // generated frame is shown). Still: NR's strength in every frame shown, with FG on and with FG off,
+            // against the same scene with NR off.
+            MONITORINFOEXW monitor {};
+            monitor.cbSize = sizeof(monitor);
+            GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor);
+            DEVMODEW display {};
+            display.dmSize = sizeof(display);
+            EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &display);
+            const double refresh = display.dmDisplayFrequency > 1 ? display.dmDisplayFrequency : 60;
+            auto Watch = [&](const char* phase, const wchar_t* name, double seconds, const wchar_t* reference = nullptr)
+            {
+                ScreenCounter screen;
+                screen.Start(seconds - 0.5, name, reference);
+                const Stats s = Run(phase, seconds);
+                const ScreenLook l = screen.Seen();
+                std::printf(
+                    "  %s: %u frames shown, %u with black rows (%u rows, %u above the middle, %u below, longest "
+                    "run %u); difference to the reference p10 %.2f p50 %.2f p90 %.2f mean %.2f; %.2f presents "
+                    "per game frame\n",
+                    phase, l.frames, l.black, l.rows, l.top, l.bottom, l.run, l.p10, l.p50, l.p90, l.mean,
+                    s.presentsPerFrame);
+                return l;
+            };
+            const float cpuMs = game.cpuMs, slowMs = float(4000.0 / refresh);
+            game.tilt = 8;
+            const ScreenLook moving = Watch("FG on, moving", L"moving", phase);
+            game.speed = 24;
+            game.tilt = 30;
+            const ScreenLook fast = Watch("FG on, fast pan", L"fast", phase);
+            game.cpuMs = slowMs;
+            Run("slow game settle", 1, true);
+            const ScreenLook slow = Watch("FG on, fast pan, slow game", L"slow", phase);
+            expect(moving.frames > 0 && fast.frames > 0 && slow.frames > 0, "the screen was read back");
+            expect(moving.black == 0 && fast.black == 0 && slow.black == 0, "no frame shown with black rows");
+            // Still scene, every present shown.
+            game.speed = 0;
+            game.tilt = 0;
+            game.clock = 0;
+            Press(VK_NUMPAD5);
+            Run("NR off settle", 2, true);
+            const ScreenLook plain = Watch("still, NR off, FG on", L"plain", phase);
+            Press(VK_NUMPAD5);
+            Run("NR on settle", 3, true);
+            const ScreenLook nrFg = Watch("still, NR on, FG on", L"nrfg", phase, L"plain.ref");
+            Press(VK_END);
+            Run("FG off settle", 2, true);
+            const ScreenLook nrOnly = Watch("still, NR on, FG off", L"nr", phase, L"plain.ref");
+            Press(VK_END);
+            Run("FG on settle", 2, true);
+            game.cpuMs = cpuMs;
+            char text[200];
+            std::snprintf(text, sizeof(text),
+                          "NR changes the still scene (FG off: mean %.2f from the scene without NR)", nrOnly.mean);
+            expect(plain.frames > 0 && nrOnly.p50 > 1.0, text);
+            std::snprintf(
+                text, sizeof(text),
+                "NR as strong in every frame shown with FG on (p10 %.2f, mean %.2f) as with FG off (p50 %.2f)",
+                nrFg.p10, nrFg.mean, nrOnly.p50);
+            expect(nrFg.p10 > nrOnly.p50 * 0.75 && nrFg.mean > nrOnly.mean * 0.85, text);
             std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
             return failures ? 1 : 0;
         }

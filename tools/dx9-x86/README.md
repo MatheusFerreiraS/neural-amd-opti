@@ -159,6 +159,8 @@ made again, the window minimized with XeFG on, a fullscreen request at interval 
 second device on a second window and the move to it, a late request for the child window, keys polled
 and the cursor clipped under the menu, Present rectangles (natively and through the host), a device
 reported lost and then reset, a panned scene (the picture must move as the scene does; with NR, the
-motion NR gets must match the pan and the picture must change little beyond the move), OptiScaler
-without its DXGI hooks, and frame times at 1920x1080 (each timed case must have run what it times, in
-one host).
+motion NR gets must match the pan and the picture must change little beyond the move), what the screen
+shows with XeFG on (read back through Desktop Duplication: no rows of black while the scene pans, and on a
+still scene NR in every frame shown, generated ones included, as strong as without frame generation),
+OptiScaler without its DXGI hooks, and frame times at 1920x1080 (each timed case must have run what it
+times, in one host).

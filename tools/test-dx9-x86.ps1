@@ -310,6 +310,36 @@ try {
     Run-Case 'pan-fast-nr' $nr (@('--pan', '40', '--frames', '400', '--expect-bridged', '--measure-at', '300', '2') +
         $screenArg) { param($text) Check-Pan $text 40 2 $true }
 
+    # What the screen shows with XeFG on (tests\screen_look.h): no rows of black while the scene pans, and NR in
+    # every frame shown of a still scene at a quarter of the display rate (every generated frame is shown there),
+    # as strong as with frame generation off, against the same scene with NR off.
+    Run-Case 'look-pan-fg' $fg @('--ex', '--pan', '8', '--size', '1600x900', '--frames', '300', '--look-at', '250', '6',
+        'look-pan-fg', '--expect-fg') $null
+    $slow = @('--ex', '--pan', '0', '--size', '1600x900', '--work', [string][int](4000 / $refresh), '--frames', '60')
+    $plain = @('[DlssNr]', 'Enabled=false', 'PresentWithoutUpscaler=true', 'NrBackend=daniel') + $fg[4..9]
+    $lookValues = {
+        param($text)
+        if ($text -match 'p10 ([0-9.]+) p50 ([0-9.]+) p90 ([0-9.]+) mean ([0-9.]+)') {
+            return @([double]$Matches[1], [double]$Matches[2], [double]$Matches[4])
+        }
+        return @(0, 0, 0)
+    }
+    $script:nrStrength = 0
+    Run-Case 'look-still-plain' $plain ($slow + @('--look-at', '45', '6', 'look-still-plain', '--expect-fg')) $null
+    Run-Case 'look-still-nr' $nr ($slow + @('--look-at', '45', '6', 'look-still-nr', '--look-ref', 'look-still-plain.ref')) {
+        param($text)
+        $script:nrStrength = (& $lookValues $text)[1]
+        if ($script:nrStrength -lt 1) { "NR did not change the still scene (p50 $($script:nrStrength))" }
+    }
+    Run-Case 'look-still-nr-fg' $fg ($slow + @('--look-at', '45', '6', 'look-still-nr-fg', '--look-ref',
+            'look-still-plain.ref', '--expect-fg')) {
+        param($text)
+        $v = & $lookValues $text
+        if ($v[0] -lt 0.75 * $script:nrStrength -or $v[2] -lt 0.85 * $script:nrStrength) {
+            "NR missing from frames shown with FG: p10 $($v[0]), mean $($v[2]), against p50 $($script:nrStrength) without FG"
+        }
+    }
+
     # OptiScaler without its DXGI hooks (no overlay menu, no frame generation, no DXGI spoofing): each host
     # must report it, be replaced, and after four the game presents natively.
     Run-Case 'unhooked' @('[Menu]', 'OverlayMenu=false', '[Spoofing]', 'Dxgi=false') (@('--frames', '200',
