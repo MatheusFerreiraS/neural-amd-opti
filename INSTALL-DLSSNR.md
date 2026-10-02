@@ -223,11 +223,14 @@ exclusive fullscreen D3D9 presents again, with NR and the menu. Back in a window
 or when the game moves to another window, the XeFG swapchain is made again and
 frame generation resumes; the game stops for about 5 seconds while XeFG starts.
 Frame generation runs while NR runs, since its guides come from NR's optical
-flow: turning NR off turns generation off and the frames keep going out through
-the same swapchain. The End key toggles generation and Numpad 5 toggles NR.
-Without an `InterpolationCount` in the INI this route generates two frames per
-frame: with one, XeFG paces it badly (about 50 ms per rendered frame at
-1920x1080, against 18 ms with two). 32-bit D3D9 games are not handled by this DLL.
+flow. Turning NR off, unticking "Final image" or setting FG Output to None in
+the menu turns generation off, and the frames keep going out through the same
+swapchain: D3D9 cannot show a windowed frame in a window that swapchain has
+presented to. The End key toggles generation and Numpad 5 toggles NR. With
+`InterpolationCount` on auto (the INI default, or Auto in the menu's MFG list)
+this route generates two frames per frame: with one, XeFG paces it badly (about
+50 ms per rendered frame at 1920x1080, against 18 ms with two). 32-bit D3D9
+games are not handled by this DLL.
 
 The Optical Flow build needs an in-game visual and resize test before packaging for users.
 
