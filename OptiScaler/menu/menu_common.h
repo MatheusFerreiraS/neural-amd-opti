@@ -170,6 +170,7 @@ class MenuCommon
     // without changing the existing ImGui layout, labels, or setting side effects.
     static void RenderMainMenuStatusPills(RenderMenuContext& ctx);
     static void RenderMainMenuHeaderMessages(RenderMenuContext& ctx);
+    static void RenderMainMenuSideBar(RenderMenuContext& ctx);
     static void RenderMainMenuTabs(RenderMenuContext& ctx);
     static void RenderActiveUpscalerSettings(RenderMenuContext& ctx);
     static void RenderFrameGenerationSelection(RenderMenuContext& ctx);

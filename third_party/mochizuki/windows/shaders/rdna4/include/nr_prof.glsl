@@ -35,10 +35,13 @@ uvec2 nr_prof_t0, nr_prof_c0, nr_prof_tm, nr_prof_cm;
 #define NR_PROF_END(tag) NR_PROF_REC(tag, gl_WorkGroupID.z, nr_prof_t0, nr_prof_c0)
 #define NR_PROF_ITEM_START() { nr_prof_tm = clockRealtime2x32EXT(); nr_prof_cm = clock2x32ARB(); }
 #define NR_PROF_ITEM_END(tag, item) NR_PROF_REC(tag, item, nr_prof_tm, nr_prof_cm)
+// Windows diagnostic: item start -> its producers waited for (tag bit 30 also set).
+#define NR_PROF_ITEM_WAITED(tag, item) NR_PROF_REC(tag, item, nr_prof_tm, nr_prof_cm)
 #else
 #define NR_PROF_BEGIN()
 #define NR_PROF_END(tag)
 #define NR_PROF_ITEM_START()
 #define NR_PROF_ITEM_END(tag, item)
+#define NR_PROF_ITEM_WAITED(tag, item)
 #endif
 #endif

@@ -50,11 +50,15 @@ public:
         else get<VkPhysicalDevice16BitStorageFeatures>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES)->storageBuffer16BitAccess = true;
         if (auto* f = find<VkPhysicalDeviceVulkan12Features>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES)) {
             f->storageBuffer8BitAccess = f->shaderFloat16 = f->shaderInt8 = f->vulkanMemoryModel = true;
+            f->bufferDeviceAddress = true;
         } else {
             get<VkPhysicalDevice8BitStorageFeatures>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES)->storageBuffer8BitAccess = true;
             auto* half = get<VkPhysicalDeviceShaderFloat16Int8Features>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES);
             half->shaderFloat16 = half->shaderInt8 = true;
             get<VkPhysicalDeviceVulkanMemoryModelFeatures>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES)->vulkanMemoryModel = true;
+            // The network reads the activation arena through a buffer_reference on Windows
+            // (vit_attn.comp NR_VBDA). vkd3d-proton enables it anyway; DXVK does not.
+            get<VkPhysicalDeviceBufferDeviceAddressFeatures>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES)->bufferDeviceAddress = true;
         }
         if (auto* f = find<VkPhysicalDeviceVulkan13Features>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES))
             f->subgroupSizeControl = true;

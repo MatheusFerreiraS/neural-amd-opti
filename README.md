@@ -16,9 +16,9 @@ next launch) or `NrBackend` in `OptiScaler.ini`.
 |---|---|---|---|
 | Runtime | [DLSS-NR-on-AMD](https://github.com/danielblnc/DLSS-NR-on-AMD) 0.5.1 (recommended; public since 2026-10-01), 0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1 or 0.3.0, or the 0.6.0 build danielblnc gives his supporters, as `dlssnr_amd_pass1-3.dll` | [lmxxf's open-source HIP port](https://github.com/lmxxf/dlss5-on-amd-9070xt-porting), `LmxxfNrRuntime.dll` built here | [mochizuki0323's Vulkan port](https://github.com/mochizuki0323/DLSSNR-AMD), `MochizukiNrRuntime.dll` built here, not in the package |
 | Weights | `dlssnr_on_amd_weights.bin` | `native-game-tiled-assets\` | `dlssnr-amd\dlssnr.bin`, made from your own `nvngx_dlssnr.dll` 310.8.0 |
-| GPUs | RDNA3 and RDNA4 with HIP 7 (0.6.0 adds RDNA2, with the HIP SDK 7.2 runtime) | RDNA4 (gfx1201 modules) | RDNA4 (Vulkan FP8) |
+| GPUs | RDNA3 and RDNA4 with HIP 7 (0.6.0 adds RDNA2, with the HIP SDK 7.2 runtime) | RDNA4: RX 9070 series (`lmxxf-modules`) and RX 9060 series (`lmxxf-modules-gfx1200`) | RDNA4 (Vulkan FP8) |
 | Where it runs | Before Super Resolution, or on the finished frame (the only choice for Ray Reconstruction titles) | Before Super Resolution, render resolution up to 1080p | Before Super Resolution, on a Vulkan device of its own beside the game's DirectX 12 |
-| Controls | Passes 1-3, NR slots, wait mode, encoding (Linear default), style, NR resolution with dynamic scaling, effect strength, lighting and structure | Passes 1-3, temporal history and smoothing, detail and colour strength, debug view | Passes 1-3, NR resolution, dynamic resolution, temporal history, detail and colour strength, style, intensity, tone, structure, skin, highlight guard |
+| Controls | Passes 1-3, NR slots, wait mode, encoding (Linear default), style, NR resolution with dynamic scaling, effect strength, lighting and structure | Passes 1-3, style, temporal history and smoothing, detail and colour strength, reuse on still scenes, compact 1080 tier, debug view | Passes 1-3, NR resolution, dynamic resolution, temporal history, detail and colour strength, style, intensity, tone, structure, skin, highlight guard |
 
 No runtime's weights are included; all three are derived from NVIDIA's model.
 
@@ -27,14 +27,14 @@ No runtime's weights are included; all three are derived from NVIDIA's model.
 `dlssnr-amd\` folder) is not in it, and neither is the model, `dlssnr.bin`. The AMD-NR installer
 sets up both. To do it by hand, build the runtime with `tools\build-mochizuki-runtime.cmd` and make
 the model as `third_party/mochizuki/UPSTREAM.md` ("The model") describes. On an RX 9070 XT the
-network takes about 9 ms per frame at 1080p. The first start in each game compiles its pipelines,
+network takes about 8.5 ms per frame at 1080p. The first start in each game compiles its pipelines,
 and frames pass through without NR until it is done. With a prewarm manifest
 (`dlssnr-amd\prewarm\manifest.txt`) they compile in parallel. The build above does not make one:
 without it they compile one after another (about 22 s in the test harness), and the runtime then
 writes it.
 
 **On danielblnc and lmxxf:** a neural pass meter (GPU milliseconds per frame and the fps the model
-alone could reach) and a menu organised in tabs with status indicators. On danielblnc the **Style**
+alone could reach), shown on the FPS overlay too, and a menu with its sections down the left. On danielblnc the **Style**
 option (Standard, Natural, Cinematic) is the network's own style input, as in his overlay.
 
 **FSR-RR.** AMD's FidelityFX denoiser as the Ray Reconstruction provider, with its own

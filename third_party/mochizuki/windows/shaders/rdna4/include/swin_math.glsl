@@ -1,6 +1,22 @@
 #ifndef NR_SWIN_MATH_GLSL
 #define NR_SWIN_MATH_GLSL
 
+// Windows (LLPC) NR_EXP_I16: the exponentials' clamp on the half bit patterns as signed 16-bit
+// integers. LLPC turns an f16 pair clamp into a v_med3_num_f16 per half with the unpack and
+// repack around it; on bits it is one v_pk_max_i16 + one v_pk_min_i16. For every non-NaN half
+// the signed order of the patterns is the order of the values on [lo, hi] (negatives and -0
+// sit below any positive lo), so the clamped bits are the same. NaN only differs.
+#ifndef NR_EXP_I16
+#define NR_EXP_I16 0
+#endif
+#if NR_EXP_I16
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+// clamp(y, lo, hi) for positive lo < hi, as packed bits.
+uint nr_clamp_h2_bits(f16vec2 y, int lo, int hi) {
+    return pack32(u16vec2(min(max(float16BitsToInt16(y), i16vec2(int16_t(lo))), i16vec2(int16_t(hi)))));
+}
+#endif
+
 // Pinned native-FP8 PTX: MpCubicSilu uses two fma.rn.f16x2 instructions
 // followed by mul.f16x2. Algebraically expanding the polynomial changes its
 // rounding. These elementwise operations are independent of MMA accumulation.
@@ -67,9 +83,14 @@ f16vec2 nr_swin_exp2(vec2 x) {
                           vec2(947912704.0),vec2(1092354048.0));
     return f16vec2(uintBitsToFloat(uvec2(bits)));
 #else
+#if NR_EXP_I16
+    const uint h=nr_clamp_h2_bits(fma(f16vec2(x),f16vec2(0.044921875hf),f16vec2(1.30078125hf)),
+                                  0x3C20, 0x3E47);   // 1.03125, 1.5693359375
+#else
     const f16vec2 y=clamp(fma(f16vec2(x),f16vec2(0.044921875hf),f16vec2(1.30078125hf)),
                            f16vec2(1.03125hf),f16vec2(1.5693359375hf));
     const uint h=packHalf2x16(vec2(y));
+#endif
     const uint bits=(h<<5u)+0x7FF88000u;  // == (h&0x03ff03ff)<<5, see nr_swin_exp_baked
     return f16vec2(unpackHalf2x16(bits));
 #endif
@@ -89,9 +110,16 @@ f16vec2 nr_swin_exp2(vec2 x) {
 // half, and the high half's field leaves 0x80000000 after the 32-bit wrap.
 // Bit-identical for every clamped value; one instruction instead of two.
 f16vec2 nr_swin_exp_baked(vec2 x, vec2 bias) {
+#if defined(NR_ABLATE_EXP) && NR_ABLATE_EXP
+    return f16vec2(x + bias);   // diagnostic (wrong output): the exponential priced by leaving it out
+#endif
+#if NR_EXP_I16
+    const uint h=nr_clamp_h2_bits(f16vec2(fma(x,vec2(0.044921875),bias)), 0x3C20, 0x3E47);
+#else
     const f16vec2 y=clamp(f16vec2(fma(x,vec2(0.044921875),bias)),
                          f16vec2(1.03125hf),f16vec2(1.5693359375hf));
     const uint h=packFloat2x16(y);
+#endif
     return unpackFloat2x16((h<<5u)+0x7FF88000u);
 }
 #endif

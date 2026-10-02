@@ -220,9 +220,11 @@ foreach ($root in $roots) {
             Add-PlannedFile (Join-Path $deps $relative) 'project-dependency'
         }
     }
-    $lmxxfMods = Join-Path $root 'lmxxf-modules'
-    if ((Test-UninstallPath $lmxxfMods) -and (Test-Path -LiteralPath $lmxxfMods -PathType Container)) {
-        $planned.Add("$lmxxfMods  (lmxxf modules tree)")
+    foreach ($modsName in 'lmxxf-modules', 'lmxxf-modules-gfx1200') {
+        $lmxxfMods = Join-Path $root $modsName
+        if ((Test-UninstallPath $lmxxfMods) -and (Test-Path -LiteralPath $lmxxfMods -PathType Container)) {
+            $planned.Add("$lmxxfMods  (lmxxf modules tree)")
+        }
     }
     $shadersDir = Join-Path $root 'shaders'
     if ((Test-UninstallPath $shadersDir) -and (Test-Path -LiteralPath $shadersDir -PathType Container)) {
@@ -376,48 +378,51 @@ foreach ($root in $roots) {
         Remove-EmptyDirectory $deps
     }
 
-    $lmxxfMods = Join-Path $root 'lmxxf-modules'
-    if ((Test-UninstallPath $lmxxfMods) -and (Test-Path -LiteralPath $lmxxfMods -PathType Container)) {
-        if (Test-TreeReparse $lmxxfMods) {
-            $kept.Add("linked path: $lmxxfMods")
-            $errors.Add("$lmxxfMods : contains a linked path, not deleted")
-        } else {
-            # Delete only files listed in SHA256SUMS (installer set) or standard module files. Keep user weights/extras.
-            $sums = Join-Path $lmxxfMods 'SHA256SUMS'
-            $manifestNames = @()
-            if (Test-Path -LiteralPath $sums -PathType Leaf) {
-                Get-Content -LiteralPath $sums -ErrorAction SilentlyContinue | ForEach-Object {
-                    $line = $_.Trim()
-                    if (-not $line) { return }
-                    $parts = $line -split '\s+', 2
-                    if ($parts.Count -ge 2) {
-                        $raw = $parts[1].Trim()
-                        # Strictly reject path separators or directory traversal
-                        if ($raw -notmatch '[/\\\\]|\.\.') {
-                            $manifestNames += $raw
+    # The RX 9070 series' kernels and the RX 9060 series' beside them.
+    foreach ($modsName in 'lmxxf-modules', 'lmxxf-modules-gfx1200') {
+        $lmxxfMods = Join-Path $root $modsName
+        if ((Test-UninstallPath $lmxxfMods) -and (Test-Path -LiteralPath $lmxxfMods -PathType Container)) {
+            if (Test-TreeReparse $lmxxfMods) {
+                $kept.Add("linked path: $lmxxfMods")
+                $errors.Add("$lmxxfMods : contains a linked path, not deleted")
+            } else {
+                # Delete only files listed in SHA256SUMS (installer set) or standard module files. Keep user weights/extras.
+                $sums = Join-Path $lmxxfMods 'SHA256SUMS'
+                $manifestNames = @()
+                if (Test-Path -LiteralPath $sums -PathType Leaf) {
+                    Get-Content -LiteralPath $sums -ErrorAction SilentlyContinue | ForEach-Object {
+                        $line = $_.Trim()
+                        if (-not $line) { return }
+                        $parts = $line -split '\s+', 2
+                        if ($parts.Count -ge 2) {
+                            $raw = $parts[1].Trim()
+                            # Strictly reject path separators or directory traversal
+                            if ($raw -notmatch '[/\\\\]|\.\.') {
+                                $manifestNames += $raw
+                            }
                         }
                     }
                 }
-            }
-            # Also safely sweep any .hsaco code modules in lmxxf-modules root
-            Get-ChildItem -LiteralPath $lmxxfMods -Filter '*.hsaco' -File -ErrorAction SilentlyContinue |
-                ForEach-Object { $manifestNames += $_.Name }
-            $manifestNames += @('SHA256SUMS','modules.json','runtime-manifest.json','README.md')
-            $lmxxfModsFull = [IO.Path]::GetFullPath($lmxxfMods).TrimEnd('\') + '\'
-            foreach ($name in ($manifestNames | Select-Object -Unique)) {
-                if (-not $name) { continue }
-                $fp = Join-Path $lmxxfMods $name
-                $fpFull = [IO.Path]::GetFullPath($fp)
-                if ($fpFull.StartsWith($lmxxfModsFull, [StringComparison]::OrdinalIgnoreCase) -and
-                    (Test-UninstallPath $fp) -and (Test-Path -LiteralPath $fp -PathType Leaf)) {
-                    Remove-SafeFile $fp 'lmxxf-module'
+                # Also safely sweep any .hsaco code modules in lmxxf-modules root
+                Get-ChildItem -LiteralPath $lmxxfMods -Filter '*.hsaco' -File -ErrorAction SilentlyContinue |
+                    ForEach-Object { $manifestNames += $_.Name }
+                $manifestNames += @('SHA256SUMS','modules.json','runtime-manifest.json','README.md')
+                $lmxxfModsFull = [IO.Path]::GetFullPath($lmxxfMods).TrimEnd('\') + '\'
+                foreach ($name in ($manifestNames | Select-Object -Unique)) {
+                    if (-not $name) { continue }
+                    $fp = Join-Path $lmxxfMods $name
+                    $fpFull = [IO.Path]::GetFullPath($fp)
+                    if ($fpFull.StartsWith($lmxxfModsFull, [StringComparison]::OrdinalIgnoreCase) -and
+                        (Test-UninstallPath $fp) -and (Test-Path -LiteralPath $fp -PathType Leaf)) {
+                        Remove-SafeFile $fp 'lmxxf-module'
+                    }
                 }
+                # Remove empty subdirs then the folder if empty (user files keep it alive).
+                Get-ChildItem -LiteralPath $lmxxfMods -Directory -Recurse -ErrorAction SilentlyContinue |
+                    Sort-Object { $_.FullName.Length } -Descending |
+                    ForEach-Object { Remove-EmptyDirectory $_.FullName }
+                Remove-EmptyDirectory $lmxxfMods
             }
-            # Remove empty subdirs then the folder if empty (user files keep it alive).
-            Get-ChildItem -LiteralPath $lmxxfMods -Directory -Recurse -ErrorAction SilentlyContinue |
-                Sort-Object { $_.FullName.Length } -Descending |
-                ForEach-Object { Remove-EmptyDirectory $_.FullName }
-            Remove-EmptyDirectory $lmxxfMods
         }
     }
     $shadersDir = Join-Path $root 'shaders'

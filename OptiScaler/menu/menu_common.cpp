@@ -6,6 +6,7 @@
 #include <cfloat>
 
 #include <dlssnr/DlssNr.h>
+#include <dlssnr/amd/AmdBridge.h>
 
 #include "input/input_system.h"
 
@@ -213,6 +214,7 @@ template <typename T, size_t N> struct RingBuffer
 const int plotWidth = 360;
 static RingBuffer<float, plotWidth> gFrameTimes;
 static RingBuffer<float, plotWidth> gUpscalerTimes;
+static RingBuffer<float, plotWidth> gNeuralTimes;
 
 struct FsExistsCache
 {
@@ -1131,13 +1133,13 @@ void MenuCommon::ApplyThemeStyle()
     auto conf = Config::Instance();
     bool lightTheme = conf->LightTheme.value_or_default();
 
-    style.WindowRounding = 2.0f;
-    style.ChildRounding = 1.0f;
-    style.FrameRounding = 2.0f;
-    style.PopupRounding = 2.0f;
-    style.ScrollbarRounding = 2.0f;
-    style.GrabRounding = 2.0f;
-    style.TabRounding = 2.0f;
+    style.WindowRounding = 10.0f;
+    style.ChildRounding = 6.0f;
+    style.FrameRounding = 4.0f;
+    style.PopupRounding = 6.0f;
+    style.ScrollbarRounding = 6.0f;
+    style.GrabRounding = 4.0f;
+    style.TabRounding = 4.0f;
 
     style.WindowBorderSize = 1.0f;
     style.PopupBorderSize = 1.0f;
@@ -1352,6 +1354,24 @@ void MenuCommon::Present()
 
     lastTime = now;
 
+    // A game that presents for a while without ever handing Opti an upscaler (DLSS, FSR or XeSS) runs
+    // its own path, or a native one straight to the driver: nothing to upscale and no Neural Rendering.
+    // Said once, so a report shows it without guessing from what is missing.
+    static double firstPresent = 0.0;
+    static bool sawUpscaler = false, warned = false;
+    if (firstPresent == 0.0)
+        firstPresent = now;
+    if (State::Instance().currentFeature != nullptr)
+        sawUpscaler = true;
+    else if (!sawUpscaler && !warned && now - firstPresent > 30000.0)
+    {
+        warned = true;
+        LOG_WARN("No upscaler has reached OptiScaler after 30 s of presented frames ({} frames). The game is not "
+                 "using DLSS, FSR or XeSS through Opti: pick one of them in the game's settings (a restart may be "
+                 "needed); a game whose own FSR goes straight to the driver is not seen. Neural Rendering needs it.",
+                 _frameCount);
+    }
+
     if (_handle != nullptr)
         UpdateManualInput(_handle);
 }
@@ -1379,6 +1399,7 @@ struct MenuCommon::RenderMenuContext
     float fpsScale = 1.0f;
     float averageFrameTime = 0.0f;
     float averageUpscalerFT = 0.0f;
+    float averageNeuralFT = 0.0f;
 
     bool frameTimesCalculated = false;
     bool newFrame = false;
@@ -1777,6 +1798,7 @@ void MenuCommon::UpdateFrameTimeAverages(RenderMenuContext& ctx)
     auto& fpsScale = ctx.fpsScale;
     auto& averageFrameTime = ctx.averageFrameTime;
     auto& averageUpscalerFT = ctx.averageUpscalerFT;
+    auto& averageNeuralFT = ctx.averageNeuralFT;
 
     // FPS Overlay font
     fpsScale = config->FpsScale.value_or(menuResScale);
@@ -1806,9 +1828,11 @@ void MenuCommon::UpdateFrameTimeAverages(RenderMenuContext& ctx)
         float lastUT = static_cast<float>(state.upscaleTimes.empty() ? 0.0f : state.upscaleTimes.back());
         gFrameTimes.Push(lastFT);
         gUpscalerTimes.Push(lastUT);
+        gNeuralTimes.Push(DlssNr::AmdBridge::NeuralMsLast());
 
         averageFrameTime = gFrameTimes.Average();
         averageUpscalerFT = gUpscalerTimes.Average();
+        averageNeuralFT = gNeuralTimes.Average();
     }
 }
 
@@ -1890,6 +1914,7 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
     auto& fpsScale = ctx.fpsScale;
     auto& averageFrameTime = ctx.averageFrameTime;
     auto& averageUpscalerFT = ctx.averageUpscalerFT;
+    auto& averageNeuralFT = ctx.averageNeuralFT;
 
     // If Fps overlay is visible
     if (config->ShowFps.value_or_default())
@@ -2045,6 +2070,12 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             const auto overlayType = config->FpsOverlayType.value_or_default();
             const bool hasFeature = currentFeature && !currentFeature->IsFrozen();
 
+            // Neural Rendering, while a model has run in the last second: the runtime on line 1, its GPU
+            // time and graph with the upscaler's.
+            const float neuralMs = config->DlssNrEnabled.value_or_default() ? DlssNr::AmdBridge::NeuralMsLast() : 0.f;
+            const std::string neuralRuntime = neuralMs > 0 ? DlssNr::AmdBridge::NeuralRuntime() : std::string();
+            const std::string neuralPart = neuralMs > 0 ? " | NR " + neuralRuntime : std::string();
+
             // Prepare Line 1
             std::string featurePart;
             std::string fpsPart;
@@ -2099,7 +2130,8 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             if (overlayType == FpsOverlay_JustFPS)
                 firstLine = StrFmt("%s", fpsPart.c_str());
             else
-                firstLine = StrFmt("%s | %s%s%s", api.c_str(), fpsPart.c_str(), fgText.c_str(), featurePart.c_str());
+                firstLine = StrFmt("%s | %s%s%s%s", api.c_str(), fpsPart.c_str(), fgText.c_str(), featurePart.c_str(),
+                                   neuralPart.c_str());
 
             // Prepare Line 2
             if (config->FpsOverlayType.value_or_default() >= FpsOverlay_Detailed)
@@ -2125,6 +2157,12 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                     StrFmt("Upscaler Time: %7.2f ms, Avg: %7.2f ms", state.upscaleTimes.back(), averageUpscalerFT);
             }
 
+            // Prepare Line 4
+            std::string fourthLine;
+            if (neuralMs > 0 && config->FpsOverlayType.value_or_default() >= FpsOverlay_Full)
+                fourthLine = StrFmt("Neural Time (%s): %7.2f ms, Avg: %7.2f ms", neuralRuntime.c_str(), neuralMs,
+                                    averageNeuralFT);
+
             ImVec2 plotSize;
             if (config->FpsOverlayHorizontal.value_or_default())
             {
@@ -2136,12 +2174,8 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                 auto firstSize = ImGui::CalcTextSize(firstLine.c_str());
                 auto secondSize = ImGui::CalcTextSize(secondLine.c_str());
                 auto thirdSize = ImGui::CalcTextSize(thirdLine.c_str());
-                auto textWidth = 0.0f;
-
-                if (firstSize.x > secondSize.x)
-                    textWidth = firstSize.x > thirdSize.x ? firstSize.x : thirdSize.x;
-                else
-                    textWidth = secondSize.x > thirdSize.x ? secondSize.x : thirdSize.x;
+                auto fourthSize = ImGui::CalcTextSize(fourthLine.c_str());
+                auto textWidth = std::max({ firstSize.x, secondSize.x, thirdSize.x, fourthSize.x });
 
                 auto minWidth = fpsScale * 300.0f;
                 auto plotWidth = textWidth < minWidth ? minWidth : textWidth;
@@ -2206,6 +2240,35 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                     "##UpscalerFrameTimeGraph",
                     [](void* rb, int idx) -> float { return static_cast<RingBuffer<float, plotWidth>*>(rb)->At(idx); },
                     &gUpscalerTimes, plotWidth, 0, nullptr, 0.0f, 20.0f, plotSize);
+            }
+
+            if (!fourthLine.empty())
+            {
+                if (config->FpsOverlayHorizontal.value_or_default())
+                {
+                    ImGui::SameLine(0.0f, 0.0f);
+                    ImGui::Text(" | ");
+                    ImGui::SameLine(0.0f, 0.0f);
+                }
+                else
+                {
+                    ImGui::Spacing();
+                }
+
+                ImGui::Text(fourthLine.c_str());
+
+                if (config->FpsOverlayType.value_or_default() >= FpsOverlay_FullGraph)
+                {
+                    if (config->FpsOverlayHorizontal.value_or_default())
+                        ImGui::SameLine(0.0f, 0.0f);
+
+                    // Graph of the model's GPU times
+                    ImGui::PlotLines(
+                        "##NeuralFrameTimeGraph",
+                        [](void* rb, int idx) -> float
+                        { return static_cast<RingBuffer<float, plotWidth>*>(rb)->At(idx); },
+                        &gNeuralTimes, plotWidth, 0, nullptr, 0.0f, 20.0f, plotSize);
+                }
             }
 
             if (config->FpsOverlayType.value_or_default() >= FpsOverlay_ReflexTimings)
@@ -8404,6 +8467,20 @@ void MenuCommon::RenderThemeSettings(RenderMenuContext& ctx)
             ApplyThemeStyle();
         }
 
+        const char* anchors[] = { "None (centred)", "Top left", "Top right", "Bottom left", "Bottom right" };
+        int anchor = std::clamp(config->MenuAnchor.value_or_default(), 0, 4);
+        ImGui::PushItemWidth(160.0f * ctx.menuResScale);
+        if (ImGui::Combo("Menu corner", &anchor, anchors, IM_ARRAYSIZE(anchors)))
+        {
+            config->MenuAnchor = anchor;
+            if (anchor == 0)
+                lastPosition = { -1000.0f, -1000.0f }; // back to the centre
+        }
+        ImGui::PopItemWidth();
+        ShowHelpMarker("Holds the menu to a corner of the screen, as ReShade docks its overlay.\n"
+                       "Dragging the menu into a corner does the same; dragging it out lets it go.\n"
+                       "Saved with Save Settings.");
+
         ImGui::SeparatorText("Accent Colour");
 
         ImGui::Text("Presets:");
@@ -9332,28 +9409,57 @@ void MenuCommon::RenderMainMenuStatusPills(RenderMenuContext& ctx)
 
 // The settings, one tab per area. Each section keeps its own function and header, so a tab is only
 // a list of calls; the window auto-fits to the widest of the pill row and the open tab.
+// The sections, short on the side bar and named in full on hover and as the page's heading.
+static constexpr const char* kTabShort[] = { "NR", "UP", "FG", "IMG", "UI", "ADV" };
+static constexpr const char* kTabName[] = { "Neural", "Upscaling", "Frame Gen", "Image", "Interface", "Advanced" };
+static int selectedTab = 0;
+
+// Width of the side bar: its widest label in a button, at the menu's scale.
+static float MainMenuSideBarWidth()
+{
+    const auto& style = ImGui::GetStyle();
+    float widest = 0.0f;
+    for (const char* label : kTabShort)
+        widest = std::max(widest, ImGui::CalcTextSize(label).x);
+    return widest + style.FramePadding.x * 4.0f + style.WindowPadding.x * 2.0f;
+}
+
+void MenuCommon::RenderMainMenuSideBar(RenderMenuContext& ctx)
+{
+    const auto& style = ImGui::GetStyle();
+    const float height = ImGui::GetFrameHeight() * 1.6f;
+    for (int i = 0; i < static_cast<int>(std::size(kTabShort)); ++i)
+    {
+        const bool selected = i == selectedTab;
+        ImGui::PushStyleColor(ImGuiCol_Button, style.Colors[selected ? ImGuiCol_TabSelected : ImGuiCol_Tab]);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, style.Colors[ImGuiCol_TabHovered]);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, style.Colors[ImGuiCol_TabSelected]);
+        if (ImGui::Button(kTabShort[i], ImVec2(-FLT_MIN, height)))
+            selectedTab = i;
+        ImGui::PopStyleColor(3);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", kTabName[i]);
+    }
+}
+
 void MenuCommon::RenderMainMenuTabs(RenderMenuContext& ctx)
 {
-    if (!ImGui::BeginTabBar("mainTabs"))
-        return;
+    ImGui::SeparatorText(kTabName[selectedTab]);
 
-    if (ImGui::BeginTabItem("Neural"))
+    switch (selectedTab)
     {
+    case 0:
         DlssNr::RenderMenu(ctx.config, ctx.menuResScale);
-        ImGui::EndTabItem();
-    }
+        break;
 
-    if (ImGui::BeginTabItem("Upscaling"))
-    {
+    case 1:
         RenderActiveUpscalerSettings(ctx);
         RenderUpscaleRatioSettings(ctx);
         RenderFsrCommonSettings(ctx);
         RenderUpscalerInputsSettings(ctx);
-        ImGui::EndTabItem();
-    }
+        break;
 
-    if (ImGui::BeginTabItem("Frame Gen"))
-    {
+    case 2:
         RenderFrameGenerationSelection(ctx);
         RenderFrameGenerationRuntimeSettings(ctx);
         RenderFramerateSettings(ctx);
@@ -9362,34 +9468,26 @@ void MenuCommon::RenderMainMenuTabs(RenderMenuContext& ctx)
 #else
         RenderFakenvapiSettings(ctx);
 #endif
-        ImGui::EndTabItem();
-    }
+        break;
 
-    if (ImGui::BeginTabItem("Image"))
-    {
+    case 3:
         RenderActiveImageSettings(ctx);
         RenderApiAndTextureSettings(ctx);
         RenderMagnifierSettings(ctx);
-        ImGui::EndTabItem();
-    }
+        break;
 
-    if (ImGui::BeginTabItem("Interface"))
-    {
+    case 4:
         RenderThemeSettings(ctx);
         RenderFpsOverlaySettings(ctx);
         RenderKeybindSettings(ctx);
-        ImGui::EndTabItem();
-    }
+        break;
 
-    if (ImGui::BeginTabItem("Advanced"))
-    {
+    default:
         RenderQuirksSettings(ctx);
         RenderAdvancedSettings(ctx);
         RenderLoggingSettings(ctx);
-        ImGui::EndTabItem();
+        break;
     }
-
-    ImGui::EndTabBar();
 }
 
 void MenuCommon::RenderMainMenuGraphs(RenderMenuContext& ctx)
@@ -9575,20 +9673,31 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
     auto winSize = ImGui::GetWindowSize();
     auto winPos = ImGui::GetWindowPos();
 
-    // Open Wiki — right-aligned, hidden when it would overlap Close / other controls
+    // Discord and Open Wiki — right-aligned, hidden when they would overlap Close / other controls
     // (GetWindowContentRegionMax was removed in newer ImGui; use window width - padding.)
     {
         const float helpGap = style.ItemSpacing.x + ImGui::GetFontSize() * 0.9f; // room for "(?)" marker
+        const float discordBtnW = ImGui::CalcTextSize("Discord").x + style.FramePadding.x * 2.0f + style.ItemSpacing.x;
         const float wikiBtnW =
             ImGui::CalcTextSize("Open Wiki").x + style.FramePadding.x * 2.0f + helpGap;
         const float leftLimit = ImGui::GetItemRectMax().x - winPos.x + style.ItemSpacing.x; // past Close
         const float contentRight = ImGui::GetWindowWidth() - style.WindowPadding.x;
-        const float wikiStartX = contentRight - wikiBtnW;
+        const float wikiStartX = contentRight - wikiBtnW - discordBtnW;
 
         if (wikiStartX >= leftLimit)
         {
             ImGui::SameLine(0.0f, 0.0f);
             ImGui::SetCursorPosX(wikiStartX);
+
+            if (ImGui::Button("Discord"))
+            {
+                auto pIO = &ImGui::GetPlatformIO();
+                auto ctx = ImGui::GetCurrentContext();
+                pIO->Platform_OpenInShellFn(ctx, "https://discord.gg/wYhvS3JSHM");
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Join the AMD Neural Rendering Discord");
+            ImGui::SameLine();
 
             if (ImGui::Button("Open Wiki"))
             {
@@ -9608,8 +9717,9 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
                            "nvngx.ini detected, please move over to using OptiScaler.ini and delete the old config");
     }
 
-    if (lastPosition.x < -900.0f || (lastPosition.x >= winPos.x - 1.0f && lastPosition.y >= winPos.y - 1.0f &&
-                                     lastPosition.x <= winPos.x + 1.0f && lastPosition.y <= winPos.y + 1.0f))
+    if (config->MenuAnchor.value_or_default() == 0 &&
+        (lastPosition.x < -900.0f || (lastPosition.x >= winPos.x - 1.0f && lastPosition.y >= winPos.y - 1.0f &&
+                                      lastPosition.x <= winPos.x + 1.0f && lastPosition.y <= winPos.y + 1.0f)))
     {
         float posX;
         float posY;
@@ -10063,19 +10173,57 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
     }
 
     // First appearance / after load — keeps any size the user dragged to during the session
-    ImGui::SetNextWindowSize(ImVec2(defaultMenuWidth, defaultMenuHeight), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(minMenuWidth, minMenuHeight), ImVec2(FLT_MAX, FLT_MAX));
+    // Never larger than the screen: a size saved on a bigger display would put the resize grip off it.
+    const ImVec2 maxMenuSize(std::max(io.DisplaySize.x, minMenuWidth), std::max(io.DisplaySize.y, minMenuHeight));
+    ImGui::SetNextWindowSize(ImVec2(std::min(defaultMenuWidth, maxMenuSize.x), std::min(defaultMenuHeight, maxMenuSize.y)),
+                             ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(minMenuWidth, minMenuHeight), maxMenuSize);
 
     // Main menu window
     if (windowTitle.empty())
     {
-        windowTitle = StrFmt("%s - %s %s %s %s", VER_PRODUCT_NAME, state.gameExe.c_str(),
+        windowTitle = StrFmt("%s - %s %s %s %s", "OptiScaler v" VER_FORK_VERSION VER_FORK_TAG, state.gameExe.c_str(),
                              state.gameName.empty() ? "" : StrFmt("- %s", state.gameName.c_str()).c_str(),
                              (state.detectedQuirks.size() > 0) ? "(Q)" : "", state.isOptiPatcherSucceed ? "(OP)" : "");
     }
 
+    // Held to a corner, as ReShade docks its overlay: re-placed every frame, so it stays there through a
+    // resize or a resolution change, except while it is being dragged.
+    ImGuiWindow* const menuWindow = ImGui::FindWindowByName(windowTitle.c_str());
+    const bool menuMoving = menuWindow != nullptr && GImGui->MovingWindow == menuWindow;
+    if (const int anchor = config->MenuAnchor.value_or_default(); anchor >= 1 && anchor <= 4 && !menuMoving)
+    {
+        const float margin = 12.0f * menuResScale;
+        const bool right = anchor == 2 || anchor == 4, bottom = anchor >= 3;
+        ImGui::SetNextWindowPos(ImVec2(right ? io.DisplaySize.x - margin : margin,
+                                       bottom ? io.DisplaySize.y - margin : margin),
+                                ImGuiCond_Always, ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f));
+    }
+
     if (ImGui::Begin(windowTitle.c_str(), NULL, flags))
     {
+        // Let go of after a drag: near a corner it is held there, anywhere else it is free.
+        {
+            static bool wasMoving = false;
+            const bool moving = GImGui->MovingWindow == ImGui::GetCurrentWindow();
+            if (wasMoving && !moving)
+            {
+                const ImVec2 pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+                const float reach = 48.0f * menuResScale;
+                const bool left = pos.x <= reach, top = pos.y <= reach;
+                const bool right = pos.x + size.x >= io.DisplaySize.x - reach;
+                const bool bottom = pos.y + size.y >= io.DisplaySize.y - reach;
+                if ((left || right) && (top || bottom))
+                    config->MenuAnchor = (bottom ? 3 : 1) + (right && !left ? 1 : 0);
+                else
+                {
+                    config->MenuAnchor = 0;
+                    lastPosition = { -800.0f, -800.0f }; // where it was put down, not re-centred
+                }
+            }
+            wasMoving = moving;
+        }
+
         // Keep live size in config so "Save Settings" can persist it
         {
             const ImVec2 sz = ImGui::GetWindowSize();
@@ -10087,14 +10235,21 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
         // One separator + one control row (+ optional nvngx warning line).
         const float footerHeight = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y + 4.0f;
 
+        // The sections down the left, held still; the page beside them scrolls.
+        if (ImGui::BeginChild("##menu_tabs", ImVec2(MainMenuSideBarWidth(), -footerHeight), ImGuiChildFlags_Borders,
+                              ImGuiWindowFlags_NoScrollbar))
+            RenderMainMenuSideBar(ctx);
+        ImGui::EndChild();
+        ImGui::SameLine();
+
         if (ImGui::BeginChild("##menu_body", ImVec2(0.0f, -footerHeight), false))
         {
-            // Which of the game's upscaler routes are present, then any status message, then the tabs.
+            // Which of the game's upscaler routes are present, then any status message, then the page.
             RenderMainMenuStatusPills(ctx);
             RenderMainMenuHeaderMessages(ctx);
             RenderMainMenuTabs(ctx);
 
-            // Diagnostics below the tabs (still scrollable with the body).
+            // Diagnostics below the page (still scrollable with the body).
             RenderMainMenuGraphs(ctx);
         }
         ImGui::EndChild();

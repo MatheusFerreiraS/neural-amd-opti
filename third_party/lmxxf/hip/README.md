@@ -8,9 +8,9 @@ and the per-experiment compile scripts stay in `Development/HIP/`.
 
 | item | role |
 |---|---|
-| `*.hip` (21 files) | kernel sources; 24 modules are built from them (some modules concatenate two files, some build one file twice with different defines) |
+| `*.hip`, `wave_owned_*.inc` | kernel sources; 26 modules are built from them (some modules concatenate two files, some build one file twice with different defines) |
 | `rtc_compile.cpp` | host tool: source → `.hsaco` through the driver's `amd_comgr_3.dll` (no HIP SDK); also writes `<out>.hsaco.s` |
-| `build-modules.ps1` | the recipe: one row per module (name, extra defines, sources); writes 24 modules and manifests per target, plus aggregate `SHA256SUMS` |
+| `build-modules.ps1` | the recipe: one row per module (name, extra defines, sources); writes 26 modules and manifests per target, plus aggregate `SHA256SUMS` |
 | `SHA256SUMS` | hashes of both architecture sets (48 modules, paths prefixed by gfx1200/gfx1201) |
 
 ## Build
@@ -80,3 +80,30 @@ The halfweight decoder now selects a full-tile path once per workgroup; only the
 ## 0.25 validation status
 
 Both targets compile from the same source. RX 9070 XT/gfx1201 passed the automatic-selection and golden-output checks, including a Chinese-path package check. gfx1200 is built and packaged for RX 9060/9060 XT user testing; no gfx1200 hardware was available locally. Later optimization sections above describe changes now included in 0.25.
+
+## Optional wave-owned kernels (source builds after 0.30)
+
+`DLSS5_HIP_WAVE_OWNED=1` selects `c32-wave1.hsaco` and `c64-wave2.hsaco` with the matching new NativeGameFrame add-on host (Magpie / regular OptiScaler). The standalone/RE9 C API runtime has separate per-instance options and is not enabled by this environment switch. Default is 0; the published 0.30 packages do not contain this path. C32 covers all ten blocks, C64/C128 use fused windows, C256 replaces attention/projection while retaining the existing FFN/QKV producer. Existing colour controls and arithmetic are preserved.
+
+The host requires the validated byte-stream/packed-weight configuration. Incompatible layouts, graph capture or skipped blocks in the replaced ranges keep the legacy path; existing ViT skips remain supported. Turning the option off restores prod8 dispatch and does not load the two extra modules. Missing modules with a compatible enabled configuration produce a load error; install both architecture-appropriate files with the matching host.
+
+`build-modules.ps1` includes the two modules. `Development/HIP/prepare_wave_owned.py` emits just their fixed production sources for incremental lab builds. The `.inc` implementations are canonical and shared with the experiment generators. Full-runtime results and regression inputs are in `Development/results/wave-owned-combined-20260926`; game FPS validation and release packaging remain pending.
+
+## Numerical baseline (2026-09-28)
+
+From 2026-09-28 the production HIP fast activation uses explicit float `__builtin_fmaf` for both polynomial
+multiply-adds (including C256 and the deep ViT/C512 variants). The final multiplication, quantization and matrix
+accumulation are unchanged. This is an intentional new regression baseline, not NVIDIA-half bitwise equivalence.
+The half reference/WMMA/tiled activation math is unchanged.
+
+DX12 fast HLSL activation shaders retain their older `precise` separate-rounding baseline. They remain useful as
+legacy comparisons but are **not** bitwise judges for the new HIP fast baseline. Replacing `precise` with HLSL
+`mad` is not assumed to establish cross-backend bitwise equivalence without GPU validation.
+
+`src/LmxxfNrRuntime.cpp::RuntimeOptions` can fall back from missing optional HIP wave-owned, C512-M32 or ViT
+modules to the older HIP kernel paths; the same float-FMA math is therefore applied to those non-wave fast
+sources too. That is a HIP kernel fallback, not a switch to these DX12 HLSL activation shaders. Deploy the rebuilt
+module set together: mixing old and new code objects can mix numerical baselines.
+
+The new gfx1201 EXACT/AE golden manifest is `Development/results/float-fma-20260928/new-baseline-hashes.csv`;
+use `Development/HIP/experiments/float-fma/check-baseline.py` with matching fixtures and options.

@@ -648,6 +648,7 @@ struct Vulkan
     VkQueue queue {};      // the frames'
     VkQueue buildQueue {}; // the network builds': a second queue of the family at a lower priority, else `queue`
     uint32_t family = 0;
+    bool bufferDeviceAddress = false; // enabled on `device`; the network reads its arena through it where faster
     VkPhysicalDeviceMemoryProperties memory {};
     PFN_vkGetMemoryWin32HandlePropertiesKHR memoryHandleProperties {};
     PFN_vkImportSemaphoreWin32HandleKHR importSemaphore {};
@@ -805,6 +806,9 @@ struct Vulkan
         for (const auto& f : features)
             if (f.wanted && !f.offered)
                 throw std::runtime_error(std::string("[unsupported] the driver lacks the Vulkan feature ") + f.name);
+        // Optional: without it the network takes its descriptor reads.
+        bufferDeviceAddress = has12.bufferDeviceAddress == VK_TRUE;
+        f12.bufferDeviceAddress = bufferDeviceAddress ? VK_TRUE : VK_FALSE;
         // MZ_PROBE_PIPELINE_BINARY=1 only (mz_interpose.h): two more extensions, and their features after wml.
         std::vector<const char*> enabled(std::begin(extensions), std::end(extensions));
         mzi::BinaryProbe probe;
@@ -1061,6 +1065,10 @@ struct Awaited
     }
 };
 
+// Every image of ours: copied into and out of, and sampled, which lets the core read the frame and the vectors in place.
+constexpr VkImageUsageFlags kImageUsage =
+    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
 struct Image
 {
     VkImage image {};
@@ -1075,7 +1083,7 @@ struct Image
         ci.mipLevels = ci.arrayLayers = 1;
         ci.samples = VK_SAMPLE_COUNT_1_BIT;
         ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-        ci.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ci.usage = kImageUsage;
         ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkCheck(vkCreateImage(vk.device, &ci, nullptr, &image), "vkCreateImage");
         VkMemoryRequirements req {};
@@ -2709,6 +2717,8 @@ struct Session
             config.model_scale = key.scale;
             config.max_passes = key.maxPasses;
             config.preprocess = key.prep;
+            // The linear path's frame is a proxy made with the soft knee, which the preprocess undoes first.
+            config.preprocess_unknee = key.linear;
             nr::TemporalConfig temporal;
             temporal.enable = true;
             nr::HostDevice host;
@@ -2717,6 +2727,7 @@ struct Session
             host.device = vk.device;
             host.queue = vk.buildQueue;
             host.queue_family = vk.family;
+            host.buffer_device_address = vk.bufferDeviceAddress;
             char options[64] = {};
             if (key.scale != 1.f || key.maxPasses > 1)
                 std::snprintf(options, sizeof options, ", model scale %.2f, up to %u passes", key.scale, key.maxPasses);
@@ -3263,9 +3274,9 @@ struct Session
                          VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
         };
-        // The frame goes up into the runtime's own image when it keeps the frame in its format (frame_image, the
-        // linear path), and the answer comes back out of the same image.
-        const Image colour = runtime->frame_image() ? Image { runtime->frame_image() } : colourImage;
+        // The frame goes up into our image, the core reads it there (sampled, in place) and writes the answer back
+        // into it.
+        const Image& colour = colourImage;
         upload(input, colour, colourFootprint, w, h, padded);
         if (padded)
         {
@@ -3327,6 +3338,7 @@ struct Session
         frame.colour.format = colourVk;
         frame.colour.width = W;
         frame.colour.height = H;
+        frame.colour.usage = kImageUsage;
         frame.reset = job.reset;
         // Plain fields the core reads while recording; the runtime is used under submitMutex only.
         runtime->set_history_strength(job.history);
@@ -3339,6 +3351,7 @@ struct Session
             frame.motion.format = motionVk;
             frame.motion.width = motionW;
             frame.motion.height = motionH;
+            frame.motion.usage = kImageUsage;
             frame.motion_scale_x = job.motionScaleX;
             frame.motion_scale_y = job.motionScaleY;
             const nr::EngineResult r = runtime->record_engine(c, frame, job.controls);

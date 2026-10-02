@@ -3,6 +3,7 @@
 #include "AwaitingListTracker.h"
 #include "../submission/SubmissionTls.h"
 #include "AmdPreSr.h"
+#include "StallWatch.h"
 #include "RenoComposition.h"
 #include "ResidualStabilizer.h"
 #include "DynamicScale.h"
@@ -80,6 +81,12 @@ std::atomic<int> dynamicChangesNow { 0 };
 // and the applied result, every pass together. Used under frameMutex; the menu reads neuralMsNow.
 std::unique_ptr<GpuTime_Dx12> neuralTimer;
 std::atomic<float> neuralMsNow { 0 };
+// The last reading as it was, and when, for the FPS overlay's line and graph; and the runtime the
+// backend was built for, named once (the overlay draws every frame).
+std::atomic<float> neuralMsLast { 0 };
+std::atomic<UINT64> neuralAt { 0 };
+std::mutex runtimeLabelMutex;
+std::string runtimeLabel;
 
 // The residual stabilizer between the runtime and SR (pre-SR, danielblnc and mochizuki), made with the backend; the
 // last Run it filtered and when. Used under frameMutex, except Invalidate.
@@ -522,12 +529,27 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         }
         if (DlssNr::Backend::SubmissionHooksWanted() && DlssNr::Submission::Hooks::IsArmed())
             DlssNr::Submission::Hooks::SetProxyWrap(true);
+        std::string label;
         if (active == DlssNr::Backend::Kind::Lmxxf)
+        {
             b = new DlssNr::Backend::LmxxfBackend(device, q, Directory());
+            label = "lmxxf";
+        }
         else if (active == DlssNr::Backend::Kind::Mochizuki)
+        {
             b = new DlssNr::Backend::LmxxfBackend(device, q, Directory(), L"MochizukiNrRuntime.dll");
+            label = "mochizuki";
+        }
         else
+        {
             b = new DlssNr::Backend::DanielBackend(device, q, Directory());
+            const char* build = RuntimeName();
+            label = build ? std::string("danielblnc ") + build : std::string("danielblnc");
+        }
+        {
+            std::lock_guard guard(runtimeLabelMutex);
+            runtimeLabel = std::move(label);
+        }
         device->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&backendDevice));
         backendAdapter = adapter;
         // Before the backend is published: InvalidateHistory reaches the stabilizer through it.
@@ -834,6 +856,25 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     // Evaluate cut: Split proxy + SetBetween(EnqueueHip). Live only when SubmissionHooksWanted() (NrBackend=lmxxf
     // or mochizuki).
     DlssNr::Backend::LmxxfCut::OnEvaluateBeforeRecord(cmd);
+    // One job the GPU held for seconds is the warning before the one that locks the PC (StallWatch.h):
+    // NR stands down until the game restarts, and the original colour goes to SR.
+    auto& stall = stallwatch::Watch::Get();
+    stall.limitMs.store(static_cast<UINT64>(std::max(0, cfg.AmdStallStandDownMs.value_or_default())));
+    if (const UINT64 held = stall.Tripped())
+    {
+        static std::string said;
+        if (said.empty())
+        {
+            char seconds[16];
+            std::snprintf(seconds, sizeof(seconds), "%.1f", static_cast<double>(held) / 1000.0);
+            said = std::string("AMD neural: off until the game restarts. The GPU held one NR job for ") + seconds +
+                   " s, the warning before a freeze that locks the PC. Try the mochizuki runtime; "
+                   "AmdStallStandDownMs=0 turns this off.";
+            LOG_WARN("{}", said);
+        }
+        Message(said.c_str());
+        return true;
+    }
     if (neuralTimer)
         neuralTimer->Start(cmd);
     auto replacement = b->Record(cmd, f, s);
@@ -916,6 +957,8 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         {
             const float now = static_cast<float>(ms.value()), shown = neuralMsNow.load();
             neuralMsNow = shown > 0 ? shown * .9f + now * .1f : now;
+            neuralMsLast = now;
+            neuralAt = GetTickCount64();
         }
     }
     if (replacement && afterUpscale)
@@ -969,6 +1012,12 @@ void TraceContextRelease(unsigned int handle, bool after)
                          " SR context release handle=" + std::to_string(handle));
 }
 float NeuralMs() { return neuralMsNow.load(); }
+float NeuralMsLast() { return GetTickCount64() - neuralAt.load() < 1000 ? neuralMsLast.load() : 0.f; }
+std::string NeuralRuntime()
+{
+    std::lock_guard guard(runtimeLabelMutex);
+    return runtimeLabel;
+}
 std::string DynamicStatus()
 {
     const float scale = dynamicScaleNow.load();

@@ -58,11 +58,20 @@ struct Api {
  #undef LOAD
  }
  DevicePropertiesR0600 Properties(int device){DevicePropertiesR0600 p{};Check(hipGetDevicePropertiesR0600(&p,device),"device properties");return p;}
+ /* DLSS5_STYLE (2026-10-01): when >=0, every module that defines the device constant `dlss5_style_feature` (preprocess feature 6,
+    Style/128; modules default to 1/128) gets this value right after loading. -1 = leave the module default (no extra HIP calls). */
+ float style_feature=-1;
+ using ModuleGetGlobalFn=int(*)(void**,size_t*,Handle,const char*);ModuleGetGlobalFn hipModuleGetGlobal{};
  int LoadModule(Handle*module,const char*path){
   std::ifstream f(std::filesystem::u8path(path),std::ios::binary|std::ios::ate);
   if(!f)throw std::runtime_error(std::string("module file missing: ")+path);
   auto n=f.tellg();if(n<=0)throw std::runtime_error("empty module");std::vector<char>bytes(static_cast<size_t>(n));f.seekg(0);if(!f.read(bytes.data(),n))throw std::runtime_error("module read failed");
-  return hipModuleLoadData(module,bytes.data());
+  int r=hipModuleLoadData(module,bytes.data());
+  if(!r&&style_feature>=0){
+   if(!hipModuleGetGlobal)Load(hipModuleGetGlobal,"hipModuleGetGlobal");
+   void*p=nullptr;size_t s=0;if(!hipModuleGetGlobal(&p,&s,*module,"dlss5_style_feature")&&p&&s==sizeof(float))Check(hipMemcpy(p,&style_feature,sizeof(float),1),"DLSS5_STYLE");
+  }
+  return r;
  }
  void EnableVmm(){Load(hipMemAddressReserve,"hipMemAddressReserve");Load(hipMemAddressFree,"hipMemAddressFree");Load(hipMemCreate,"hipMemCreate");Load(hipMemRelease,"hipMemRelease");Load(hipMemMap,"hipMemMap");Load(hipMemUnmap,"hipMemUnmap");Load(hipMemSetAccess,"hipMemSetAccess");Load(hipMemGetAllocationGranularity,"hipMemGetAllocationGranularity");}
  void EnableGraphs(){Load(hipStreamBeginCapture,"hipStreamBeginCapture");Load(hipStreamEndCapture,"hipStreamEndCapture");Load(hipGraphInstantiate,"hipGraphInstantiate");Load(hipGraphLaunch,"hipGraphLaunch");Load(hipGraphDestroy,"hipGraphDestroy");Load(hipGraphExecDestroy,"hipGraphExecDestroy");}

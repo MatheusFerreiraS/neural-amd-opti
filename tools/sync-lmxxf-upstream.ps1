@@ -108,7 +108,7 @@ function Assert-BridgeLocalMarkers([string]$bridgePath, [string]$context) {
     if (-not (Test-Path -LiteralPath $bridgePath -PathType Leaf)) {
         throw ("Bridge header missing ($context): " + $bridgePath)
     }
-    $c = Get-Content -LiteralPath $bridgePath -Raw
+    $c = Get-Content -LiteralPath $bridgePath -Raw -Encoding UTF8
     $required = @(
         @{ Needle = 'zero_upload'; What = 'zero_upload member (ClearOutput resources)' },
         @{ Needle = 'clear_submission_unconfirmed'; What = 'clear_submission_unconfirmed fail-closed flag' },
@@ -135,7 +135,7 @@ function Assert-ReflectLocalMarkers([string]$reflectPath, [string]$context) {
     if (-not (Test-Path -LiteralPath $reflectPath -PathType Leaf)) {
         throw ("Reflect header missing ($context): " + $reflectPath)
     }
-    $c = Get-Content -LiteralPath $reflectPath -Raw
+    $c = Get-Content -LiteralPath $reflectPath -Raw -Encoding UTF8
     if ($c -match '#include\s*"native_split\.h"') {
         throw ("Reflect local marker failed ($context): still includes native_split.h. Pass -UpdateReflect to refresh from upstream and re-drop the include, or restore the pinned header.")
     }
@@ -313,7 +313,7 @@ function Sync-LmxxfModules([string]$srcDir, [string]$dstDir, [string]$commitHash
     }
     $readme = Join-Path $dstDir 'README.md'
     if (Test-Path -LiteralPath $readme -PathType Leaf) {
-        $md = Get-Content -LiteralPath $readme -Raw
+        $md = Get-Content -LiteralPath $readme -Raw -Encoding UTF8
         $md2 = [regex]::Replace($md, '(?m)^(- \*\*Commit Base\*\*: `)[^`]+(`)', '${1}' + $commitHash + '${2}')
         if ($md2 -eq $md) {
             $md2 = [regex]::Replace($md, '(?m)^(- \*\*Commit Base\*\*: ).*$', '${1}`' + $commitHash + '`')
@@ -381,7 +381,13 @@ $archivePaths = @(
     'Development/HIP/hip_device_properties.h',
     'Development/HIP/hip_reference_network.h',
     'Development/HIP/packed_weights.h',
+    'Development/HIP/swin_persistent_network.h',
+    'Development/HIP/swin_persistent_types.h',
     'src/native_device_identity.h',
+    'src/native_format_fallback.h',
+    'src/native_frame_stats.h',
+    'src/native_hip_env_options.h',
+    'src/native_hot_flags.h',
     'src/native_game_codec.h',
     'src/native_game_rgb_input.h',
     'src/native_hip_network.h',
@@ -438,7 +444,13 @@ $headerFiles = @(
     'Development\HIP\hip_device_properties.h',
     'Development\HIP\hip_reference_network.h',
     'Development\HIP\packed_weights.h',
+    'Development\HIP\swin_persistent_network.h',
+    'Development\HIP\swin_persistent_types.h',
     'src\native_device_identity.h',
+    'src\native_format_fallback.h',
+    'src\native_frame_stats.h',
+    'src\native_hip_env_options.h',
+    'src\native_hot_flags.h',
     'src\native_game_codec.h',
     'src\native_game_rgb_input.h',
     'src\native_hip_network.h',
@@ -509,7 +521,7 @@ Write-Host ("  Synchronized {0} live shaders (removed {1} retired *.hlsl; dx12-n
 $hipDir = Join-Path $script:UpstreamTree 'hip'
 if (Test-Path $hipDir) {
     $dstHip = Join-Path $vendorRoot 'hip'
-    robocopy $hipDir $dstHip *.hip build-modules.ps1 rtc_compile.cpp SHA256SUMS README.md /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+    robocopy $hipDir $dstHip *.hip *.inc build-modules.ps1 rtc_compile.cpp SHA256SUMS README.md /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
     Write-Host "  Synchronized hip recipes"
 }
 
@@ -532,7 +544,7 @@ $refNet = Join-Path $vendorRoot 'Development\HIP\hip_reference_network.h'
 if (-not (Test-Path -LiteralPath $refNet -PathType Leaf)) {
     throw "Patch A failed: missing hip_reference_network.h"
 }
-$content = Get-Content -LiteralPath $refNet -Raw
+$content = Get-Content -LiteralPath $refNet -Raw -Encoding UTF8
 if ($content -notmatch '#include\s*<algorithm>') {
     if ($content -notmatch '#include\s*<vector>') {
         throw "Patch A failed: cannot find #include <vector> anchor in hip_reference_network.h"
@@ -552,7 +564,7 @@ if (Test-Path $bridgeH) {
         Write-Host "  Preserved Patch B: hip_d3d12_bridge.h is pinned (pass -UpdateBridge to re-patch)" -ForegroundColor DarkYellow
         Assert-BridgeLocalMarkers -bridgePath $bridgeH -context 'pinned bridge (no -UpdateBridge)'
     } else {
-        $content = Get-Content -LiteralPath $bridgeH -Raw
+        $content = Get-Content -LiteralPath $bridgeH -Raw -Encoding UTF8
 
         # B.0: Ensure #include <algorithm>
         if ($content -notmatch '#include\s*<algorithm>') {
@@ -786,7 +798,7 @@ if (-not $UpdateReflect) {
     Write-Host "  Preserved Patch C: native_rgb_reflect.h is pinned (pass -UpdateReflect to re-patch)" -ForegroundColor DarkYellow
     Assert-ReflectLocalMarkers -reflectPath $reflectH -context 'pinned reflect (no -UpdateReflect)'
 } else {
-    $content = Get-Content -LiteralPath $reflectH -Raw
+    $content = Get-Content -LiteralPath $reflectH -Raw -Encoding UTF8
     if ($content -match '#include\s*"native_split\.h"') {
         $content = $content -replace '#include\s*"native_split\.h"\r?\n?', ''
         if ($content -match '#include\s*"native_split\.h"') {
@@ -804,7 +816,7 @@ if (-not $UpdateReflect) {
 
 # Patch D: native_temporal_feed.h includes native_split.h (the D3D12 network body) without using it
 $feedH = Join-Path $vendorRoot 'src\native_temporal_feed.h'
-$content = Get-Content -LiteralPath $feedH -Raw
+$content = Get-Content -LiteralPath $feedH -Raw -Encoding UTF8
 if ($content -match '#include\s*"native_split\.h"') {
     $content = $content -replace '#include\s*"native_split\.h"\r?\n?', ''
     [IO.File]::WriteAllText($feedH, $content, [Text.UTF8Encoding]::new($false))
@@ -814,15 +826,16 @@ if ($content -match '#include\s*"native_split\.h"') {
 # Patch E: OptiScaler lets lmxxf's detail and colour strengths reach 2. The codec accepts them, and decode keeps
 # the extrapolated result a colour.
 $codecH = Join-Path $vendorRoot 'src\native_game_codec.h'
-$content = (Get-Content -LiteralPath $codecH -Raw).Replace(
+$content = (Get-Content -LiteralPath $codecH -Raw -Encoding UTF8).Replace(
     'transfer_strength<=1.f&&color_strength>=0.f&&color_strength<=1.f',
     'transfer_strength<=2.f&&color_strength>=0.f&&color_strength<=2.f')
-if (-not $content.Contains('color_strength<=2.f')) {
+# Upstream accepts up to 3 since 0.38; only an older codec needs the limit raised.
+if (-not ($content.Contains('color_strength<=2.f') -or $content.Contains('color_strength<=3.f'))) {
     throw "Patch E failed: strength limit not found in native_game_codec.h"
 }
 [IO.File]::WriteAllText($codecH, $content, [Text.UTF8Encoding]::new($false))
 $decodeHlsl = Join-Path $vendorRoot 'shaders\native_codec_decode.hlsl'
-$content = Get-Content -LiteralPath $decodeHlsl -Raw
+$content = Get-Content -LiteralPath $decodeHlsl -Raw -Encoding UTF8
 if (-not $content.Contains('result=max(ClampAp1(result),0)')) {
     $anchor = ' float3 result=lerp(original*ratio,upgraded,ColorStrength);'
     if (-not $content.Contains($anchor)) {
@@ -838,7 +851,7 @@ Write-Host "  Applied patch: detail and colour strength up to 2 (codec and decod
 # Patch G: OutputSmooth on the network's change only (LmxxfSmoothResidual). residual_main is appended to
 # native_output_smooth.hlsl behind SMOOTH_RESIDUAL; upstream's main stays as it is.
 $smoothHlsl = Join-Path $vendorRoot 'shaders\native_output_smooth.hlsl'
-$content = Get-Content -LiteralPath $smoothHlsl -Raw
+$content = Get-Content -LiteralPath $smoothHlsl -Raw -Encoding UTF8
 if (-not $content.Contains('residual_main')) {
     if (-not $content.Contains('void main(uint3 id : SV_DispatchThreadID)')) {
         throw "Patch G failed: main entry not found in native_output_smooth.hlsl"
@@ -875,7 +888,7 @@ Write-Host "  Applied patch: residual smoothing entry in native_output_smooth.hl
 # 6. Update UPSTREAM.md with new commit and timestamp
 $upstreamMd = Join-Path $vendorRoot 'UPSTREAM.md'
 if (Test-Path $upstreamMd) {
-    $md = Get-Content -LiteralPath $upstreamMd -Raw
+    $md = Get-Content -LiteralPath $upstreamMd -Raw -Encoding UTF8
     $today = (Get-Date).ToString('yyyy-MM-dd')
     $md = $md -replace '(?m)^- Commit: .*', "- Commit: ``$commitHash`` (synced $today)"
     [IO.File]::WriteAllText($upstreamMd, $md, [Text.UTF8Encoding]::new($false))

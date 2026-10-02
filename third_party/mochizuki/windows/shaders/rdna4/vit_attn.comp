@@ -36,7 +36,22 @@ layout(set = 0, binding = 0, std430) NR_COH    buffer ActE4M3v { uint act_v4[]; 
 #define NR_LOAD_A_ACT(f, off, s)     NR_LOAD_C8_ACT(f, off, s)
 #define NR_LOAD_B_ACT(f, off, s)     NR_LOAD_C8_ACT(f, off, s)
 #define NR_LOAD_B_ROW_ACT(f, off, s) coopMatLoad(f, act_v4, (off) / 4u, (s) / 4u, gl_CooperativeMatrixLayoutRowMajor)
+#ifndef NR_VBDA
+#define NR_VBDA 0
+#endif
+#if NR_VBDA
+// NR_VBDA: V^T (and the RowMajor V) read through a buffer_reference to the same arena. From a
+// storage buffer LLPC gathers a column-major e4m3 fragment a byte at a time (eight
+// buffer_load_u8 a lane); from a global pointer it emits one global_load_tr_b64, the transposing
+// load ACO uses. The host passes the arena's device address in the push block (act_lo/act_hi).
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer NrActRef { uint v[]; };
+#define NR_ACT_REF NrActRef(uvec2(pc.act_lo, pc.act_hi)).v
+#define NR_LOAD_A_COL_ACT(f, off, s) coopMatLoad(f, NR_ACT_REF, (off) / 4u, (s) / 4u, gl_CooperativeMatrixLayoutColumnMajor)
+#else
 #define NR_LOAD_A_COL_ACT(f, off, s) coopMatLoad(f, act_v4, (off) / 4u, (s) / 4u, gl_CooperativeMatrixLayoutColumnMajor)
+#endif
 layout(set = 0, binding = 1, std430) readonly buffer WgtF32  { float   wgt_f32[]; };
 // The same arena as binding 0, typed four e4m3 wide. The staging loop reads
 // sixteen *contiguous, sixteen-byte-aligned* bytes per head - `nr_at` keeps a
@@ -44,16 +59,20 @@ layout(set = 0, binding = 1, std430) readonly buffer WgtF32  { float   wgt_f32[]
 // turns sixteen `global_load_ubyte` into four vector loads. `fe4m3vec4` is the
 // spelling, and gemm1x1 records that ACO scalarises it back for SSBO *stores*;
 // whether it does for loads is the measurement this binding exists to make.
-layout(set = 0, binding = 2, std430) NR_COH readonly buffer ActE4M3x4 { fe4m3vec4 act_x4[]; };
-// Windows (LLPC): the same bytes as dwords; an e4m3 vector is loaded a byte per element.
-layout(set = 0, binding = 2, std430) NR_COH readonly buffer ActE4M3u { uint act_u2[]; };
-#define nr_act4(i) uintBitsToFloate4m3EXT(unpack8(act_u2[i]))
 // NR_VOUT_VEC: the output's eight contiguous bytes per lane and half go
-// out as two dword stores through act_v4 instead of eight byte stores.
-// Non-interleaved output only: mode bit 1 is ignored.
+// out as two vec4 stores through this view (writable then) instead of eight
+// byte stores. Non-interleaved output only: mode bit 1 is ignored.
 #ifndef NR_VOUT_VEC
 #define NR_VOUT_VEC 0
 #endif
+#if NR_VOUT_VEC
+layout(set = 0, binding = 2, std430) NR_COH buffer ActE4M3x4 { fe4m3vec4 act_x4[]; };
+#else
+layout(set = 0, binding = 2, std430) NR_COH readonly buffer ActE4M3x4 { fe4m3vec4 act_x4[]; };
+#endif
+// Windows (LLPC): the same bytes as dwords; an e4m3 vector is loaded a byte per element.
+layout(set = 0, binding = 2, std430) NR_COH readonly buffer ActE4M3u { uint act_u2[]; };
+#define nr_act4(i) uintBitsToFloate4m3EXT(unpack8(act_u2[i]))
 
 #include "nr_chain.glsl"
 layout(push_constant) uniform Push {
@@ -62,6 +81,7 @@ layout(push_constant) uniform Push {
     uint tokens;     // W * H, the real sequence length - 1980 at 1080p
     uint s_off;      // the 32 per-head f32 temperatures, as a float index
     uint mode;       // bit 0 cosine-normalise, bit 1 interleave, bit 2 quantise P
+    uint act_lo, act_hi;   // the activation arena's device address (NR_VBDA; host PushVAttn)
     NR_CHAIN_FIELDS
 } pc;
 
@@ -102,7 +122,23 @@ uint nr_at16(uint base, uint token, uint ch, uint C) {
 // exponent field leaves behind. Masking first bounds each half by 0x3E90, so
 // the packed shift cannot carry either. (NaN reaches the same answer by the
 // same identity: 0x7E00 also has both bits set.)
+// Windows (LLPC) NR_VEXP_I16: the clamp on the half bit patterns as signed 16-bit integers.
+// LLPC turns the f16 pair clamp into a v_med3_num_f16 per half with the unpack and repack
+// around it; on bits it is one v_pk_max_i16 + one v_pk_min_i16. For every non-NaN half the
+// signed order of the patterns is the order of the values on [lo, hi] (all negatives, -0
+// included, sit below lo = 0x3DC2), so the clamped bits are the same. NaN only differs.
+#ifndef NR_VEXP_I16
+#define NR_VEXP_I16 0
+#endif
+#if NR_VEXP_I16
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#endif
 f16vec2 nr_vit_exp2(vec2 x) {
+#if NR_VEXP_I16
+    const f16vec2 y0 = fma(f16vec2(x), f16vec2(NR_F16(0.08953857421875)), f16vec2(NR_F16(1.708984375)));
+    const i16vec2 yb = min(max(float16BitsToInt16(y0), i16vec2(int16_t(0x3DC2))), i16vec2(int16_t(0x3FE9)));
+    return unpackFloat2x16((pack32(u16vec2(yb)) << 4u) + 0x3FFC4000u);
+#else
     const f16vec2 y = clamp(fma(f16vec2(x), f16vec2(NR_F16(0.08953857421875)),
                                             f16vec2(NR_F16(1.708984375))),
                             f16vec2(NR_F16(1.439453125)),
@@ -110,6 +146,7 @@ f16vec2 nr_vit_exp2(vec2 x) {
     // (h<<4) + 0x3FFC4000 == (h & 0x03ff03ff) << 4 for exponent-15 halves:
     // 0x3C00<<4 = 0x3C000 per half, and the high field wraps to 0xC0000000.
     return unpackFloat2x16((packFloat2x16(y) << 4u) + 0x3FFC4000u);
+#endif
 }
 
 // **There is no output permutation.** An earlier probe read one - head h's dims
@@ -270,6 +307,16 @@ uint nr_out_ch(uint head, uint d) {
 #endif
 #if NR_VKMAN && !NR_VADDR
 #error "NR_VKMAN needs NR_VADDR's chunk base"
+#endif
+// NR_VKPERM: the denominator's key pairs (c, c+8) in one lane (vit_attn_vt_chunk.glsl).
+#ifndef NR_VKPERM
+#define NR_VKPERM 0
+#endif
+#if NR_VKPERM && !(NR_VKMAN && NR_VSPLIT_TAIL && !NR_VPB16 && !NR_VLATE_SHUFFLE)
+#error "NR_VKPERM: the shipping full-chunk body (NR_VKMAN, split tail, e4m3 P copy)"
+#endif
+#if NR_VKPERM
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 #endif
 #ifndef NR_VPB16
 #define NR_VPB16 0
@@ -435,7 +482,13 @@ void main() {
     float den[NR_QB];
     for (int b = 0; b < NR_QB; ++b) den[b] = 0.0;
 #if NR_VKMAN
+#if NR_VKPERM
+    // K row r of a full chunk's tile reads key r with 4-7 and 8-11 swapped.
+    const uint vkr = (sl & 3u) | ((sl & 4u) << 1u) | ((sl & 8u) >> 1u);
+    const uint vkl4 = (vkr * 16u + (sl >> 4u) * 8u) >> 2;
+#else
     const uint vkl4 = ((sl & 15u) * 16u + (sl >> 4u) * 8u) >> 2;
+#endif
 #endif
 
     for (uint j0 = 0u; j0 < pc.tokens; j0 += uint(NR_KC)) {
@@ -504,8 +557,8 @@ void main() {
                 for (int c = 0; c < 8; ++c)
                     qv[c] = nr_quant_e4m3(NR_F16(NR_F16(ctx[b][n][c]) * inv));
                 const uint o4 = nr_at(pc.o_off, q, qbase + n * 16u + row0, uint(NR_C)) >> 2;
-                act_v4[o4] = pack32(floate4m3BitsToUintEXT(fe4m3vec4(qv[0], qv[1], qv[2], qv[3])));
-                act_v4[o4 + 1u] = pack32(floate4m3BitsToUintEXT(fe4m3vec4(qv[4], qv[5], qv[6], qv[7])));
+                act_x4[o4] = fe4m3vec4(qv[0], qv[1], qv[2], qv[3]);
+                act_x4[o4 + 1u] = fe4m3vec4(qv[4], qv[5], qv[6], qv[7]);
             }
             continue;
         }

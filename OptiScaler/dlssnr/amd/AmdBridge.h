@@ -26,6 +26,11 @@ bool Exiting();
 // Smoothed GPU time the neural work takes on the game's queue per frame, all passes; 0 before the
 // first reading.
 float NeuralMs();
+// The last frame's reading, unsmoothed; 0 when no model has run in the last second (off, refused,
+// or another path). What the FPS overlay draws.
+float NeuralMsLast();
+// "danielblnc 0.5.1", "mochizuki" or "lmxxf": the runtime the backend was built for; empty before.
+std::string NeuralRuntime();
 // Dynamic NR resolution: the scale in use and the rendered frame rate, or empty while it is off.
 std::string DynamicStatus();
 bool GraphicsRestartNeeded(UINT activePasses);

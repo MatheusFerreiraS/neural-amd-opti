@@ -334,6 +334,12 @@ void RenderMenu(Config* config, float menuResScale)
                 config->DlssNrPasses = uint32_t(passes);
             HelpMarker("Runs the model again on its own output, for a stronger effect."
                        "\nEach pass adds the model's whole GPU time to every frame.");
+            int style = int(std::min(config->LmxxfStyle.value_or_default(), 2u));
+            if (ImGui::Combo("Style", &style, "Standard\0Natural\0Cinematic\0"))
+                config->LmxxfStyle = uint32_t(style);
+            HelpMarker("The model's own processing profiles. Standard is NVIDIA's default; Natural is"
+                       "\nthe one lmxxf's kernels had built in before. Changing it rebuilds the model,"
+                       "\na pause of a second or two.");
             float transfer = config->DlssNrTransferStrength.value_or_default();
             if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 2.0f, "%.2f"))
                 config->DlssNrTransferStrength = transfer;
@@ -345,6 +351,18 @@ void RenderMenu(Config* config, float menuResScale)
             HelpMarker("How much of the model's colour change reaches the frame. Above 1 it is"
                        "\nexaggerated, up to twice its size at 2.");
             RenoCompositionControls(config);
+            ImGui::SeparatorText("Speed");
+            bool vitReuse = config->LmxxfVitReuse.value_or_default();
+            if (ImGui::Checkbox("Reuse on still scenes", &vitReuse))
+                config->LmxxfVitReuse = vitReuse;
+            HelpMarker("Where the picture has not changed, reuses part of the model's previous work instead of"
+                       "\nrunning it again: a few fps more when the camera stands still, nothing in motion."
+                       "\nSlightly lossy. Works with one pass only.");
+            bool compact = config->LmxxfCompact1080.value_or_default();
+            if (ImGui::Checkbox("Compact 1080 tier", &compact))
+                config->LmxxfCompact1080 = compact;
+            HelpMarker("For inputs that use the 1080 tier: runs it on 1088 rows instead of 1152, about 4% faster."
+                       "\nSlightly lossy, most at the bottom of the picture. Changing it rebuilds the model.");
             ImGui::SeparatorText("Inspect");
             int debugView = std::clamp(int(config->DlssNrDebugView.value_or_default()), 0, 4);
             if (ImGui::Combo("Debug view", &debugView,

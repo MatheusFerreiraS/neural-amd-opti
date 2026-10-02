@@ -553,6 +553,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdEveryFrame.set_from_config(readBool("DlssNr", "AmdEveryFrame"));
             AmdSpinDraw.set_from_config(readInt("DlssNr", "AmdSpinDraw"));
             AmdGraphicsWait.set_from_config(readInt("DlssNr", "AmdGraphicsWait"));
+            AmdStallStandDownMs.set_from_config(readInt("DlssNr", "AmdStallStandDownMs"));
             NrBackend.set_from_config(readString("DlssNr", "NrBackend", true));
             LmxxfDiagnostic.set_from_config(readString("DlssNr", "LmxxfDiagnostic", true));
             // true/false only; missing or "auto" => false (do not enable FitLarge by accident).
@@ -572,6 +573,9 @@ bool Config::Reload(std::filesystem::path iniPath)
             LmxxfSmoothStrength.set_from_config(readFloat("DlssNr", "LmxxfSmoothStrength"));
             LmxxfSmoothThreshold.set_from_config(readFloat("DlssNr", "LmxxfSmoothThreshold"));
             LmxxfSmoothResidual.set_from_config(readBool("DlssNr", "LmxxfSmoothResidual"));
+            LmxxfStyle.set_from_config(readUInt("DlssNr", "LmxxfStyle"));
+            LmxxfVitReuse.set_from_config(readBool("DlssNr", "LmxxfVitReuse"));
+            LmxxfCompact1080.set_from_config(readBool("DlssNr", "LmxxfCompact1080"));
             MochizukiTemporal.set_from_config(readBool("DlssNr", "MochizukiTemporal"));
             MochizukiHistoryStrength.set_from_config(readFloat("DlssNr", "MochizukiHistoryStrength"));
             MochizukiStabilizerStrength.set_from_config(readFloat("DlssNr", "MochizukiStabilizerStrength"));
@@ -815,6 +819,9 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             if (auto setting = readFloat("Menu", "Height"); setting.has_value())
                 MenuHeight.set_from_config(std::clamp(setting.value(), 150.0f, 8192.0f));
+
+            if (auto setting = readInt("Menu", "Anchor"); setting.has_value())
+                MenuAnchor.set_from_config(std::clamp(setting.value(), 0, 4));
 
             // Don't enable again if set false because of Linux issue
             OverlayMenu.set_from_config(readBool("Menu", "OverlayMenu"));
@@ -1729,6 +1736,8 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "AmdEveryFrame", GetBoolValue(Instance()->AmdEveryFrame.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdSpinDraw", GetIntValue(Instance()->AmdSpinDraw.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdGraphicsWait", GetIntValue(Instance()->AmdGraphicsWait.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "AmdStallStandDownMs",
+                     GetIntValue(Instance()->AmdStallStandDownMs.value_for_config()).c_str());
         ini.SetValue("DlssNr", "NrBackend", Instance()->NrBackend.value_for_config().value_or("auto").c_str());
         ini.SetValue("DlssNr", "LmxxfDiagnostic",
                      Instance()->LmxxfDiagnostic.value_for_config().value_or("auto").c_str());
@@ -1740,6 +1749,10 @@ bool Config::SaveIni()
                      GetFloatValue(Instance()->LmxxfSmoothThreshold.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfSmoothResidual",
                      GetBoolValue(Instance()->LmxxfSmoothResidual.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "LmxxfStyle", GetIntValue(Instance()->LmxxfStyle.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "LmxxfVitReuse", GetBoolValue(Instance()->LmxxfVitReuse.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "LmxxfCompact1080",
+                     GetBoolValue(Instance()->LmxxfCompact1080.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiTemporal",
                      GetBoolValue(Instance()->MochizukiTemporal.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiHistoryStrength",
@@ -2016,6 +2029,7 @@ bool Config::SaveIni()
         ini.SetValue("Menu", "Scale", GetFloatValue(Instance()->MenuScale).c_str());
         ini.SetValue("Menu", "Width", GetFloatValue(Instance()->MenuWidth).c_str());
         ini.SetValue("Menu", "Height", GetFloatValue(Instance()->MenuHeight).c_str());
+        ini.SetValue("Menu", "Anchor", GetIntValue(Instance()->MenuAnchor.value_for_config()).c_str());
         ini.SetValue("Menu", "OverlayMenu", GetBoolValue(Instance()->OverlayMenu.value_for_config()).c_str());
 
         auto setting = Instance()->ShortcutKey.value_for_config();

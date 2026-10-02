@@ -29,7 +29,22 @@ Validado: build do runtime e do OptiScaler, testes de contrato do host. **Falta:
 pelo item 1) e testar em jogo. Os harnesses (`mz_bench`, `mz_phases`, `mz_pan`, `mz_timing`) não estão mais em
 `exports/` e precisam ser refeitos ou recuperados.
 
-## Para a próxima versão
+## Feito em 02/10/2026 (não commitado, não testado em jogo)
+
+A e B abaixo estão feitos, de um jeito mais simples que o sugerido: o `windows/` do upstream (82560c4) já tinha os
+dois, então ele entrou inteiro e só dois patches nossos ficaram por cima (o stop flag do build e `NR_EDGE_BODIES=0`,
+que leva o build a frio de 109 s para 23 s sem mudar a saída). O resto dos 16 patches antigos o upstream cobre;
+a lista está em `third_party/mochizuki/UPSTREAM.md`. O host ganhou `bufferDeviceAddress`, as imagens `SAMPLED`
+(leitura no lugar) e `preprocess_unknee`; o `frame_image` saiu.
+
+Medido num harness novo (`mz_e2e` no scratchpad da sessão: imagem real, panorâmica com vetores exatos, mesma
+interface do lmxxf): 1080p 9,26 -> 8,50 ms, 4K 55,6 -> 48,1 ms, 3 passes 42,3 -> 38,3 ms; em 1707x961 e 720p
+a saída em movimento ficou ~10x mais estável. 2 e 3 passes, R10G10B10A2, RGBA32F, tamanho ímpar, 4K e o
+Preprocess rodam sem erro. Lista de prewarm nova em `exports/mochizuki-runtime/dlssnr-amd/prewarm/` (38 linhas,
+65 shaders; frio 6,1 s com ela). Para lançar: `pin-mochizuki.ps1` com esse build (shaders mudaram: saiu
+`runtime_encode_in.spv`, entraram `runtime_depth.spv`, `noise_field` e outros) e teste em jogo.
+
+## Era para a próxima versão (feito acima)
 
 ### A. Movimento como o DLL da NVIDIA (resto do d1185d2)
 

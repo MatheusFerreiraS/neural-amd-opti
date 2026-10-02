@@ -279,7 +279,7 @@ class Config
     CustomOptional<float> DlssNrRRWorkingScale { 0.5f };
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.
-    CustomOptional<int> DlssNrToggleKey { UnboundKey };
+    CustomOptional<int> DlssNrToggleKey { VK_NUMPAD5 };
     CustomOptional<uint32_t> DlssNrPreset { 0 };
     CustomOptional<float> DlssNrIntensity { 1.0f };
     // 0 default (standard), 1 natural, 2 cinematic -- the model's own processing profiles.
@@ -360,6 +360,8 @@ class Config
     // New wait (1) vs original wait (0). Default 1 since 1.8.4; still being tested.
     // Live switching needs installed hooks and a ready 1-pixel-draw PSO; otherwise restart.
     CustomOptional<int> AmdGraphicsWait { 1 };
+    // One danielblnc job the GPU holds this long stands NR down for the session (StallWatch.h). 0 = off.
+    CustomOptional<int> AmdStallStandDownMs { 2000 };
     // NR host: daniel (default), lmxxf, mochizuki, off. Missing key = daniel. Restart to change.
     CustomOptional<std::string> NrBackend { "daniel" };
     // lmxxf diagnostics: original/copy-current/staging-current/staging-previous,
@@ -378,6 +380,15 @@ class Config
     // The same smoothing on the model's change to the frame only (output minus input, against that change in the
     // previous frame), so the game's own samples reach the upscaler as they arrived.
     CustomOptional<bool> LmxxfSmoothResidual { false };
+    // lmxxf's NGX Style: 0 Standard (NVIDIA's default), 1 Natural (the one its kernels had built in), 2 Cinematic.
+    // A change rebuilds the network.
+    CustomOptional<uint32_t> LmxxfStyle { 1 };
+    // Reuse the network's ViT part where the picture has not changed: faster on a still scene, slightly lossy.
+    // One pass only.
+    CustomOptional<bool> LmxxfVitReuse { false };
+    // The 1080 tier on 1920x1088 rows instead of 1152: about 4% faster, slightly lossy at the bottom. Rebuilds the
+    // network when changed.
+    CustomOptional<bool> LmxxfCompact1080 { false };
     // mochizuki's settings, the INI key being the member's name. Its tuning comes from these keys only, never from
     // the danielblnc, lmxxf or NVIDIA ones, so each runtime keeps its own, and every default is the network's own:
     // what it ran with before these keys existed. Passes, ModelScale and LinearInput rebuild the network (a second
@@ -846,6 +857,9 @@ class Config
     // Main overlay size in pixels (saved when "Save Settings" is pressed)
     CustomOptional<float, NoDefault> MenuWidth;
     CustomOptional<float, NoDefault> MenuHeight;
+    // Corner the main menu is held to: 0 none (centred, free to move), 1 top left, 2 top right,
+    // 3 bottom left, 4 bottom right. Dragging it into a corner sets this, dragging it out clears it.
+    CustomOptional<int> MenuAnchor { 0 };
     CustomOptional<bool> OverlayMenu { true };
     CustomOptional<int> ShortcutKey { VK_INSERT };
     CustomOptional<bool> ExtendedLimits { false };
@@ -867,7 +881,7 @@ class Config
     CustomOptional<std::wstring, NoDefault> TTFFontPath;
     CustomOptional<int> FGShortcutKey { VK_END };
     CustomOptional<bool> LightTheme { false };
-    CustomOptional<bool> OverlaysUseTheme { false };
+    CustomOptional<bool> OverlaysUseTheme { true };
     CustomOptional<float> MenuAccentColorR { 0.86f };
     CustomOptional<float> MenuAccentColorG { 0.09f };
     CustomOptional<float> MenuAccentColorB { 0.12f };

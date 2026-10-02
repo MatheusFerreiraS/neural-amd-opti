@@ -316,6 +316,24 @@
 #define NR_SPAD 0
 #endif
 #define NR_QS (NR_HD + NR_QPAD)
+// NR_ATTN_EXP2: the transposed softmax's exponential two keys at a time
+// (nr_swin_exp2's packed half FMA, clamp and bit transform - the scalar
+// nr_swin_exp chain per pair of logits), den keeping its order.
+#ifndef NR_ATTN_EXP2
+#define NR_ATTN_EXP2 0
+#endif
+// NR_ATTN_REMAP = G: workgroup order. G heads are consecutive workgroups, then
+// the windows, then the next G heads (16: all heads of a window together).
+// Needs gridZ == 16; which (window, head) a workgroup computes changes, not how.
+#ifndef NR_ATTN_REMAP
+#define NR_ATTN_REMAP 0
+#endif
+#if NR_ATTN_REMAP
+uvec3 nr_wgid;
+#define NR_WGID nr_wgid
+#else
+#define NR_WGID gl_WorkGroupID
+#endif
 #ifndef NR_ATTN_VTRANS
 #define NR_ATTN_VTRANS 0
 #endif
@@ -530,7 +548,7 @@ layout(push_constant) uniform Push {
 // cyclic shift at the image edge (r10/r11 and p18, BB23_10).
 #if NR_IMAGE
 ivec2 nr_tile(uint q) {
-    return 2 * ivec2(gl_WorkGroupID.xy) + ivec2(pc.shift, pc.shift_y)
+    return 2 * ivec2(NR_WGID.xy) + ivec2(pc.shift, pc.shift_y)
            + ivec2(int(q & 1u), int(q >> 1));
 }
 bool nr_tile_oob(uint q) {
@@ -847,8 +865,33 @@ fe4m3vec2 nr_attn_quant(f16vec2 v) {
     return fe4m3vec2(clamp(v,f16vec2(-448.0hf),f16vec2(448.0hf)));
 #endif
 }
+// Two pairs as one conversion (windows/build/quad_quant_glsl.py), element for element the same.
+// Windows NR_ATTN_QCLAMP: where the f16 clamp happens. LLPC splits an f16 pair clamp into a
+// v_med3_num_f16 per half plus unpack/repack. 1: widen first (the conversion widens anyway) and
+// clamp in f32 - +-448 is exact in f16 and rounding is monotone, so the same bytes. 2: clamp the
+// magnitude bits as integers and put the sign back (same bytes for every non-NaN half).
+#ifndef NR_ATTN_QCLAMP
+#define NR_ATTN_QCLAMP 0
+#endif
+fe4m3vec4 nr_attn_quant4(f16vec2 a, f16vec2 b) {
+#if NR_QUANT_MODE != 4 && !NR_ATTN_SATQ && NR_ATTN_QCLAMP == 1
+    return NR_CVT4(clamp(vec4(vec2(a), vec2(b)), vec4(-448.0), vec4(448.0)));
+#elif NR_QUANT_MODE != 4 && !NR_ATTN_SATQ && NR_ATTN_QCLAMP == 2
+    const uvec2 bits = uvec2(packFloat2x16(a), packFloat2x16(b));
+    const uvec2 sgn = bits & 0x80008000u;
+    const u16vec4 mag = min(u16vec4(unpack16(bits.x & 0x7FFF7FFFu), unpack16(bits.y & 0x7FFF7FFFu)),
+                            u16vec4(uint16_t(0x5F00u)));
+    return fe4m3vec4(f16vec4(unpackFloat2x16(pack32(mag.xy) | sgn.x), unpackFloat2x16(pack32(mag.zw) | sgn.y)));
+#elif NR_QUANT_MODE != 4 && !NR_ATTN_SATQ
+    return NR_CVT4(clamp(f16vec4(a, b), f16vec4(-448.0hf), f16vec4(448.0hf)));
+#else
+    const fe4m3vec2 p = nr_attn_quant(a), q = nr_attn_quant(b);
+    return fe4m3vec4(p.x, p.y, q.x, q.y);
+#endif
+}
 #endif
 #include "nr_prof.glsl"
+#include "occ_pad.glsl"
 void main() {
 #ifdef NR_DIAG_SKIPZ
     // Diagnostic, wrong output: workgroups of head >= NR_DIAG_SKIPZ exit at
@@ -858,6 +901,15 @@ void main() {
     // VGPR cut to 10+ waves a SIMD would not pay (NR_AKF=2/1: 168 VGPRs, 9
     // waves, 26.6 / 29.0 us - slower).
     if (gl_WorkGroupID.z >= uint(NR_DIAG_SKIPZ)) return;
+#endif
+#if NR_ATTN_REMAP
+    {
+        const uint nx = gl_NumWorkGroups.x, ny = gl_NumWorkGroups.y, nw = nx * ny;
+        const uint lin = gl_WorkGroupID.x + nx * (gl_WorkGroupID.y + ny * gl_WorkGroupID.z);
+        const uint G = uint(NR_ATTN_REMAP);
+        const uint w = (lin / G) % nw, h = lin % G + G * (lin / (G * nw));
+        nr_wgid = uvec3(w % nx, w / nx, h);
+    }
 #endif
     NR_PROF_BEGIN()
     nr_chain_wait()
@@ -871,7 +923,7 @@ void main() {
     const uint wave = tid / 32u;
 #endif
     const uint lane = tid % 32u;
-    const uint win  = gl_WorkGroupID.y * pc.wins_x + gl_WorkGroupID.x;
+    const uint win  = NR_WGID.y * pc.wins_x + NR_WGID.x;
     const uint tok0 = win * uint(NR_WIN);
 
 #ifdef NR_LDS_PAD
@@ -901,7 +953,7 @@ void main() {
     // the old kernel, and there is no way for a harness to dispatch a shape
     // that silently computes some heads twice and others not at all. Both
     // bounds are workgroup-uniform, so the barriers inside stay legal.
-    for (uint hg = gl_WorkGroupID.z; hg < uint(NR_HSPLIT); hg += gl_NumWorkGroups.z) {
+    for (uint hg = NR_WGID.z; hg < uint(NR_HSPLIT); hg += gl_NumWorkGroups.z) {
     const uint hbase = hg * uint(NR_HPWG);
     for (uint hh = 0u; hh < uint(NR_HPW); ++hh) {
         const uint h = hbase + ((NR_SHARE_HEAD != 0) ? hh : wave * uint(NR_HPW) + hh);
@@ -1214,6 +1266,20 @@ void main() {
             }
             float den[8];
             for (int c = 0; c < 8; ++c) den[c] = 0.0;
+#if NR_ATTN_EXP2 && !NR_ATTN_BIAS_SEED
+            for (int n = 0; n < 4; ++n)
+                for (int c = 0; c < 8; c += 2) {
+                    const uint query = i0 + lane % 16u;
+                    const uint key = uint(n) * 16u + 8u * (lane / 16u) + uint(c);
+                    const uint bo = pc.b_off + (h * 64u + query) * 64u + key;
+                    const f16vec2 e2 = nr_swin_exp2(vec2(lg[n][c] + wgt_f32[bo],
+                                                         lg[n][c + 1] + wgt_f32[bo + 1u]));
+                    const float ex = float(e2.x), ey = float(e2.y);
+                    lg[n][c] = ex; lg[n][c + 1] = ey;
+                    den[c] += ex; den[c + 1] += ey;
+                }
+            if (false)
+#endif
             for (int n = 0; n < 4; ++n)
                 for (int c = 0; c < 8; ++c) {
 #if NR_ATTN_BIAS_SEED
@@ -1497,5 +1563,6 @@ void main() {
     }
     }
     nr_chain_signal()
+    NR_OCC_USE(pc.C == 0u, act_f32[0] = 0.0)
     NR_PROF_END(pc.o_off)
 }

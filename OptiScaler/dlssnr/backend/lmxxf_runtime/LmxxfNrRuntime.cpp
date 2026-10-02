@@ -327,6 +327,63 @@ bool LooksLikeObject(void* p)
     return info.State == MEM_COMMIT;
 }
 
+// The HIP architecture of the device behind this D3D12 device (gfx1201: RX 9070 series, gfx1200: RX 9060 series), or
+// empty when HIP cannot say. The kernels are built per architecture.
+std::string HipArchitecture(ID3D12Device* device)
+{
+    try
+    {
+        hip_probe::Api probe(7);
+        int count = 0;
+        if (probe.hipInit(0) || probe.hipGetDeviceCount(&count))
+            return {};
+        const LUID wanted = device->GetAdapterLuid();
+        for (int i = 0; i < count; ++i)
+        {
+            const auto props = probe.Properties(i);
+            if (std::memcmp(props.luid, &wanted, sizeof wanted))
+                continue;
+            std::string arch(props.gcnArchName, strnlen(props.gcnArchName, sizeof props.gcnArchName));
+            return arch.substr(0, arch.find(':'));
+        }
+    }
+    catch (...)
+    {
+    }
+    return {};
+}
+
+// Production options, with each newer kernel group switched off when its module is not in the folder (an older
+// install), so the network keeps running on the kernels before it instead of failing to load.
+hip_reference::Options RuntimeOptions(unsigned w, unsigned h, const std::wstring& modulesDir,
+                                      const std::wstring& weightsDir, uint32_t style)
+{
+    // The network reads DLSS5_STYLE as it is built and writes it into the kernels it loads (Style/128 in the
+    // preprocess; 1 keeps their built-in value).
+    _putenv_s("DLSS5_STYLE", style == 0 ? "0" : style == 2 ? "2" : "1");
+    auto opt = LmxxfProductionOptions(w, h, Utf8(modulesDir), Utf8(weightsDir));
+    auto has = [&](const wchar_t* name) { return FileExists(JoinPath(modulesDir, name)); };
+    if (!(has(L"c32-wave1.hsaco") && has(L"c64-wave2.hsaco")))
+        opt.wave_owned = false;
+    if (!(has(L"c512-m32-mh.hsaco") && has(L"c512-m32-deep.hsaco")))
+        opt.c512_m32 = false;
+    if (!has(L"vit-wide-deep.hsaco"))
+        opt.vit_proj_n64 = false;
+    if (!has(L"vit-stream.hsaco"))
+        opt.vit_stream = 0;
+    if (!has(L"swin-persistent.hsaco"))
+        opt.swin_run = false;
+    char note[192];
+    std::snprintf(note, sizeof note,
+                  "lmxxf: kernels wave_owned=%u c512_m32=%u vit_proj_n64=%u vit_stream=%u swin_run=%u pdl=%u\n",
+                  unsigned(hip_reference::WaveOwnedCompatible(opt)), unsigned(hip_reference::C512M32Compatible(opt)),
+                  unsigned(hip_reference::VitProjN64Compatible(opt)),
+                  hip_reference::VitStreamCompatible(opt) ? opt.vit_stream : 0u,
+                  unsigned(hip_reference::SwinRunCompatible(opt)), unsigned(opt.pdl));
+    OutputDebugStringA(note);
+    return opt;
+}
+
 struct Job
 {
     uint32_t state = LMXXF_NR_JOB_NONE;
@@ -512,6 +569,10 @@ struct Session
     bool modulesValidated = false;
     bool hipPrepared = false;
     bool queueBound = false;
+    // The Style the network was built with (LMXXF_NR_FRAME_FLAG_STYLE); another rebuilds it.
+    uint32_t builtStyle = 1;
+    // The network size it was built for: the 1080 tier's rows can change it without the colour changing.
+    unsigned builtProcW = 0, builtProcH = 0;
     bool zeroOutputFallback = false;
     bool failed = false; /* Fail-closed poisoning */
     hip_reference::D3D12Bridge* bridge = nullptr;
@@ -943,6 +1004,28 @@ int32_t Create(const LmxxfNrCreateInfo* info, void** context)
             if (!ResolveModulesDir(assets, &modulesDir))
                 return Fail(LMXXF_NR_UNAVAILABLE,
                             "Create: modules directory needs SHA256SUMS + hsaco (or HIP/ under assets)");
+            // The RX 9060 series' kernels sit beside the RX 9070 ones, in <modules>-gfx1200 (installers only write
+            // one folder level).
+            if (LooksLikeObject(info->device))
+            {
+                const std::string arch = HipArchitecture(static_cast<ID3D12Device*>(info->device));
+                if (arch == "gfx1200")
+                {
+                    const std::wstring own = modulesDir + L"-gfx1200";
+                    if (!FileExists(JoinPath(own, L"SHA256SUMS")))
+                        return Fail(LMXXF_NR_UNAVAILABLE,
+                                    "Create: this GPU (gfx1200, RX 9060 series) needs the lmxxf-modules-gfx1200 kernels");
+                    modulesDir = own;
+                }
+                else if (!arch.empty() && arch != "gfx1201")
+                {
+                    static char why[160];
+                    std::snprintf(why, sizeof why,
+                                  "Create: lmxxf runs on RX 9070 and 9060 series GPUs (gfx1201, gfx1200), not %s",
+                                  arch.c_str());
+                    return Fail(LMXXF_NR_UNAVAILABLE, why);
+                }
+            }
             uint32_t count = 0;
             const int32_t st = ValidateModuleSet(modulesDir, &count);
             if (st != LMXXF_NR_OK)
@@ -1030,7 +1113,9 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             const uint32_t noPassesSize = offsetof(LmxxfNrFrameInfo, passes);
             const uint32_t noTemporalSize = offsetof(LmxxfNrFrameInfo, motion);
             const uint32_t noSmoothSize = offsetof(LmxxfNrFrameInfo, smooth_threshold);
-            if ((info->struct_size != sizeof(LmxxfNrFrameInfo) && info->struct_size != noSmoothSize &&
+            const uint32_t noStyleSize = offsetof(LmxxfNrFrameInfo, style);
+            if ((info->struct_size != sizeof(LmxxfNrFrameInfo) && info->struct_size != noStyleSize &&
+                 info->struct_size != noSmoothSize &&
                  info->struct_size != noTemporalSize && info->struct_size != noPassesSize &&
                  info->struct_size != legacySize) ||
                 job->struct_size != sizeof(LmxxfNrJob))
@@ -1061,7 +1146,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             }
             const uint32_t allowedFlags = LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW |
                                           LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH | LMXXF_NR_FRAME_FLAG_TEMPORAL |
-                                          LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL;
+                                          LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL | LMXXF_NR_FRAME_FLAG_STYLE |
+                                          LMXXF_NR_FRAME_FLAG_VIT_REUSE | LMXXF_NR_FRAME_FLAG_COMPACT_1080;
             if ((info->flags & ~allowedFlags) != 0)
                 return Fail(LMXXF_NR_INVALID_ARGUMENT, "PrepareFrame: unknown flags");
             if (session->shaderDir.empty())
@@ -1078,7 +1164,11 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 passes = std::clamp(info->passes, 1u, 3u);
             const bool temporal = info->struct_size >= noSmoothSize && (info->flags & LMXXF_NR_FRAME_FLAG_TEMPORAL) &&
                                   info->motion && !(info->flags & LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH);
-            const bool smooth = temporal && info->struct_size >= sizeof(LmxxfNrFrameInfo) &&
+            const uint32_t style = (info->flags & LMXXF_NR_FRAME_FLAG_STYLE) &&
+                                           info->struct_size >= sizeof(LmxxfNrFrameInfo)
+                                       ? std::min(info->style, 2u)
+                                       : 1u;
+            const bool smooth = temporal && info->struct_size >= noStyleSize &&
                                 info->smooth_threshold > 0.f && info->smooth_strength > 0.f;
             if (info->struct_size >= noPassesSize)
             {
@@ -1121,16 +1211,34 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             EnsureFitLargeApplied();
             if (!std::getenv("DLSS5_NETWORK_HEIGHT"))
                 _putenv("DLSS5_NETWORK_HEIGHT=auto");
+            _putenv_s("DLSS5_NETWORK_1080_ROWS", (info->flags & LMXXF_NR_FRAME_FLAG_COMPACT_1080) ? "1088" : "1152");
+            // Read by the network on every run. Its reuse decision compares a run with the one before, so a second
+            // pass (whose input is the first one's output) would reuse the wrong answer: one pass only.
+            _putenv_s("DLSS5_VIT_ADAPTIVE", (info->flags & LMXXF_NR_FRAME_FLAG_VIT_REUSE) && passes == 1 ? "1" : "0");
             NativeResolveNetworkGeometry(info->color_width, info->color_height);
+            const auto tier = NativeCurrentNetworkGeometry();
+            if (session->hipPrepared &&
+                (session->builtStyle != style || session->builtProcW != tier.processing_width ||
+                 session->builtProcH != tier.processing_height))
+            {
+                if (FAILED(session->DrainGpu()))
+                    return Fail(LMXXF_NR_UNAVAILABLE,
+                                "PrepareFrame: style or tier change; GPU drain failed (retry or rebuild session)");
+                session->TeardownCodecChain();
+                session->job = {};
+            }
             if (!session->hipPrepared)
             {
                 auto geo = NativeCurrentNetworkGeometry();
-                auto opt = LmxxfProductionOptions(geo.processing_width, geo.processing_height,
-                                                  Utf8(session->modulesDir), Utf8(session->weightsDir));
+                auto opt = RuntimeOptions(geo.processing_width, geo.processing_height, session->modulesDir, session->weightsDir,
+                                          style);
                 if (opt.graph)
                     return Fail(LMXXF_NR_FAILED, "PrepareFrame: graph must stay off");
                 session->bridge = new hip_reference::D3D12Bridge();
                 session->bridge->Create(session->queue, opt, {});
+                session->builtStyle = style;
+                session->builtProcW = geo.processing_width;
+                session->builtProcH = geo.processing_height;
                 session->hipPrepared = true;
                 char geoMsg[192] {};
                 std::snprintf(geoMsg, sizeof geoMsg, "lmxxf: HIP lazy Create color=%ux%u network=%ux%u (proc %ux%u)",
@@ -1168,12 +1276,15 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 if (!session->bridge)
                 {
                     auto geo = NativeCurrentNetworkGeometry();
-                    auto opt = LmxxfProductionOptions(geo.processing_width, geo.processing_height,
-                                                      Utf8(session->modulesDir), Utf8(session->weightsDir));
+                    auto opt = RuntimeOptions(geo.processing_width, geo.processing_height, session->modulesDir, session->weightsDir,
+                                              style);
                     if (opt.graph)
                         return Fail(LMXXF_NR_FAILED, "PrepareFrame: graph must stay off");
                     session->bridge = new hip_reference::D3D12Bridge();
                     session->bridge->Create(session->queue, opt, {});
+                    session->builtStyle = style;
+                    session->builtProcW = geo.processing_width;
+                    session->builtProcH = geo.processing_height;
                     session->hipPrepared = true;
                     char geoMsg[192] {};
                     std::snprintf(geoMsg, sizeof geoMsg,
@@ -1191,14 +1302,17 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 ID3D12Resource* disp = nullptr;
                 try
                 {
+                    const bool privateFloatOutput = cfmt == DXGI_FORMAT_R9G9B9E5_SHAREDEXP ||
+                                                    NativeFallbackColor(cfmt) != DXGI_FORMAT_UNKNOWN;
                     enc = new NativeGameCodec();
-                    enc->Create(session->device, { color }, session->shaderDir);
+                    enc->Create(session->device, { color }, session->shaderDir, privateFloatOutput);
                     rgbIn = new NativeGameRgbInput();
                     rgbIn->Create(session->device, enc->Output(), session->shaderDir);
                     rgbOut = new NativeRgbTexture();
                     rgbOut->Create(session->device, session->bridge->Output(), session->shaderDir);
                     dec = new NativeGameCodec();
-                    dec->Create(session->device, { enc->Output(), rgbOut->Output(), color }, session->shaderDir);
+                    dec->Create(session->device, { enc->Output(), rgbOut->Output(), color }, session->shaderDir,
+                                privateFloatOutput);
                     if (dec->BufferOutput())
                     {
                         D3D12_RESOURCE_DESC td = cdesc;

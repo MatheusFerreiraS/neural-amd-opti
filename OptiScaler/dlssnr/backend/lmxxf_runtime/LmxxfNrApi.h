@@ -72,6 +72,14 @@ extern "C"
 #define LMXXF_NR_FRAME_FLAG_TEMPORAL (1u << 3)
 /* With TEMPORAL: the smoothing below acts on the network's change to the frame, not on its whole output. */
 #define LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL (1u << 4)
+/* The model's NGX Style is in `style`. Without it lmxxf keeps Style 1, the one its kernels have built in. */
+#define LMXXF_NR_FRAME_FLAG_STYLE (1u << 5)
+/* Reuse the ViT part of the network where the picture has not changed (upstream's DLSS5_VIT_ADAPTIVE=1): faster on a
+   still scene, recomputed in motion, slightly lossy. One pass only; with more it stays off. */
+#define LMXXF_NR_FRAME_FLAG_VIT_REUSE (1u << 6)
+/* The 1080 tier on 1920x1088 instead of NVIDIA's 1920x1152 (DLSS5_NETWORK_1080_ROWS=1088): about 4% faster, slightly
+   lossy at the bottom rows. A change rebuilds the network. */
+#define LMXXF_NR_FRAME_FLAG_COMPACT_1080 (1u << 7)
 
     typedef struct LmxxfNrFrameInfo
     {
@@ -103,6 +111,9 @@ extern "C"
            from the previous frame, and adds the result back to the input. */
         float smooth_threshold;
         float smooth_strength;
+        /* With STYLE: NGX Style 0 Standard (NVIDIA's default), 1 Natural, 2 Cinematic. It is written into the
+           kernels as they load, so a change rebuilds the network (a hitch of a second or two). */
+        uint32_t style;
     } LmxxfNrFrameInfo;
 
     typedef struct LmxxfNrJob

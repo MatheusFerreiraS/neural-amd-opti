@@ -10,6 +10,7 @@
 #include "GraphicsTracker.h"
 #include "GraphicsInvocation.h"
 #include "NativeWaitHooks.h"
+#include "StallWatch.h"
 #include <hooks/D3D12_Hooks.h>
 #ifndef AMD_GRAPHICS_SOURCE_ID
 #define AMD_GRAPHICS_SOURCE_ID "unfingerprinted"
@@ -2135,6 +2136,7 @@ void Backend::Submitted(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* co
             p->Log("D3D12 completion Signal failed; resources retained");
             return;
         }
+        stallwatch::Watch::Get().Arm(p->fence.Get(), value);
         sl.completion.store(value);
         sl.submission.Submit(GetTickCount64());
         p->WaitAfterSubmitIfEveryFrame(slot);
@@ -2167,6 +2169,7 @@ void Backend::Submitted(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* co
         p->Log("D3D12 completion Signal failed");
         return;
     }
+    stallwatch::Watch::Get().Arm(p->fence.Get(), value);
     sl.completion.store(value);
     sl.submission.Submit(GetTickCount64());
     p->WaitAfterSubmitIfEveryFrame(slot);

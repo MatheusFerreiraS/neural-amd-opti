@@ -61,6 +61,7 @@ layout(binding = 5, std430) NR_COH buffer ActE4M3x4 {
     fe4m3vec4 act_e4m3x4[];
 };
 #include "nr_chain.glsl"
+#include "occ_pad.glsl"
 layout(push_constant) uniform Push {
     uint x_off, o_off, a_off, q0_off, q2_off, M, C;
     NR_CHAIN_FIELDS
@@ -138,6 +139,15 @@ fe4m3vec2 nr_ffwd_quant(f16vec2 v) {
     return nr_quant_pair(v);
 #else
     return fe4m3vec2(clamp(v,f16vec2(-448.0hf),f16vec2(448.0hf)));
+#endif
+}
+// Two pairs as one conversion (windows/build/quad_quant_glsl.py), element for element the same.
+fe4m3vec4 nr_ffwd_quant4(f16vec2 a, f16vec2 b) {
+#if NR_QUANT_MODE == 4
+    const fe4m3vec2 p = nr_quant_pair(a), q = nr_quant_pair(b);
+    return fe4m3vec4(p.x, p.y, q.x, q.y);
+#else
+    return fe4m3vec4(clamp(f16vec4(a, b), f16vec4(-448.0hf), f16vec4(448.0hf)));
 #endif
 }
 #endif
@@ -255,6 +265,7 @@ void main() {
                              16u);
         }
     }
+    NR_OCC_USE(pc.C == 0u, act_f32[0] = 0.0)
     nr_chain_signal()
     NR_PROF_END(pc.o_off)
 }
@@ -376,6 +387,7 @@ void main() {
                          pc.o_off + (tok / 16u) * (pc.C / 16u) * 256u + (group * 4u + n) * 256u,
                          16u);
     }
+    NR_OCC_USE(pc.C == 0u, act_f32[0] = 0.0)
     nr_chain_signal()
     NR_PROF_END(pc.o_off)
 }

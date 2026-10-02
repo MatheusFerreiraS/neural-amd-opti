@@ -59,5 +59,12 @@ inline hip_reference::Options LmxxfProductionOptions(unsigned processing_w, unsi
     o.vit_qkv_frag = true;
     o.vit_contract_frag = true;
     o.prefix_inline = true;
+    // Upstream's 0.39 package templates (scripts/hip-*-flags.txt): byte-packed multihead and decoder paths, one head
+    // per wave, C512 at 32 tokens, ViT projection at 64 columns, chain flags, the ViT byte stream and the C256
+    // persistent stage. All bit-exact; each falls back by itself when its module is missing (LmxxfNrRuntime.cpp).
+    o.mh_feature_byte = o.mh_proj_diag_fb = o.mh_byte_stream = o.decoder_byte = o.mh_ffn_frag256 = true;
+    o.wave_owned = o.c512_m32 = o.vit_proj_n64 = o.pdl = true;
+    o.vit_stream = 3;
+    o.swin_run = true;
     return o;
 }

@@ -1,7 +1,7 @@
 # lmxxf runtime source pin
 
 - Upstream: https://github.com/lmxxf/dlss5-on-amd-9070xt-porting
-- Commit: `7ef24e7c1498bce59738277e174249866608c4ed` (synced 2026-09-23)
+- Commit: `8af862408ae477f4d207304419483919f1a0d3f2` (synced 2026-10-01)
 - License: MIT, Copyright (c) 2026 Kien (`LICENSE`)
 - `hip_api.h` also carries the AMD HIP runtime API MIT notice from ROCm 7.1.1
 
@@ -36,6 +36,7 @@ Synced from `-UpstreamRef` (default `origin/main`) via `git archive`. Intent: au
 | `Development/HIP/hip_device_properties.h` | Device props |
 | `Development/HIP/hip_reference_network.h` | HIP network (plus tiny local `#include <algorithm>` patch) |
 | `Development/HIP/packed_weights.h` | Weight packing |
+| `Development/HIP/swin_persistent_network.h`, `swin_persistent_types.h` | C256 persistent stage (`swin_run`, 0.37) |
 | `src/native_hip_network.h` | HIP entry |
 | `src/native_network_geometry.h` | 720 / 900 / 1080 tiers + FIT_LARGE helpers |
 | `src/native_input_geometry.h` | Input viewport / fit |
@@ -43,6 +44,7 @@ Synced from `-UpstreamRef` (default `origin/main`) via `git archive`. Intent: au
 | `src/native_game_codec.h` | Scene encode / decode host |
 | `src/native_game_rgb_input.h`, `src/native_rgb_texture.h` | RGB IO |
 | `src/native_device_identity.h`, `src/native_pinned_resource.h`, `src/native_pso.h`, `src/native_shader_cache.h` | Supporting glue |
+| `src/native_hip_env_options.h`, `src/native_frame_stats.h`, `src/native_format_fallback.h`, `src/native_hot_flags.h` | Included by the host and codec since 0.31-0.38; the runtime sets its options in code and does not call the env parser |
 | `src/native_temporal_feed.h`, `src/native_temporal_coordinates.h`, `src/native_temporal_sample.h` | Motion vectors to coordinates, history warp (Patch D drops an unused include from the feed) |
 | `shaders/*.hlsl` (top-level live glue only) | D3D12 glue; mirror-cleaned; `dx12-network/` not vendored |
 
@@ -86,7 +88,8 @@ Synced from `-UpstreamRef` (default `origin/main`) via `git archive`. Intent: au
 5. **Runtime Opt-In and Consumer Queue Lifetime**:
    - `LMXXF_NR_CREATE_FLAG_ZERO_OUTPUT_FALLBACK` enables recovery in the C ABI; the default keeps strict enqueue errors.
    - Queue mismatch recovery drains both the original session queue and the target producer queue before HIP zeroing. The Runtime retains the consumer queue and drains it before frame reuse or destruction.
-6. **Extra passes**:
+6. **Merged with upstream 0.39 (2026-10-01)**: upstream's bridge now carries TheAutomatic's recovery (items 1-5) itself, plus `DLSS5_HIP_INPUT_POLL`, `direct_input` and `PdlActive`. Ours is upstream's with item 7 merged back in (three-way merge against our pre-multipass header); the input poll stays off unless that variable is set.
+7. **Extra passes**:
    - `EnqueueAfterProducer` takes a pass count (`LmxxfNrFrameInfo::passes`, 1 to 3). Every pass but the last runs the network and then copies its RGB output rows into the RGBA input with `hipMemcpy2DAsync`, which keeps the input's alpha. The function is resolved from the loaded HIP runtime, so `hip_api.h` stays as upstream has it.
    - `RecordPassInputCopy` gives each pass its own history buffer (`pass_history`, created on first use), and in that mode every pass but the last also copies its output into `pass_output` for `PassOutput`, which the runtime turns into the next frame's history. `RecordOutputReadable` makes those outputs readable along with the last one.
 
@@ -94,12 +97,18 @@ Synced from `-UpstreamRef` (default `origin/main`) via `git archive`. Intent: au
 Upstream includes `native_split.h` (the D3D12 network body) without using it. The sync script drops the include after every copy.
 
 ### Patch E: detail and colour strength up to 2
-`NativeCodecParameters::ValidStrength` in `src/native_game_codec.h` accepts 0 to 2 instead of 0 to 1, and `shaders/native_codec_decode.hlsl` clamps the final result to its own `ClampAp1` gamut and to zero when either strength is above 1, where the blends extrapolate and could go negative. Up to 1 the output is unchanged. The sync script re-applies both after every copy.
+`NativeCodecParameters::ValidStrength` in `src/native_game_codec.h` accepts 0 to 2 instead of 0 to 1 (upstream accepts 0 to 3 since 0.38, so the sync leaves it alone then), and `shaders/native_codec_decode.hlsl` clamps the final result to its own `ClampAp1` gamut and to zero when either strength is above 1, where the blends extrapolate and could go negative. Up to 1 the output is unchanged. The sync script re-applies both after every copy.
 
 ### Patch G: residual smoothing in `shaders/native_output_smooth.hlsl`
 `LmxxfSmoothResidual` runs upstream's output smoothing on the network's change alone. The block appended behind `#if SMOOTH_RESIDUAL` adds `residual_main`, which takes the RGB output minus the network's input (`base`, t1), blends it toward the previous frame's change (`warped`, t0; `pad` = 1 when it is valid) with the same threshold and strength rule, writes the input plus the result back to `rgb` and keeps the change in `residual` (u1) for the next frame. Upstream's `main` is untouched and compiles as before. The sync script re-appends the block after every copy when `residual_main` is missing, and fails when upstream's `main` entry is gone.
 
 ## Shipping modules (`.hsaco`)
+
+Two sets: `modules/` (gfx1201, RX 9070 series) and `modules-gfx1200/` (RX 9060 series), shipped as `lmxxf-modules` and
+`lmxxf-modules-gfx1200` (installers accept one folder level, so not upstream's `HIP\gfx1200\`). The runtime asks HIP
+for the architecture in `Create` and takes the sibling folder on gfx1200. The sync script builds gfx1201 only; for
+gfx1200 run `hip/build-modules.ps1 -Targets gfx1200` (pwsh, `rtc_compile.exe` from `rtc_compile.cpp`), copy the
+`.hsaco` into `modules-gfx1200/`, write its flat `SHA256SUMS` and the `gfx1200/` rows of `hip/SHA256SUMS`.
 
 Upstream **does not** publish `.hsaco` on git (`/release/` is gitignored; no GitHub release assets for modules).
 Release zips copy `third_party/lmxxf/modules` as-is; GitHub Actions does **not** rebuild HIP kernels.

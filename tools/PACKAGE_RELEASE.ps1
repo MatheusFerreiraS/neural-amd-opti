@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.4.8-amd-nr, the version in OptiScaler/resource.h.
+  Default product: OptiScaler-0.4.9-amd-nr, the version in OptiScaler/resource.h.
   The danielblnc runtime it drives is 0.5.1 (0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1, 0.3.0 and the 0.6.0 supporter build
   still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
@@ -9,11 +9,11 @@
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.4.8-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.4.9-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.4.8-amd-nr',
+    [string]$Version = '0.4.9-amd-nr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
@@ -205,6 +205,14 @@ LmxxfSmoothThreshold=10
 ; lmxxf smoothing: blend only the model's change toward the previous frame and pass the game's own
 ; picture through as it arrived, so the upscaler keeps its sample detail.
 LmxxfSmoothResidual=false
+; lmxxf: the model's Style, 0 Standard (NVIDIA's default), 1 Natural, 2 Cinematic. A change rebuilds the
+; network, a hitch of a second or two.
+LmxxfStyle=1
+; lmxxf: reuse part of the model's work where the picture has not changed (faster on still scenes,
+; slightly lossy, one pass only).
+LmxxfVitReuse=false
+; lmxxf: run the 1080 tier on 1088 rows instead of 1152, about 4% faster, slightly lossy at the bottom.
+LmxxfCompact1080=false
 ; mochizuki's tuning comes only from its own keys below, never the danielblnc, lmxxf or NVIDIA ones;
 ; every default is the network's own, except MochizukiColourStrength=0: the game's own colour at the
 ; network's brightness (1 applies the network's colour change in full). MochizukiPasses (1-3),
@@ -374,6 +382,8 @@ if (!(Test-Path -LiteralPath $lmxxfDll -PathType Leaf)) {
 }
 Copy-Item -LiteralPath $lmxxfDll -Destination (Join-Path $stage 'LmxxfNrRuntime.dll') -Force
 Copy-Item -Path (Join-Path $root 'third_party/lmxxf/modules') -Destination (Join-Path $stage 'lmxxf-modules') -Recurse -Force
+# The RX 9060 series' kernels; the runtime picks them by GPU.
+Copy-Item -Path (Join-Path $root 'third_party/lmxxf/modules-gfx1200') -Destination (Join-Path $stage 'lmxxf-modules-gfx1200') -Recurse -Force
 # Top-level *.hlsl only: the runtime compiles its own shader-cache\ on first use.
 New-Item -ItemType Directory -Path (Join-Path $stage 'shaders') -Force | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $root 'third_party/lmxxf/shaders') -Filter '*.hlsl' -File |

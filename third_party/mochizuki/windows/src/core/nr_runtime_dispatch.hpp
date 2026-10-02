@@ -30,3 +30,4 @@ inline PFN_vkVoidFunction get_instance_proc(VkInstance i, const char* name) {
 #define vkGetPhysicalDeviceMemoryProperties nr::runtime_dispatch::query("vkGetPhysicalDeviceMemoryProperties", ::vkGetPhysicalDeviceMemoryProperties)
 #define vkGetPhysicalDeviceQueueFamilyProperties nr::runtime_dispatch::query("vkGetPhysicalDeviceQueueFamilyProperties", ::vkGetPhysicalDeviceQueueFamilyProperties)
 #define vkGetPhysicalDeviceFormatProperties nr::runtime_dispatch::query("vkGetPhysicalDeviceFormatProperties", ::vkGetPhysicalDeviceFormatProperties)
+#define vkGetPhysicalDeviceFormatProperties2 nr::runtime_dispatch::query("vkGetPhysicalDeviceFormatProperties2", ::vkGetPhysicalDeviceFormatProperties2)

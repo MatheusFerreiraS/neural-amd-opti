@@ -1181,6 +1181,28 @@ off below 100% NR resolution. `ReadFormat` maps the two-channel typeless formats
 - Left for the next version: the in-place motion sampling and per-frame pre-block noise (d1185d2) and the Windows
   network rebuilt for the AMD compiler (228d3a6, b1419b0): `handoff/mochizuki-upstream-2026-10-01.md`.
 
+### 0.4.9
+
+Released in `v0.4.9-amd-nr`, with mochizuki `0.4.9-amd-nr` beside it in the installer's payload. The details of each
+part are in the sections at the end of this file (stall protection, lmxxf 0.39) and in
+`handoff/mochizuki-upstream-2026-10-01.md`.
+
+- **Menu.** PR #2 (Caliel666): the window resizes, never past the screen. Rounded corners, a Discord invite beside
+  Open Wiki, the title without the commit and build date. Sections down the left (NR, UP, FG, IMG, UI, ADV, full
+  names on hover) and the menu anchored to a corner (drag it there, or Interface -> Menu corner; `[Menu] Anchor`).
+- **FPS overlay.** With NR running: "NR <runtime>" on the first line, the model's GPU time and average at Full, its
+  graph at Full + graph. Frame-time lines in the theme's colours by default (`OverlaysUseTheme`), and Numpad 5 the
+  default NR toggle key.
+- **Stall protection.** One danielblnc job the GPU holds for 2 s turns NR off until the game restarts
+  (`AmdStallStandDownMs`, 0 off); `StallWatch.h`, the same as the add-on's.
+- **Logs.** DLSS availability reads (`SuperSampling.*`) logged once each, and one warning when 30 s of presented
+  frames reached no upscaler in OptiScaler (the S.T.A.L.K.E.R. 2 report).
+- **lmxxf.** Upstream 0.39 (network ~1.8x faster at 1080p), Style (`LmxxfStyle`), reuse on still scenes
+  (`LmxxfVitReuse`), the compact 1080 tier (`LmxxfCompact1080`), the 0.38 colour-format fallback and the RX 9060
+  series (`lmxxf-modules-gfx1200`, which Setup copies and the uninstaller removes too).
+- **mochizuki.** Upstream 82560c4's Windows network and motion work (8.5 ms at 1080p from 9.3; about ten times
+  steadier in motion below 1080p), `NR_EDGE_BODIES=0` for a 23 s cold build.
+
 ## 6. Diagnostics playbook
 
 When FSR-RR "runs but does nothing", the denoiser dispatching successfully proves
@@ -1280,3 +1302,51 @@ version in use comes from `AmdBridge::RuntimeName()`.
 | `OptiScaler/shaders/fsrd_preprocess/` | The FSR-RR preprocessor (floor filter, conversion, composition) and its input probe |
 | `docs/fsrd_pipeline_contract.md` | The FSR-RR pipeline contract — read before touching the preprocessor |
 | `tools/` | Installer, packaging, shader-identity generation. Required at build time |
+
+## Proteção contra travada (não lançado, 2026-10-01)
+
+Dois players com RX 9060 XT e o runtime do danielblnc viram trabalhos de 3,8 a 4,2 s a cada 10 a 30 minutos (WWE 2K26 e
+Cyberpunk no ReShade, Bellwright no OptiScaler); duas travadas próximas travaram o PC inteiro. `AmdPreSr` arma
+`StallWatch.h` em cada `Signal` da fence de conclusão; um timer do pool de threads mede o valor mais antigo ainda
+pendente desde o envio, e o `AmdBridge::Run` desliga o NR até reiniciar o jogo quando passa de `AmdStallStandDownMs`
+(2000, 0 desliga), com a mensagem sugerindo o mochizuki. Só o backend daniel arma. O mesmo arquivo está no add-on
+ReShade (`core/shared/stall_watch.h`). Testado isolado (fence presa dispara em ~2,1 s, trabalhos que terminam não
+disparam); não testado num jogo com o OptiScaler.
+
+## lmxxf 0.39 (não lançado, 2026-10-01)
+
+`third_party/lmxxf` sincronizado de `7ef24e7` (0.29) para `8af8624` (0.39 + dois dias de commits sem release) com
+`tools/sync-lmxxf-upstream.ps1`, que agora copia os `.inc` dos kernels e seis headers novos e só levanta o limite de
+força do codec quando o upstream ainda está em 1 (ele aceita até 3). A ponte (`hip_d3d12_bridge.h`) foi mesclada em três
+vias: o upstream já traz a recuperação do TheAutomatic, então o nosso multipass voltou por cima do header dele. 31
+módulos gfx1201 compilados aqui com o COMGR do driver (LLVM 21, o mesmo do lmxxf; os hashes diferem pelo texto da fonte,
+as linhas gfx1201 do `hip/SHA256SUMS` são as locais). `LmxxfProductionOptions` liga os grupos dos templates 0.31–0.39
+(wave_owned, c512_m32, vit_proj_n64, pdl, vit_stream=3, swin_run e os caminhos em bytes); `RuntimeOptions` desliga
+cada grupo cujo módulo falta. Mesmos pesos (`lmxxf-weights.1`).
+
+Medido com um teste ponta a ponta (imagem 1920×1080, sincronizando cada frame, runtime do Cyberpunk vs o novo): 1 passe
+19,3 → 10,5 ms, 3 passes 56,5 → 30,5 ms. Os kernels novos são bit-exatos contra a cadeia antiga do mesmo build (0
+valores diferentes com os sete módulos removidos); contra o runtime antigo dá 50,4 dB, a mudança numérica de propósito
+da 0.36 (FMA em float). Não testado em jogo nem com histórico temporal. Para lançar: novo opti com os módulos e o
+`native_format_convert.hlsl` novos, e novas pins no payload do instalador.
+
+Style do lmxxf (mesmo dia): `LmxxfStyle` (0 Standard, 1 Natural, 2 Cinematic; padrão 1, o que os kernels tinham
+embutido) no ini e no menu do lmxxf. Vai pelo `LMXXF_NR_FRAME_FLAG_STYLE` + campo `style` no fim do `LmxxfNrFrameInfo`
+(o mochizuki aceita struct maior e não recebe a flag). O runtime põe `DLSS5_STYLE` no ambiente antes de criar a rede,
+que grava Style/128 nos kernels ao carregar; trocar reconstrói a rede como mudar de tamanho. Testado: Style 1 e sem a
+flag bit-idênticos ao de antes; 0 e 2 a 20–25 dB; trocar 0→2 no meio dá o mesmo que começar em 2. Um runtime antigo
+recusa o struct novo, então OptiScaler e LmxxfNrRuntime.dll têm de ir juntos.
+
+Mais quatro do lmxxf (mesmo dia, testados no `lmxxf_e2e` do scratchpad, imagem 1080p):
+- **RX 9060 (gfx1200):** 31 módulos em `third_party/lmxxf/modules-gfx1200`, empacotados como `lmxxf-modules-gfx1200`
+  ao lado de `lmxxf-modules`. `Create` pergunta a arquitetura ao HIP pelo LUID e troca de pasta no gfx1200; outra
+  arquitetura falha com mensagem clara. Na 9070 nada muda (testado); na 9060 não testado, falta placa.
+- **Reuso do ViT** (`LmxxfVitReuse`, flag `VIT_REUSE`, `DLSS5_VIT_ADAPTIVE=1` posto no ambiente a cada frame): só
+  com 1 passe. Imagem parada: saída idêntica, ~1 ms mais rápido; o log do lmxxf mostra reuso a partir do 3º frame.
+- **1088 linhas** (`LmxxfCompact1080`, flag `COMPACT_1080`): 46,3 dB contra 1152, diferença maior nas últimas linhas;
+  trocar no meio reconstrói a rede pela mudança de tamanho de processamento (`builtProcW/H`) e volta bit-idêntico.
+- **Formatos extras** (fallback 0.38 + RGB9E5): o codec recebe `privateFloatOutput` e a saída vira RGBA16F privada,
+  que o upscaler lê como está. R10G10B10A2 antes falhava no codec; agora roda (45,9 dB, pela quantização de 10 bits).
+Instalador: `lmxxf-modules-gfx1200` em `OwnedFolders`. Na release, os arquivos dessa pasta não podem ir no componente
+`optiscaler` que apps antigos instalam (eles recusam o nome na transação): vão num componente sob demanda, como o
+mochizuki.

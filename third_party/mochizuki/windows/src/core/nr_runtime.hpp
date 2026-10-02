@@ -4,6 +4,7 @@
 #include <vector>
 #include <vulkan/vulkan.h>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -23,10 +24,10 @@ struct PassControls {
     bool automatic_mask = true;
 };
 
-// Preprocess (upstream 729a05d): what the network is shown is changed before
+// [Preprocess] in dlssnr-amd.ini: what the network is shown is changed before
 // it runs and every change is taken back out of its answer
-// (windows/shaders/passes/runtime_prep.comp). Opt-in; the defaults below are
-// what enabled starts from (auto exposure, filmic curve), and each field has
+// (linux/shaders/passes/runtime_prep.comp). Opt-in; the defaults below are what
+// Enabled=1 starts from (auto exposure, filmic curve), and each field has
 // a value that leaves the frame as the host handed it over (exposure off,
 // curve 0, contrast and saturation 1).
 // Needs a runtime built with RuntimeConfig::preprocess.
@@ -92,6 +93,13 @@ struct HostDevice {
     // queries through their next instance dispatch, not the outer loader.
     // Null for ordinary application-owned (outer-loader) handles.
     PFN_vkGetInstanceProcAddr physical_dispatch{};
+    // The host API's queue lock, taken by the constructor around each of its
+    // submits only. Empty: the caller serialises the whole construction.
+    std::function<void()> queue_lock, queue_unlock;
+    // bufferDeviceAddress is enabled on `device` (vkd3d-proton's always; DXVK's and a Vulkan
+    // game's when the device watch added the network's features). The graph then reads the
+    // activation arena through a buffer_reference where that is faster (Windows network only).
+    bool buffer_device_address = false;
 };
 
 struct RuntimeConfig {
@@ -137,11 +145,15 @@ struct RuntimeConfig {
     // pass, so `colour` and `model_scale` have no effect. What a host that does
     // its own resolve afterwards (OptiScaler) must be given.
     bool native_compose = false;
-    // Able to run Controls::preprocess: a model-sized RGBA32F copy of the frame
-    // and three small kernels, made whether or not a frame asks for it. On the
-    // linear path the preprocess undoes the proxy's soft knee first, so its
-    // curve is the only one.
+    // Able to run Controls::preprocess. Costs the frame-format input copy and
+    // the post block's direct store (the input has to be a float image the
+    // preprocess can rewrite), whether or not a frame asks for it; off, the
+    // runtime is exactly what it was.
     bool preprocess = false;
+    // The frame is a proxy of linear light made with OptiScaler's soft knee
+    // (its linear-HDR encode, or linear_input's own): the preprocess undoes the
+    // knee first, so its curve is the only one. False for an SDR frame.
+    bool preprocess_unknee = false;
 };
 
 // A build on this thread stops before its next pipeline once *build_cancel is
@@ -174,6 +186,10 @@ struct ColourFrame {
     VkAccessFlags before_access = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     VkPipelineStageFlags after_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
     VkAccessFlags after_access = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    // What the image may be used for, when the caller knows. Zero = unknown.
+    // With VK_IMAGE_USAGE_SAMPLED_BIT the engine path samples the colour and
+    // depth in place instead of copying them (same values, no copy).
+    VkImageUsageFlags usage = 0;
 };
 
 // Explicit engine/integration-provided mask. Linear RGBA32F, TRANSFER_SRC,
@@ -207,9 +223,9 @@ struct TemporalConfig {
     bool enable = false;
     // The original's post block blends the reprojected previous output into the
     // current one under a weight the network emits, scaled by a device scalar
-    // (its parameter block's +104) that is clamped to [0, 1] and reads as 1.0
-    // when absent. This is that scalar. 0 disables the output-side blend and
-    // leaves only the pre block's history features.
+    // (its parameter block's +104, clamped to [0, 1]): the model's blend_scale,
+    // 0.7397. This multiplies it; 1 is the original. 0 disables the output-side
+    // blend and leaves only the pre block's history features.
     float history_strength = 1.0f;
     // Variant SPIR-V directory; empty selects ROOT/build/windows/rdna4/network/temporal.
     // These are variants, not production binaries: the temporal build
@@ -270,6 +286,12 @@ struct EngineFrame {
     // original's MVecScaleX/Y do.
     ColourFrame motion;
     float motion_scale_x = 1.0f, motion_scale_y = 1.0f;
+    // The motion texture's whole allocation when `motion.width/height` name a
+    // region of it (a subrect); zero: the same extent.
+    uint32_t motion_texture_width = 0, motion_texture_height = 0;
+    // Where the motion and depth regions start in their textures (the subrect
+    // bases, in texels); zero: the origin. `width/height` are the regions'.
+    uint32_t motion_x = 0, motion_y = 0, depth_x = 0, depth_y = 0;
     // The engine's depth buffer, at render resolution. Optional, and it is never
     // a feature of its own: the original samples depth at the centre and four
     // diagonals and reads the motion vector at whichever of the five is nearest
@@ -349,13 +371,6 @@ public:
     // The extent the network actually runs at (RuntimeConfig::model_scale applied).
     uint32_t model_width() const;
     uint32_t model_height() const;
-    // The image a frame must be recorded in, or null for the caller's own. On
-    // the linear path with one pass at the frame's extent and no mask, the
-    // runtime keeps the frame in its own format and samples it there, so the
-    // caller writes the frame into this image, hands it over as
-    // ColourFrame::image and reads the answer back out of it. It has
-    // TRANSFER_SRC and TRANSFER_DST usage and belongs to the runtime.
-    VkImage frame_image() const;
     // Change the post block's history strength (TemporalConfig::history_strength)
     // between frames. Takes effect on the next recording; no-op without a
     // temporal path.
@@ -380,7 +395,7 @@ public:
     // instantaneous number moves too much to read.
     float average_gpu_ms() const;
     // The preprocess meter as the GPU last left it: {smoothed EV, this frame's
-    // target EV}, bias not included. NaN until it has metered.
+    // target EV}, bias not included. For the log; NaN until it has metered.
     std::pair<float, float> preprocess_meter() const;
 
 private:

@@ -295,6 +295,9 @@
 #error "NR_POOL needs the per-element epilogue; NR_EPI_WMMA has no lds_e stage"
 #endif
 
+#ifndef NR_GEMM_REMAP_PC
+#define NR_GEMM_REMAP_PC 0
+#endif
 #ifndef NR_ABLATE_STAGE
 #define NR_ABLATE_STAGE 0       // 1: stage constants, no global load
 #endif
@@ -440,6 +443,26 @@ layout(set = 0, binding = 6, std430) readonly buffer WgtF16x4 { f16vec4 wgt_f16x
 // plus NR_OUT_TILED is that producer.
 layout(set = 0, binding = 7, std430) NR_COH    buffer ActE4M3x4 { fe4m3vec4 act_e4m3x4[]; };
 #include "nr_prof.glsl"
+// Windows (LLPC) NR_GLD_U2: the A fragments (tiled, direct) and the N-pair B fragments read as
+// 8-/16-byte words. Assigned from the fe4m3vec4 views, LLPC loads each fragment a dword at a
+// time and builds it byte by byte (four buffer_load_b32 where ACO issues one b128); from a
+// uvec2/uvec4 through unpack8 the fragment is the loaded registers. Same bytes, same order.
+#ifndef NR_GLD_U2
+#define NR_GLD_U2 0
+#endif
+#if NR_GLD_U2
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_KHR_shader_subgroup_basic : require
+layout(set = 0, binding = 7, std430) NR_COH readonly buffer ActE4M3u2 { uvec2 act_u2[]; };
+#ifdef NR_PACKED_WEIGHT_N2
+layout(set = 0, binding = 3, std430) readonly buffer WgtPairU4 { uvec4 wgt_pair_u4[]; };
+#endif
+#define NR_FRAG_Q(frag, v) { const uvec2 nr_fv = (v); \
+    const u8vec4 nr_f0 = unpack8(nr_fv.x), nr_f1 = unpack8(nr_fv.y); \
+    for (int nr_z = 0; nr_z < 4; ++nr_z) { \
+        (frag)[nr_z] = uintBitsToFloate4m3EXT(nr_f0[nr_z]); \
+        (frag)[nr_z + 4] = uintBitsToFloate4m3EXT(nr_f1[nr_z]); } }
+#endif
 #if NR_XPIPE
 #extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
 layout(set = 0, binding = 7, std430) NR_COH readonly buffer ActU32V { uint act_u32v[]; };
@@ -447,6 +470,7 @@ layout(set = 0, binding = 3, std430) readonly buffer WgtU32V { uint wgt_u32v[]; 
 #endif
 
 #include "nr_chain.glsl"
+#include "occ_pad.glsl"
 layout(push_constant) uniform Push {
     uint gd_off;    // diag(g) tiles, in f16 elements (NR_EPI_WMMA)
     uint x_off;     // matmul input, in elements of its own view (f16, or e4m3
@@ -469,8 +493,26 @@ layout(push_constant) uniform Push {
     // C>=64 DS: the real output extent inside the padded view (0: none). The
     // native epilogue writes zero outside it; see the store below.
     uint clear_x, clear_y;
+    uint act_lo, act_hi;   // the activation arena's device address (NR_RBDA; host PushGemm)
+#if NR_GEMM_REMAP_PC
+    uint remap;       // workgroup order, 0 = launch order (see mg0 below)
+#endif
     NR_CHAIN_FIELDS
 } pc;
+#ifndef NR_RBDA
+#define NR_RBDA 0
+#endif
+#if NR_RBDA
+// NOT SHIPPED: on RADV the network hangs at 4K with this on (gemmprojw; 1080p's gemmprojt was fine
+// and byte-identical); the cause was not found (2026-09-26). The host still passes act_lo/act_hi.
+// NR_RBDA (Windows): the e4m3 residual read as one RowMajor B fragment through a buffer_reference
+// to the arena. A lane's eight residual bytes are one column, 16 B apart - the B layout, lane l
+// column l%16 and rows 8*(l/16)..+7, which is the accumulator's (col, row0 + c) - and from a
+// global pointer LLPC loads that with one global_load_tr_b64 instead of eight buffer_load_u8.
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+layout(buffer_reference, std430, buffer_reference_align = 8) readonly buffer NrResRef { NR_E4M3 v[]; };
+#endif
 
 // A shader lint sizes these statically against decision 12's 32 KB.
 #ifndef NR_A_DIRECT
@@ -646,10 +688,8 @@ void nr_finish_tile(uint tok0, uint ch0, uint wave, uint lane) {   // NOLINT
             const uint obr = (pc.o_off
                               + ((tokr / 16u) * (pc.N / 16u) + sg) * 256u
                               + (tokr % 16u) * 16u + col0) / 4u;
-            act_e4m3x4[obr]      = fe4m3vec4(nr_quant_e4m3(outv[0]), nr_quant_e4m3(outv[1]),
-                                             nr_quant_e4m3(outv[2]), nr_quant_e4m3(outv[3]));
-            act_e4m3x4[obr + 1u] = fe4m3vec4(nr_quant_e4m3(outv[4]), nr_quant_e4m3(outv[5]),
-                                             nr_quant_e4m3(outv[6]), nr_quant_e4m3(outv[7]));
+            act_e4m3x4[obr]      = nr_quant4_h(f16vec4(outv[0], outv[1], outv[2], outv[3]));
+            act_e4m3x4[obr + 1u] = nr_quant4_h(f16vec4(outv[4], outv[5], outv[6], outv[7]));
         }
         return;
     }
@@ -700,8 +740,8 @@ void nr_finish_tile(uint tok0, uint ch0, uint wave, uint lane) {   // NOLINT
 #if defined(NR_DS_SHEAR)
     if (!s_oob) {
 #endif
-    act_e4m3x4[ob]      = fe4m3vec4(NR_QO(0), NR_QO(1), NR_QO(2), NR_QO(3));
-    act_e4m3x4[ob + 1u] = fe4m3vec4(NR_QO(4), NR_QO(5), NR_QO(6), NR_QO(7));
+    act_e4m3x4[ob]      = nr_quant4_h(f16vec4(outv[0], outv[1], outv[2], outv[3]));
+    act_e4m3x4[ob + 1u] = nr_quant4_h(f16vec4(outv[4], outv[5], outv[6], outv[7]));
 #if defined(NR_DS_SHEAR)
     }
 #endif
@@ -754,8 +794,8 @@ void nr_finish_tile(uint tok0, uint ch0, uint wave, uint lane) {   // NOLINT
         const uint pq = (pc.p_off + ((otok / 16u) * (pc.N / 16u) + ch0 / 16u) * 256u
                          + (otok % 16u) * 16u + col0) / 4u;
 #define NR_QP(v) nr_quant_e4m3(pv[v])
-        act_e4m3x4[pq]      = fe4m3vec4(NR_QP(0), NR_QP(1), NR_QP(2), NR_QP(3));
-        act_e4m3x4[pq + 1u] = fe4m3vec4(NR_QP(4), NR_QP(5), NR_QP(6), NR_QP(7));
+        act_e4m3x4[pq]      = nr_quant4_h(f16vec4(pv[0], pv[1], pv[2], pv[3]));
+        act_e4m3x4[pq + 1u] = nr_quant4_h(f16vec4(pv[4], pv[5], pv[6], pv[7]));
 #undef NR_QP
     }
 #endif
@@ -887,8 +927,14 @@ void nr_finish_fragment(NR_FRAG_ACC a, uint tok0, uint ch0, uint lane) {
 #if NR_POOL_FRAG
     NR_F16 pvv[8];
 #endif
+    NR_F16 vh[8];
 #else
     NR_FRAG_ACC16 result;
+#endif
+#if NR_RBDA && !defined(NR_NO_RESIDUAL)
+    coopmat<NR_E4M3, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> rres;
+    coopMatLoad(rres, NrResRef(uvec2(pc.act_lo, pc.act_hi)).v, pc.r_off + tile, 16u,
+                gl_CooperativeMatrixLayoutRowMajor);
 #endif
     for (int c = 0; c < 8; ++c) {
         float raw = a[c];
@@ -897,8 +943,12 @@ void nr_finish_fragment(NR_FRAG_ACC a, uint tok0, uint ch0, uint lane) {
         // `raw` back from was an identity round trip on an f32.
         NR_F16 v = NR_F16(NR_ACT_APPLY(raw));
 #else
+#if NR_RBDA
+        NR_F16 r = NR_F16(rres[c]);
+#else
         NR_F16 r = NR_F16(act_e4m3[pc.r_off + tile +
                                   (row0 + uint(c)) * 16u + col]);
+#endif
 #ifdef NR_EPILOGUE_NVIDIA
         float gr = nr_round_f16(float(g) * float(r));
         NR_F16 v = NR_F16(nr_round_f16(raw) + gr);
@@ -907,15 +957,8 @@ void nr_finish_fragment(NR_FRAG_ACC a, uint tok0, uint ch0, uint lane) {
 #endif
 #endif
 #ifdef NR_OUT_E4M3
-#if NR_OUT_PERM
-        const NR_E4M3 qc = nr_quant_e4m3(v);
-        qv[c] = qc;
-#if NR_OUT_PERM == 2
-        result[c] = qc;
-#endif
-#else
-        result[c] = nr_quant_e4m3(v);
-#endif
+        // Windows: the eight values quantised four at a time after the loop (nr_quant4_h).
+        vh[c] = v;
 #if NR_POOL_FRAG
         pvv[c] = v;
 #endif
@@ -923,6 +966,19 @@ void nr_finish_fragment(NR_FRAG_ACC a, uint tok0, uint ch0, uint lane) {
         result[c] = v;
 #endif
     }
+#ifdef NR_OUT_E4M3
+    for (int c = 0; c < 8; c += 4) {
+        const fe4m3vec4 q4 = nr_quant4_h(f16vec4(vh[c], vh[c + 1], vh[c + 2], vh[c + 3]));
+#if NR_OUT_PERM
+        qv[c] = q4.x; qv[c + 1] = q4.y; qv[c + 2] = q4.z; qv[c + 3] = q4.w;
+#if NR_OUT_PERM == 2
+        result[c] = q4.x; result[c + 1] = q4.y; result[c + 2] = q4.z; result[c + 3] = q4.w;
+#endif
+#else
+        result[c] = q4.x; result[c + 1] = q4.y; result[c + 2] = q4.z; result[c + 3] = q4.w;
+#endif
+    }
+#endif
     // Each store is the address the per-element epilogue writes, restated as a
     // RowMajor Accumulator store: tiled is element (r, c) at
     // `o_off + tile + r*16 + c`, untiled is `o_off + (tok0+r)*N + ch0 + c`.
@@ -963,11 +1019,9 @@ void nr_finish_fragment(NR_FRAG_ACC a, uint tok0, uint ch0, uint lane) {
         const uint oh = ((pc.rows + 1u) / 2u + 3u) & ~3u;
         if (pc.rows != 0u && oy >= oh) continue;
         const uint otok = ((oy / 4u) * (ow / 4u) + ox / 4u) * 16u + 4u * (oy % 4u) + (ox % 4u);
-        // precise: without it LLPC adds rows r, r+1, r+4 and r+5 as one chain
-        // of f16 adds instead of the lds_e pool's two pairs, and the bytes differ.
-        precise const NR_F16 pa = NR_F16(float(pvv[c0]) + float(pvv[c0 + 1u]));
-        precise const NR_F16 pc2 = NR_F16(float(pvv[c0 + 4u]) + float(pvv[c0 + 5u]));
-        precise const NR_F16 pv = NR_F16(NR_F16(pa + pc2) * NR_F16(0.25));
+        const NR_F16 pa = NR_F16(float(pvv[c0]) + float(pvv[c0 + 1u]));
+        const NR_F16 pc2 = NR_F16(float(pvv[c0 + 4u]) + float(pvv[c0 + 5u]));
+        const NR_F16 pv = NR_F16(NR_F16(pa + pc2) * NR_F16(0.25));
         act_e4m3[pc.p_off + ((otok / 16u) * (pc.N / 16u) + ch0 / 16u) * 256u + (otok % 16u) * 16u + col] =
             nr_quant_e4m3(pv);
     }
@@ -1017,7 +1071,7 @@ void nr_finish_fragment(NR_FRAG_ACC a, uint tok0, uint ch0, uint lane) {
 layout(set=0, binding=3, std430) readonly buffer QkvScale { float qkv_scale[]; };
 #define NR_QKV_FOLD_PAIR(s) { \
     f16vec2 other = unpackFloat2x16(subgroupShuffleXor(packFloat2x16(sum), (s))); \
-    sum = f16vec2(NR_F16(sum.x + other.x), NR_F16(sum.y + other.y)); }
+    sum = sum + other; }   /* Windows: one packed add (LLPC scalarised the per-component form) */
 void nr_finish_qkv_pair(NR_FRAG_ACC a, NR_FRAG_ACC b, uint tok0, uint ch0, uint lane) {
     if (tok0 >= pc.M) return;
     NR_FRAG_E4M3 out0, out1;
@@ -1059,8 +1113,9 @@ void nr_finish_qkv_pair(NR_FRAG_ACC a, NR_FRAG_ACC b, uint tok0, uint ch0, uint 
             }
 #endif
         }
-        out0[c]=nr_quant_e4m3(x.x); out0[c+1]=nr_quant_e4m3(x.y);
-        out1[c]=nr_quant_e4m3(y.x); out1[c+1]=nr_quant_e4m3(y.y);
+        const fe4m3vec2 qx=nr_quant2_h(x), qy=nr_quant2_h(y);
+        out0[c]=qx.x; out0[c+1]=qx.y;
+        out1[c]=qy.x; out1[c+1]=qy.y;
     }
     uint tile=((tok0/16u)*(pc.N/16u)+ch0/16u)*256u;
     NR_STORE_ACC(out0,act_e4m3,pc.o_off+tile,16u);
@@ -1140,10 +1195,16 @@ void nr_finish_qkv_pair(NR_FRAG_ACC a, NR_FRAG_ACC b, uint tok0, uint ch0, uint 
 // tile-blocked layout are eight contiguous bytes - loaded through the packed
 // view with the lane term hoisted out of the loop, so each step is the
 // hoisted pointer plus the chunk offset plus a literal.
+#if NR_GLD_U2
+#define NR_LDA_I(i) { \
+    const uint nrq = (alane4[i] + akc4) + NR_AKOFF(kknext) / 4u; \
+    NR_FRAG_Q(fa[cur][i], act_u2[nrq / 2u]) }
+#else
 #define NR_LDA_I(i) { \
     const uint nrq = (alane4[i] + akc4) + NR_AKOFF(kknext) / 4u; \
     const fe4m3vec4 r0 = act_e4m3x4[nrq], r1 = act_e4m3x4[nrq + 1u]; \
     for (int v = 0; v < 4; ++v) { fa[cur][i][v] = r0[v]; fa[cur][i][v + 4] = r1[v]; } }
+#endif
 #elif NR_KOFF_SPLIT
 // k0 is a multiple of NR_KCHUNK, so (k0 + kk)/16 == k0/16 + kk/16. Adding
 // the per-chunk part once (akc/bkc) and the per-step part as a literal lets
@@ -1157,7 +1218,12 @@ void nr_finish_qkv_pair(NR_FRAG_ACC a, NR_FRAG_ACC b, uint tok0, uint ch0, uint 
 #define NR_LDA_I(i)  NR_LOAD_A(fa[cur][i], lds_a, \
         abase + (mloc + uint((i) * 16)) * uint(NR_KCHUNK) + kknext, uint(NR_KCHUNK));
 #endif
-#ifdef NR_PACKED_WEIGHT_N2
+#if defined(NR_PACKED_WEIGHT_N2) && NR_GLD_U2
+#define NR_LDB_J(j) if (((j)&1)==0) { \
+    const uvec4 nrw = wgt_pair_u4[NR_BADDR(j) / 4u]; \
+    NR_FRAG_Q(fb[cur][j], nrw.xy) \
+    NR_FRAG_Q(fb[cur][((j)+1)%NR_NFRAG], nrw.zw) }
+#elif defined(NR_PACKED_WEIGHT_N2)
 #define NR_LDB_J(j) if (((j)&1)==0) { \
     const uint nrq=NR_BADDR(j); \
     const fe4m3vec4 w0=wgt_pair4[nrq],w1=wgt_pair4[nrq+1u]; \
@@ -1437,8 +1503,26 @@ void main() {
     const uint lane = tid % 32u;
     const uint mloc = (wave / uint(NR_WN)) * uint(NR_MFRAG * 16);
     const uint nloc = (wave % uint(NR_WN)) * uint(NR_NFRAG * 16);
+#if NR_GEMM_REMAP_PC
+    // Workgroup order from the host (pc.remap = G): G M tiles are consecutive
+    // workgroups, then every N tile, then the next G M tiles; 0 is the launch
+    // order. Which tile a workgroup computes changes, not how. The ViT FFN
+    // contraction at 1080p ran 29 -> 25 us under G = 2 (nr_graph.cpp).
+    uint nr_gm = gl_WorkGroupID.x, nr_gn = gl_WorkGroupID.y;
+    if (pc.remap != 0u) {
+        const uint gx = gl_NumWorkGroups.x, gy = gl_NumWorkGroups.y;
+        const uint lin = gl_WorkGroupID.x + gx * gl_WorkGroupID.y;
+        const uint G = pc.remap;
+        const uint grp = lin / (G * gy), bm = grp * G, gt = min(G, gx - bm);
+        const uint r = lin - grp * G * gy;
+        nr_gm = bm + r % gt; nr_gn = r / gt;
+    }
+    const uint mg0 = nr_gm * uint(NR_MTILE);
+    const uint ng0 = nr_gn * uint(NR_NTILE);
+#else
     const uint mg0 = gl_WorkGroupID.x * uint(NR_MTILE);
     const uint ng0 = gl_WorkGroupID.y * uint(NR_NTILE);
+#endif
     const uint nchunk = pc.K / uint(NR_KCHUNK);
 
 #if defined(NR_A_DIRECT) || defined(NR_B_DIRECT)
@@ -1532,6 +1616,7 @@ void main() {
 #else
     NR_FOR_I(NR_MFRAG, NR_EPI_I)
 #endif
+    NR_OCC_USE(pc.K == 0u, act_f32[0] = 0.0)
     nr_chain_signal()
     NR_PROF_END(pc.o_off)
 }

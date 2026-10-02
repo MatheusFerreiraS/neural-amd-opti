@@ -1050,6 +1050,15 @@ if ($installLmxxf) {
         $rel = Join-Path 'lmxxf-modules' $_.FullName.Substring($lmxxfMods.Length).TrimStart('\','/')
         Install-One $_.FullName $rel
     }
+    # The RX 9060 series' kernels sit beside them ("lmxxf-modules-gfx1200", or "modules-gfx1200" in the repo);
+    # the runtime picks the folder by GPU.
+    $lmxxfMods1200 = "$lmxxfMods-gfx1200"
+    if (Test-Path -LiteralPath (Join-Path $lmxxfMods1200 'SHA256SUMS') -PathType Leaf) {
+        Get-ChildItem -LiteralPath $lmxxfMods1200 -Recurse -File | ForEach-Object {
+            $rel = Join-Path 'lmxxf-modules-gfx1200' $_.FullName.Substring($lmxxfMods1200.Length).TrimStart('\','/')
+            Install-One $_.FullName $rel
+        }
+    }
     if ($lmxxfShaders) {
         $shaderKeep = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
         Get-ChildItem -LiteralPath $lmxxfShaders -Recurse -File | ForEach-Object {

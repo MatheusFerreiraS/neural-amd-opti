@@ -829,6 +829,12 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
         fi.debug_view = Config::Instance()->DlssNrDebugView.value_or_default();
         fi.model_scale = settings.modelScale;
         fi.passes = settings.passes;
+        fi.flags |= LMXXF_NR_FRAME_FLAG_STYLE;
+        fi.style = std::min(Config::Instance()->LmxxfStyle.value_or_default(), 2u);
+        if (Config::Instance()->LmxxfVitReuse.value_or_default())
+            fi.flags |= LMXXF_NR_FRAME_FLAG_VIT_REUSE;
+        if (Config::Instance()->LmxxfCompact1080.value_or_default())
+            fi.flags |= LMXXF_NR_FRAME_FLAG_COMPACT_1080;
     }
     else
     {
@@ -1057,6 +1063,11 @@ ID3D12Resource* LmxxfBackend::RecordDiagnostic(ID3D12GraphicsCommandList* cmd, c
                     fi.color_strength =
                         std::clamp(Config::Instance()->DlssNrColourStrength.value_or_default(), 0.0f, 2.0f);
                     fi.debug_view = Config::Instance()->DlssNrDebugView.value_or_default();
+                    // The same Style as the frames around it: another would rebuild the network.
+                    fi.flags |= LMXXF_NR_FRAME_FLAG_STYLE;
+                    fi.style = std::min(Config::Instance()->LmxxfStyle.value_or_default(), 2u);
+                    if (Config::Instance()->LmxxfCompact1080.value_or_default())
+                        fi.flags |= LMXXF_NR_FRAME_FLAG_COMPACT_1080;
                 }
                 else
                 {

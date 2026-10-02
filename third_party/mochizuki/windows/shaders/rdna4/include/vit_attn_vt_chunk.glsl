@@ -88,6 +88,27 @@
                     s = s + unpackFloat2x16(subgroupShuffleXor(packFloat2x16(s), 16u));
                     den[b] = float(NR_F16(NR_F16(den[b]) + NR_F16(s.x + s.y)));
                 }
+#elif NR_VKPERM && NR_VT_GUARD == 0
+                // NR_VKPERM: K rows 4-7 and 8-11 of each 16-key tile are loaded
+                // swapped, so a lane holds keys c and c+8 itself (low half c =
+                // 0-3, high half 4-7) and each pair is one in-lane packed add of
+                // the same two operands the shuffle paired. The partials stay in
+                // lane until the chunk ends; P returns to the natural key order
+                // below, so P.V sums in its original order.
+                {
+                    const f16vec2 pa = pv[0] + pv[2], pz = pv[1] + pv[3];
+                    part[b][0] = (kb == 0u) ? pa : part[b][0] + pa;
+                    part[b][1] = (kb == 0u) ? pz : part[b][1] + pz;
+                }
+                if (kb + 16u == uint(NR_KC)) {
+                    const bool lo = sl < 16u;
+                    const f16vec2 o0 = unpackFloat2x16(subgroupShuffleXor(packFloat2x16(part[b][0]), 16u));
+                    const f16vec2 o1 = unpackFloat2x16(subgroupShuffleXor(packFloat2x16(part[b][1]), 16u));
+                    const f16vec2 p0 = lo ? part[b][0] : o0, p1 = lo ? part[b][1] : o1;
+                    const f16vec2 p2 = lo ? o0 : part[b][0], p3 = lo ? o1 : part[b][1];
+                    const f16vec2 s = ((p0 + p1) + p2) + p3;
+                    den[b] = float(NR_F16(NR_F16(den[b]) + NR_F16(s.x + s.y)));
+                }
 #else
                 for (int c = 0; c < lg.length(); c += 2) {
                     const f16vec2 pv2 = pv[c >> 1];
@@ -112,7 +133,21 @@
                 NR_FRAG_E4M3 pe = NR_FRAG_E4M3(ph);
                 if (NR_VT_GUARD != 0 && j0 + kb >= pc.tokens) pe = NR_FRAG_E4M3(0.0);
                 NR_FRAG_B pf;
+#if NR_VKPERM && NR_VT_GUARD == 0
+                {
+                    // Low lanes hold keys 0-3 | 8-11, high lanes 4-7 | 12-15:
+                    // swap the low lanes' second dword with the high lanes' first.
+                    const bool lo = sl < 16u;
+                    const uint d0 = pack32(floate4m3BitsToUintEXT(fe4m3vec4(pe[0], pe[1], pe[2], pe[3])));
+                    const uint d1 = pack32(floate4m3BitsToUintEXT(fe4m3vec4(pe[4], pe[5], pe[6], pe[7])));
+                    const uint x = subgroupShuffleXor(lo ? d1 : d0, 16u);
+                    const fe4m3vec4 n0 = uintBitsToFloate4m3EXT(unpack8(lo ? d0 : x));
+                    const fe4m3vec4 n1 = uintBitsToFloate4m3EXT(unpack8(lo ? x : d1));
+                    for (int c = 0; c < 4; ++c) { pf[c] = n0[c]; pf[c + 4] = n1[c]; }
+                }
+#else
                 for (int c = 0; c < 8; ++c) pf[c] = pe[c];
+#endif
 #endif
                 for (uint n = 0u; n < 2u; ++n) {
                     NR_MMA(ctx[b][n], vf[n], pf);

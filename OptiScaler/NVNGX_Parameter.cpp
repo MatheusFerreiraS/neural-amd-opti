@@ -5,6 +5,7 @@
 #include "SysUtils.h"
 #include "Config.h"
 #include <ankerl/unordered_dense.h>
+#include <set>
 #include <misc/IdentifyGpu.h>
 #include <proxies/FfxApi_Proxy.h>
 #include <framegen/nvngx/Nvngx_FG.h>
@@ -413,13 +414,17 @@ template <typename T> NVSDK_NGX_Result NVNGX_Parameters::getT(const char* key, T
     const std::lock_guard<std::mutex> lock(m_mutex);
     auto k = m_values.find(key);
 
-    // RR gate trace: log capability reads the host makes for denoiser availability keys
-    if (std::strstr(key, "Denoising") != nullptr || std::strstr(key, "DLSSD") != nullptr)
+    // DLSS and RR gate trace: the availability keys a game reads before it offers DLSS, once per key
+    // and answer, so a log shows why a game kept the option hidden.
+    if (std::strstr(key, "SuperSampling") != nullptr || std::strstr(key, "DLSSD") != nullptr)
     {
-        if (k == m_values.end())
-            LOG_INFO("NGX param READ: '{}' -> MISSING", key);
-        else
-            LOG_INFO("NGX param READ: '{}' -> int {}", key, static_cast<int>((*k).second));
+        static std::mutex loggedMutex;
+        static std::set<std::string> logged;
+        const std::string answer =
+            k == m_values.end() ? std::string("MISSING") : "int " + std::to_string(static_cast<int>((*k).second));
+        const std::lock_guard<std::mutex> once(loggedMutex);
+        if (logged.insert(std::string(key) + answer).second)
+            LOG_INFO("NGX param READ: '{}' -> {}", key, answer);
     }
 
     if (k == m_values.end())
