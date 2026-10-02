@@ -146,6 +146,7 @@ struct Bridge
     ComPtr<IDXGISwapChain4> swap;
     UINT swapWidth = 0, swapHeight = 0, swapFlags = 0;
     bool presenterFailed = false;
+    bool fullscreenSaid = false;
     bool tearing = false;
 
     UINT64 frames = 0;
@@ -509,12 +510,11 @@ struct Bridge
         if (swap == nullptr)
             return;
 
-        LOG_INFO("D3D9 bridge: releasing the XeFG presenter; frame generation stays off for this session");
+        LOG_INFO("D3D9 bridge: releasing the XeFG presenter");
         MenuOverlayDx::CleanupRenderTarget(true, window);
         Wait();
         swap.Reset();
         State::Instance().swapchainInteropApi = SwapchainInteropApi::None;
-        presenterFailed = true;
     }
 
     bool CreatePresenter()
@@ -585,6 +585,7 @@ struct Bridge
             if (FAILED(resized))
             {
                 ReleasePresenter();
+                presenterFailed = true;
                 return false;
             }
 
@@ -607,6 +608,7 @@ struct Bridge
         {
             LOG_ERROR("D3D9 bridge: the frame could not be read back");
             ReleasePresenter();
+            presenterFailed = true;
             return false;
         }
 
@@ -749,22 +751,22 @@ struct Bridge
             State::Instance().screenHeight = static_cast<float>(desc.Height);
         }
 
+        // Exclusive fullscreen belongs to the D3D9 device: the presenter comes back with a windowed device.
         if (swap != nullptr && !params.Windowed)
             ReleasePresenter();
 
-        if (PresenterWanted() && !presenterFailed && EnsureD3D12(device) && Size(desc))
+        if (PresenterWanted() && !params.Windowed && !fullscreenSaid)
         {
-            if (!params.Windowed)
-            {
-                LOG_WARN("D3D9 bridge: XeFG needs a windowed or borderless D3D9 device");
-                presenterFailed = true;
-            }
-            else if (swap != nullptr || CreatePresenter())
-            {
-                const bool presented = PresentThroughSwap(back.Get(), params.PresentationInterval);
-                Report();
-                return presented;
-            }
+            LOG_WARN("D3D9 bridge: XeFG needs a windowed or borderless D3D9 device");
+            fullscreenSaid = true;
+        }
+
+        if (PresenterWanted() && params.Windowed && !presenterFailed && EnsureD3D12(device) && Size(desc) &&
+            (swap != nullptr || CreatePresenter()))
+        {
+            const bool presented = PresentThroughSwap(back.Get(), params.PresentationInterval);
+            Report();
+            return presented;
         }
 
         State::Instance().swapchainApi = API::DX9;
