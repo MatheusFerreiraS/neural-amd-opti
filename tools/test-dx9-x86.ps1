@@ -190,6 +190,25 @@ try {
             Select-Object -Last 1
         if (-not $last -or $last.Matches[0].Groups[1].Value -eq '1280x720') { 'NR did not run at a new model scale' }
     }
+    # The same drag, by a menu that must follow the mouse the way the player sees it. 'menu-follow': the
+    # cursor shows (a game's own menus); a first click on an empty spot, then the cursor moved to the
+    # slider. The menu must follow the cursor, not raw moves counted from the first click. 'menu-pinned':
+    # the game hides the cursor and holds it on one point outside the menu (Source in play re-centres
+    # it), so the menu can follow the mouse only by the raw moves its input sink reads, here also on
+    # XeFG's present thread.
+    $follow = @('--drag-at', '330', '200', '395', '200', '395', '--drag-at', '370', '470', '395', '420', '395')
+    $pinned = @('--hide-cursor', '--pin', '200', '395', '--drag-at', '340', '470', '395', '420', '395', '--drag-at',
+        '380', '470', '395', '420', '395')
+    foreach ($case in @(@('menu-follow', $nr, $follow), @('menu-follow-fg', $fg, $follow), @('menu-pinned', $nr, $pinned),
+            @('menu-pinned-fg', $fg, $pinned))) {
+        $arguments = @('--frames', '900', '--expect-bridged', '--key-at', '300', '0x2D') + $case[2] + @('--shot-at',
+            '420', "$($case[0]).bmp", '--key-at', '440', '0x2D')
+        if ($case[0] -like '*-fg') { $arguments += '--expect-fg' }
+        Run-Case $case[0] $case[1] $arguments {
+            param($text)
+            if ((Last-NrSize) -in @('', '1280x720')) { 'the menu did not follow the mouse to the Model scale slider' }
+        }
+    }
     # The window procedure is replaced at frame 50 by one that calls nothing before it (as an engine or
     # overlay may do after the device exists): the menu must still hold the game's input.
     Run-Case 'menu' $nr @('--frames', '300', '--subclass-at', '50', '--menu-at', '100', '--shot-at', '150',

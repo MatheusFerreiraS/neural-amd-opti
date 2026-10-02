@@ -13,6 +13,9 @@
 //   --menu-at F          press the menu key (Insert) at F, move the mouse over the window, press it again
 //   --key-at F VK        press and release a key (hex or decimal virtual key) at frame F
 //   --drag-at F X0 Y0 X1 Y1  drag with the left button from X0,Y0 to X1,Y1 (client pixels) from frame F on
+//   --pin X Y            from the first drag to the end of the last, keep the cursor on client point X,Y (a
+//                        one-pixel clip through the real ClipCursor, as a game that holds the cursor in
+//                        place); the drags then reach their start by relative moves only
 //   --reset-at F WxH     Reset the device to a new size at frame F
 //   --kill-host-at F     end the host process at frame F; the proxy must start another
 //   --hold-key F0 F1 VK  press VK at F0 and release it at F1; the game must see the release
@@ -23,6 +26,8 @@
 //                        must be presented by a new host, without a failure counted (not with
 //                        --window-thread)
 //   --minimize-at F0 F1  minimize the window at F0 and restore it at F1
+//   --hide-cursor        no cursor over the client area (a game in play hides it)
+//   --away-at F0 F1      another window takes the foreground at F0 (as Alt+Tab would), the game's at F1
 //   --subclass-at F      at F, make the window procedure one that calls nothing installed before it, as
 //                        an engine or overlay that replaces it after the device exists would
 //   --expect-unhooked    OptiScaler must be reported unhooked in each host, and the session native
@@ -79,9 +84,16 @@ UINT watchVk = 0, watchLast = 0;
 decltype(&GetAsyncKeyState) realAsyncKey = nullptr;
 decltype(&GetClipCursor) realGetClip = nullptr;
 decltype(&ClipCursor) realClip = nullptr;
+// --hide-cursor: no cursor over the client area, as a game that draws its own or none.
+bool hideCursor = false;
 
 LRESULT CALLBACK Proc(HWND window, UINT message, WPARAM w, LPARAM l)
 {
+    if (message == WM_SETCURSOR && hideCursor && LOWORD(l) == HTCLIENT)
+    {
+        SetCursor(nullptr);
+        return TRUE;
+    }
     if (message >= WM_MOUSEFIRST && message <= WM_MOUSELAST)
         ++mouseMessages;
     if (message == WM_KEYDOWN || message == WM_KEYUP || message == WM_CHAR)
@@ -434,6 +446,8 @@ int main(int argc, char** argv)
         int at, x0, y0, x1, y1;
     };
     std::vector<Drag> drags;
+    int pinX = -1, pinY = -1, awayAt = -1, backAt = -1;
+    HWND away = nullptr;
     for (int i = 1; i < argc; ++i)
     {
         const std::string a = argv[i];
@@ -533,6 +547,18 @@ int main(int argc, char** argv)
         {
             const int at = atoi(next());
             keys.push_back({ at, static_cast<WORD>(strtoul(next(), nullptr, 0)) });
+        }
+        else if (a == "--hide-cursor")
+            hideCursor = true;
+        else if (a == "--away-at")
+        {
+            awayAt = atoi(next());
+            backAt = atoi(next());
+        }
+        else if (a == "--pin")
+        {
+            pinX = atoi(next());
+            pinY = atoi(next());
         }
         else if (a == "--drag-at")
         {
@@ -783,6 +809,7 @@ int main(int argc, char** argv)
     LARGE_INTEGER started {}, ended {}, rate {};
     QueryPerformanceFrequency(&rate);
     QueryPerformanceCounter(&started);
+    POINT pinMoved { pinX, pinY };
     for (int frame = 0; frame < frames; ++frame)
     {
         Pump();
@@ -880,11 +907,31 @@ int main(int argc, char** argv)
         // process's window follows a mouse by its relative moves, from where the cursor was), button
         // down, twelve relative steps, button up; one event a frame, as OptiScaler reads the mouse once a
         // frame.
+        if (frame == awayAt)
+            away = MakeWindow(320, 200, 20, 600);
+        if (frame == backAt && away)
+        {
+            (Foreground(window) ? keysSent : keysSkipped)++;
+            DestroyWindow(away);
+        }
+        // With --pin the menu can only follow the mouse by its relative moves, from where they left it.
+        if (pinX >= 0 && !drags.empty() && frame >= drags.front().at && frame <= drags.back().at + 25)
+        {
+            POINT point { pinX, pinY };
+            ClientToScreen(window, &point);
+            const RECT pin { point.x, point.y, point.x + 1, point.y + 1 };
+            realClip(frame <= drags.back().at + 24 ? &pin : nullptr);
+        }
         for (const auto& d : drags)
         {
             const int step = frame - d.at;
             bool sent = true;
-            if (step == 0)
+            if (step == 0 && pinX >= 0)
+            {
+                sent = NudgeMouse(window, d.x0 - pinMoved.x, d.y0 - pinMoved.y);
+                pinMoved = { d.x0 + (d.x1 - d.x0) / 12 * 12, d.y0 + (d.y1 - d.y0) / 12 * 12 };
+            }
+            else if (step == 0)
                 sent = MoveMouse(window, d.x0, d.y0);
             else if (step == 2)
                 sent = NudgeMouse(window, 1, 0);
