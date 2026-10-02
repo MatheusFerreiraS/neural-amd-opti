@@ -6,6 +6,7 @@ param(
     [string]$Runtime = 'E:\Games\The Sims 4\Game\Bin\dlssnr_amd_pass1.dll',
     [string]$Weights = 'E:\Games\The Sims 4\Game\Bin\dlssnr_on_amd_weights.bin',
     [string]$XeFG = 'E:\Projetos\opti_rr_dlss5\opti\dist\OptiScaler-0.4.9-amd-nr\OptiScaler',
+    [string]$OptiScaler = '',
     [string[]]$Only = @()
 )
 $ErrorActionPreference = 'Stop'
@@ -16,7 +17,8 @@ $host64 = Join-Path $stage 'OptiScaler64'
 $smoke = Join-Path $stage 'dx9_x86_smoke.exe'
 $lock = 'E:\Projetos\opti_rr_dlss5\wt\locks\gpu'
 
-Copy-Item (Join-Path $root 'exports\release-local\OptiScaler.dll') $host64 -Force
+if (-not $OptiScaler) { $OptiScaler = Join-Path $root 'exports\release-local\OptiScaler.dll' }
+Copy-Item $OptiScaler $host64 -Force
 foreach ($pair in @(@($Runtime, 'dlssnr_amd_pass1.dll'), @($Weights, 'dlssnr_on_amd_weights.bin'),
         @((Join-Path $XeFG 'libxess_fg.dll'), 'libxess_fg.dll'), @((Join-Path $XeFG 'libxell.dll'), 'libxell.dll'))) {
     $target = Join-Path $host64 $pair[1]
