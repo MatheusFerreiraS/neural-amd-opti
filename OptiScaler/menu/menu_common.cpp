@@ -1474,10 +1474,12 @@ void MenuCommon::UpdateMenuInputMode(RenderMenuContext& ctx)
 }
 
 // XeFG on the Vulkan or OpenGL final image, in a D3D12 child window: the FG key and the menu section that switch it.
+// Vulkan keeps XeFG running on its guides with NR off; OpenGL needs NR on.
 static bool ChildWindowFinalImageFG(State& state, Config* config)
 {
-    return (state.swapchainApi == API::Vulkan || state.swapchainApi == API::OpenGL) &&
-           config->DlssNrPresent.value_or_default() && config->DlssNrEnabled.value_or_default() &&
+    return (state.swapchainApi == API::Vulkan ||
+            (state.swapchainApi == API::OpenGL && config->DlssNrEnabled.value_or_default())) &&
+           config->DlssNrPresent.value_or_default() &&
            DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel &&
            state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::XeFG;
 }
@@ -2054,6 +2056,11 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             auto fg = state.currentFG;
             auto fgText = (fg != nullptr && fg->IsActive() && !fg->IsPaused()) ? (" (" + std::string(fg->Name()) + ")")
                                                                                : std::string();
+            // The Vulkan and OpenGL routes show XeFG in a window of their own; the rate measured here is the game's.
+            const int childGenerated =
+                AmdPresentExperimental::childFgShown ? AmdPresentExperimental::childFgInterpolated.load() : 0;
+            if (childGenerated > 0)
+                fgText = " (XeFG)";
 
             const int fakeFramesCount = state.dlssgDetectedInterpolationCount;
             auto formatFg = [&](std::string_view name, int maxFakeFrames)
@@ -2128,6 +2135,26 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
 
                 default:
                     fpsPart = StrFmt("FPS: %6.1f/%5.1f, Avg: %6.1f", frameRate, baseFps, 1000.0f / averageFrameTime);
+                    break;
+                }
+            }
+            else if (childGenerated > 0)
+            {
+                const double shownFps = frameRate * (childGenerated + 1);
+
+                switch (overlayType)
+                {
+                case FpsOverlay_JustFPS:
+                    fpsPart = StrFmt("%6.1f/%5.1f ", shownFps, frameRate);
+                    break;
+
+                case FpsOverlay_Simple:
+                    fpsPart = StrFmt("FPS: %6.1f/%5.1f, %7.2f ms", shownFps, frameRate, frameTime);
+                    break;
+
+                default:
+                    fpsPart = StrFmt("FPS: %6.1f/%5.1f, Avg: %6.1f", shownFps, frameRate,
+                                     1000.0f * (childGenerated + 1) / averageFrameTime);
                     break;
                 }
             }

@@ -15,6 +15,8 @@ namespace AmdPresentExperimental
 // What the running presenter reports, for the menu. Zero while no presenter runs.
 inline std::atomic<int> childFgMaximum = 0;
 inline std::atomic<int> childFgInterpolated = 0;
+// Whether the presenter's window shows XeFG's frames, for the FPS overlay.
+inline std::atomic<bool> childFgShown = false;
 
 struct ChildFgSettings
 {

@@ -73,7 +73,7 @@ struct FgPresenter
             ShowWindow(window, command);
         else
             ShowWindowAsync(window, command);
-        visible = show;
+        visible = childFgShown = show;
     }
 
     void Pause()

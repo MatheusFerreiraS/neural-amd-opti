@@ -833,9 +833,11 @@ inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::fil
     }
     return false;
 }
+// With `neural` off only XeFG's guides are made. A `pipelined` caller orders the queue's work around this frame on
+// the GPU and returns at once; otherwise this waits for the frame, since Vulkan copies the image back next.
 inline bool RenderResource(ID3D12Resource* resource, ID3D12Device* device, ID3D12CommandQueue* queue,
                            const std::filesystem::path& directory, AmdPreSr::Settings settings,
-                           Guides* guides = nullptr)
+                           Guides* guides = nullptr, bool neural = true, bool pipelined = false)
 {
     Lock g;
     if (guides)
@@ -849,14 +851,14 @@ inline bool RenderResource(ID3D12Resource* resource, ID3D12Device* device, ID3D1
             status = "Final-image NR: Vulkan D3D12 device changed; restart required";
             return false;
         }
-        const bool rendered = context->Frame(resource, D3D12_RESOURCE_STATE_COMMON, directory, settings);
-        // Vulkan copies the shared image back as soon as this returns.
-        if (!context->WaitForFrame())
+        context->pipelined = pipelined;
+        context->Frame(resource, D3D12_RESOURCE_STATE_COMMON, directory, settings, nullptr, neural, guides != nullptr);
+        if (!pipelined && !context->WaitForFrame())
         {
             context->stopped = true;
             status = "Final-image NR: GPU timeout; stopped";
         }
-        if (guides && rendered && !context->stopped && context->lastFlowValid)
+        if (guides && !context->stopped && context->lastFlowValid)
         {
             guides->motion = context->motion;
             guides->depth = context->depth;

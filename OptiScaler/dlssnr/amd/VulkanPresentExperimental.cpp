@@ -17,6 +17,7 @@
 #include <d3d12.h>
 #include <dxgi1_2.h>
 #include <dxgi1_4.h>
+#include <dxgi1_5.h>
 #include <wrl/client.h>
 
 #include <mutex>
@@ -141,7 +142,9 @@ struct FgPresenter
     xefg_swapchain_handle_t context = nullptr;
     xell_context_handle_t xell = nullptr;
     ComPtr<IDXGISwapChain3> swap;
-    ComPtr<ID3D12CommandAllocator> allocator;
+    // Two allocators: the copies of one frame may still run on the GPU while the next frame records its own.
+    ComPtr<ID3D12CommandAllocator> allocators[2];
+    uint64_t used[2] {};
     ComPtr<ID3D12GraphicsCommandList> command;
     ComPtr<ID3D12Fence> fence;
     ComPtr<ID3D12Resource> hudless;
@@ -153,13 +156,28 @@ struct FgPresenter
     bool enabled = false;
     bool visible = false;
     bool resetOnResume = true;
+    // Presents may tear, as the game's own do when it presents without vsync.
+    bool tearing = false;
     std::chrono::steady_clock::time_point previous {};
 
     void Show(bool show)
     {
         if (!window) return;
         ShowWindowAsync(window, show ? SW_SHOWNA : SW_HIDE);
-        visible = fgLive = show;
+        visible = fgLive = AmdPresentExperimental::childFgShown = show;
+    }
+
+    bool Reached(uint64_t value)
+    {
+        if (fence->GetCompletedValue() >= value)
+            return true;
+        HANDLE completed = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!completed)
+            return false;
+        const bool done = SUCCEEDED(fence->SetEventOnCompletion(value, completed)) &&
+                          WaitForSingleObject(completed, 4000) == WAIT_OBJECT_0;
+        CloseHandle(completed);
+        return done;
     }
 
     void Pause()
@@ -184,17 +202,13 @@ struct FgPresenter
         xell = nullptr;
         // Generated frames still in flight read the hudless copy and the NR guides; D3D12 frees a
         // resource at once, so the queue drains before any of them goes.
-        if (queue && fence && SUCCEEDED(queue->Signal(fence.Get(), ++serial)) && fence->GetCompletedValue() < serial)
-        {
-            HANDLE drained = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-            if (drained && SUCCEEDED(fence->SetEventOnCompletion(serial, drained)))
-                WaitForSingleObject(drained, 4000);
-            if (drained)
-                CloseHandle(drained);
-        }
+        if (queue && fence && SUCCEEDED(queue->Signal(fence.Get(), ++serial)))
+            Reached(serial);
         queue.Reset();
         command.Reset();
-        allocator.Reset();
+        for (auto& allocator : allocators)
+            allocator.Reset();
+        used[0] = used[1] = 0;
         fence.Reset();
         hudless.Reset();
         output.Destroy();
@@ -208,8 +222,10 @@ struct FgPresenter
         previous = {};
     }
 
-    bool Create(HWND parent, ID3D12Device* device, ID3D12CommandQueue* queue,
-                uint32_t width, uint32_t height, DXGI_FORMAT format)
+    // `immediate`: the game presents without vsync. XeFG's frames may then tear like the game's; with vsync the
+    // display's refresh rate limits what XeFG puts out, and through it the game's real frame rate.
+    bool Create(HWND parent, ID3D12Device* device, ID3D12CommandQueue* queue, uint32_t width, uint32_t height,
+                DXGI_FORMAT format, bool immediate)
     {
         if (!parent || !XeFGProxy::InitXeFG() || !XeFGProxy::D3D12CreateContext() ||
             !XeFGProxy::GetProperties() || !XeFGProxy::D3D12InitFromSwapChainDesc() ||
@@ -279,6 +295,14 @@ struct FgPresenter
             LOG_ERROR("Vulkan XeFG: DXGI factory failed ({:X})", (UINT) factoryResult);
             return false;
         }
+        ComPtr<IDXGIFactory5> factory5;
+        BOOL allowed = FALSE;
+        tearing =
+            immediate && SUCCEEDED(factory.As(&factory5)) &&
+            SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowed, sizeof(allowed))) &&
+            allowed;
+        if (tearing)
+            description.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
         {
             ScopedVulkanCreatingSC creating;
             const auto initialized = XeFGProxy::D3D12InitFromSwapChainDesc()(
@@ -314,26 +338,30 @@ struct FgPresenter
         hudlessDesc.SampleDesc.Count = 1;
         if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &hudlessDesc,
                                                    D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&hudless))) ||
-            FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) ||
-            FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
+            FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocators[0]))) ||
+            FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocators[1]))) ||
+            FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocators[0].Get(), nullptr,
                                              IID_PPV_ARGS(&command))) ||
             FAILED(command->Close()) || FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
             return false;
         const DWORD parentThread = GetWindowThreadProcessId(parent, nullptr);
-        LOG_INFO("Vulkan XeFG presenter created at {}x{}, maximum {} interpolations; parent thread {}, presenter thread {}",
-                 width, height, maximum, parentThread, GetCurrentThreadId());
+        LOG_INFO("Vulkan XeFG presenter created at {}x{}, maximum {} interpolations, {}; parent thread {}, presenter "
+                 "thread {}",
+                 width, height, maximum, tearing ? "tearing like the game" : "no tearing", parentThread,
+                 GetCurrentThreadId());
         return true;
     }
 
-    // `overlaid` is the final image with OptiScaler's overlay drawn on it, `colour` the same image without.
-    bool Present(ID3D12Resource* overlaid, ID3D12Resource* colour, const AmdPresentExperimental::Guides& guides,
-                 ID3D12CommandQueue* queue)
+    // Copies the frame on the presenter's queue: `overlaid`, the final image with OptiScaler's overlay drawn on it,
+    // becomes the back buffer and `colour`, the same image without, the hudless colour.
+    bool Copy(ID3D12Resource* overlaid, ID3D12Resource* colour)
     {
-        if (!swap || !guides.motion || !guides.depth) return false;
-        if (!settings.Apply(context, maximum, "Vulkan"))
+        if (!swap)
             return false;
+        auto& allocator = allocators[frameId % 2];
         ComPtr<ID3D12Resource> back;
-        if (FAILED(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&back))) ||
+        if (!Reached(used[frameId % 2]) ||
+            FAILED(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&back))) ||
             FAILED(allocator->Reset()) || FAILED(command->Reset(allocator.Get(), nullptr)))
             return false;
         AmdPresentExperimental::Transition(command.Get(), back.Get(), D3D12_RESOURCE_STATE_PRESENT,
@@ -350,15 +378,17 @@ struct FgPresenter
         ID3D12CommandList* lists[] { command.Get() };
         queue->ExecuteCommandLists(1, lists);
         if (FAILED(queue->Signal(fence.Get(), ++serial))) return false;
-        if (fence->GetCompletedValue() < serial)
-        {
-            HANDLE completed = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-            if (!completed) return false;
-            const bool done = SUCCEEDED(fence->SetEventOnCompletion(serial, completed)) &&
-                              WaitForSingleObject(completed, 4000) == WAIT_OBJECT_0;
-            CloseHandle(completed);
-            if (!done) return false;
-        }
+        used[frameId % 2] = serial;
+        return true;
+    }
+
+    // Tags the guides and presents the copied frame with the generated ones.
+    bool Present(const AmdPresentExperimental::Guides& guides)
+    {
+        if (!swap || !guides.motion || !guides.depth)
+            return false;
+        if (!settings.Apply(context, maximum, "Vulkan"))
+            return false;
         const uint32_t id = ++frameId;
         auto tag = [&](xefg_swapchain_resource_type_t type, ID3D12Resource* resource) {
             xefg_swapchain_d3d12_resource_data_t data {};
@@ -396,7 +426,8 @@ struct FgPresenter
         if (!visible)
             Show(true);
         ScopedVulkanCreatingSC creating;
-        if (FAILED(swap->Present(0, 0))) return false;
+        if (FAILED(swap->Present(0, tearing ? DXGI_PRESENT_ALLOW_TEARING : 0)))
+            return false;
         resetOnResume = false;
         if (id == 2 || id % 30 == 0)
         {
@@ -421,6 +452,7 @@ struct Bridge
     uint32_t enabledFamily = UINT32_MAX;
     VkExtent2D extent {};
     VkFormat format = VK_FORMAT_UNDEFINED;
+    VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
     HWND hwnd = nullptr;
     FgPresenter fg;
     bool fgFailed = false;
@@ -429,14 +461,28 @@ struct Bridge
     std::vector<VkImage> images;
     std::vector<VkSemaphore> ready, overlaid;
     VkCommandPool pool = VK_NULL_HANDLE;
-    VkCommandBuffer command = VK_NULL_HANDLE;
-    VkFence fence = VK_NULL_HANDLE;
+    // A command buffer and the fence of its last submit.
+    struct Step
+    {
+        VkCommandBuffer buffer = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+        bool pending = false;
+    };
+    // The copies in, out and to the overlay of a present. With the GPU link two presents are in flight, each with
+    // its own set; without it every copy is waited for on the CPU and step [0][0] serves them all.
+    Step steps[2][3];
+    uint32_t set = 0;
+    // The Vulkan queue and queue12 order their work on the GPU through a D3D12 fence shared as a Vulkan
+    // semaphore, so a present goes on while its NR runs. `linkValue` is the last value either side was given,
+    // `d3d12Done` the last one queue12 signals after reading the shared images.
+    ComPtr<ID3D12Fence> link12;
+    VkSemaphore link = VK_NULL_HANDLE;
+    uint64_t linkValue = 0, d3d12Done = 0;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     void* mapped = nullptr;
     bool copyAllowed = false;
     bool stopped = false;
-    bool submitted = false;
     bool gpuInterop = false;
     bool sharedInitialized = false;
     VkImage sharedImage = VK_NULL_HANDLE, overlayImage = VK_NULL_HANDLE;
@@ -453,11 +499,16 @@ struct Bridge
     void Release()
     {
         fg.Release();
-        // The game may be submitting to its queue from another thread; our own fence needs no queue access.
-        if (device && fence && submitted)
-            vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+        // The game may be submitting to its queue from another thread; our own fences need no queue access.
+        Settle();
         if (shared12)
             AmdPresentExperimental::BeforeResize();
+        if (link)
+            vkDestroySemaphore(device, link, nullptr);
+        link = VK_NULL_HANDLE;
+        link12.Reset();
+        linkValue = d3d12Done = 0;
+        set = 0;
         shared12.Reset();
         overlay12.Reset();
         fgGuides = {};
@@ -478,15 +529,23 @@ struct Bridge
         for (auto s : overlaid)
             if (s)
                 vkDestroySemaphore(device, s, nullptr);
-        if (fence) vkDestroyFence(device, fence, nullptr);
+        for (auto& row : steps)
+            for (auto& step : row)
+            {
+                if (step.fence)
+                    vkDestroyFence(device, step.fence, nullptr);
+                step = {};
+            }
         if (pool) vkDestroyCommandPool(device, pool, nullptr);
-        buffer = VK_NULL_HANDLE; memory = VK_NULL_HANDLE; fence = VK_NULL_HANDLE;
-        pool = VK_NULL_HANDLE; command = VK_NULL_HANDLE;
+        buffer = VK_NULL_HANDLE;
+        memory = VK_NULL_HANDLE;
+        pool = VK_NULL_HANDLE;
         ready.clear();
         overlaid.clear();
         images.clear();
         readback.Reset(); colour.Reset();
-        swapchain = VK_NULL_HANDLE; queue = VK_NULL_HANDLE; submitted = false;
+        swapchain = VK_NULL_HANDLE;
+        queue = VK_NULL_HANDLE;
         copyAllowed = false; stopped = false;
         fgFailed = false;
     }
@@ -612,6 +671,36 @@ struct Bridge
         return CreateShared(sharedImage, sharedMemory, shared12);
     }
 
+    // Shares a D3D12 fence with Vulkan as the GPU link. A device without the semaphore import keeps the CPU waits.
+    bool InitLink()
+    {
+        auto import = reinterpret_cast<PFN_vkImportSemaphoreWin32HandleKHR>(
+            vkGetDeviceProcAddr(device, "vkImportSemaphoreWin32HandleKHR"));
+        HANDLE handle = nullptr;
+        if (!import || FAILED(d12->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&link12))) ||
+            FAILED(d12->CreateSharedHandle(link12.Get(), nullptr, GENERIC_ALL, nullptr, &handle)))
+        {
+            link12.Reset();
+            return false;
+        }
+        VkSemaphoreCreateInfo info { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+        VkImportSemaphoreWin32HandleInfoKHR imported { VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_WIN32_HANDLE_INFO_KHR };
+        imported.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT;
+        imported.handle = handle;
+        bool linked = vkCreateSemaphore(device, &info, nullptr, &link) == VK_SUCCESS;
+        imported.semaphore = link;
+        linked = linked && import(device, &imported) == VK_SUCCESS;
+        CloseHandle(handle);
+        if (!linked)
+        {
+            if (link)
+                vkDestroySemaphore(device, link, nullptr);
+            link = VK_NULL_HANDLE;
+            link12.Reset();
+        }
+        return linked;
+    }
+
     // A D3D12 texture of the swapchain size, imported into Vulkan as `target`.
     bool CreateShared(VkImage& target, VkDeviceMemory& targetMemory, ComPtr<ID3D12Resource>& target12)
     {
@@ -714,10 +803,15 @@ struct Bridge
         poolInfo.queueFamilyIndex = family;
         if (vkCreateCommandPool(device, &poolInfo, nullptr, &pool) != VK_SUCCESS) return false;
         VkCommandBufferAllocateInfo alloc { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-        alloc.commandPool = pool; alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; alloc.commandBufferCount = 1;
-        if (vkAllocateCommandBuffers(device, &alloc, &command) != VK_SUCCESS) return false;
+        alloc.commandPool = pool;
+        alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        alloc.commandBufferCount = 1;
         VkFenceCreateInfo fenceInfo { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
-        if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) return false;
+        for (auto& row : steps)
+            for (auto& step : row)
+                if (vkAllocateCommandBuffers(device, &alloc, &step.buffer) != VK_SUCCESS ||
+                    vkCreateFence(device, &fenceInfo, nullptr, &step.fence) != VK_SUCCESS)
+                    return false;
         ready.resize(images.size(), VK_NULL_HANDLE);
         overlaid.resize(images.size(), VK_NULL_HANDLE);
         VkSemaphoreCreateInfo semaphoreInfo { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
@@ -730,6 +824,10 @@ struct Bridge
         {
             gpuInterop = true;
             LOG_INFO("Vulkan final-image NR: D3D12 shared GPU image active (no host readback)");
+            if (InitLink())
+                LOG_INFO("Vulkan final-image NR: Vulkan and D3D12 ordered on the GPU through a shared fence");
+            else
+                LOG_WARN("Vulkan final-image NR: no shared fence, every frame waits for NR on the CPU");
             return true;
         }
         LOG_WARN("Vulkan final-image NR: D3D12 image import unavailable, using host readback fallback");
@@ -773,22 +871,58 @@ struct Bridge
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
 
-    bool Begin()
+    bool Begin(Step& step)
     {
-        if (submitted && vkWaitForFences(device, 1, &fence, VK_TRUE, 4'000'000'000ull) != VK_SUCCESS)
+        if (step.pending && vkWaitForFences(device, 1, &step.fence, VK_TRUE, 4'000'000'000ull) != VK_SUCCESS)
             return false;
-        submitted = false;
-        if (vkResetFences(device, 1, &fence) != VK_SUCCESS ||
-            vkResetCommandPool(device, pool, 0) != VK_SUCCESS)
+        step.pending = false;
+        if (vkResetFences(device, 1, &step.fence) != VK_SUCCESS || vkResetCommandBuffer(step.buffer, 0) != VK_SUCCESS)
             return false;
         VkCommandBufferBeginInfo begin { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        return vkBeginCommandBuffer(command, &begin) == VK_SUCCESS;
+        return vkBeginCommandBuffer(step.buffer, &begin) == VK_SUCCESS;
     }
 
-    void SharedBarrier(VkImageLayout before, VkImageLayout after, uint32_t sourceFamily, uint32_t targetFamily,
-                       VkAccessFlags sourceAccess, VkAccessFlags targetAccess, VkPipelineStageFlags sourceStage,
-                       VkPipelineStageFlags targetStage, VkImage image = VK_NULL_HANDLE)
+    // Submits `step` with `waits` and `signals`; on the GPU link the semaphore takes the value beside it, the
+    // others ignore theirs.
+    bool Submit(Step& step, const std::vector<VkSemaphore>& waits, const std::vector<uint64_t>& waitValues,
+                const std::vector<VkSemaphore>& signals, const std::vector<uint64_t>& signalValues)
+    {
+        if (vkEndCommandBuffer(step.buffer) != VK_SUCCESS)
+            return false;
+        std::vector<VkPipelineStageFlags> stages(waits.size(), VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkD3D12FenceSubmitInfoKHR values { VK_STRUCTURE_TYPE_D3D12_FENCE_SUBMIT_INFO_KHR };
+        values.waitSemaphoreValuesCount = static_cast<uint32_t>(waitValues.size());
+        values.pWaitSemaphoreValues = waitValues.data();
+        values.signalSemaphoreValuesCount = static_cast<uint32_t>(signalValues.size());
+        values.pSignalSemaphoreValues = signalValues.data();
+        VkSubmitInfo submit { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+        if (link)
+            submit.pNext = &values;
+        submit.waitSemaphoreCount = static_cast<uint32_t>(waits.size());
+        submit.pWaitSemaphores = waits.data();
+        submit.pWaitDstStageMask = stages.data();
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &step.buffer;
+        submit.signalSemaphoreCount = static_cast<uint32_t>(signals.size());
+        submit.pSignalSemaphores = signals.data();
+        if (vkQueueSubmit(queue, 1, &submit, step.fence) != VK_SUCCESS)
+            return false;
+        step.pending = true;
+        return true;
+    }
+
+    bool Finish(Step& step)
+    {
+        if (vkWaitForFences(device, 1, &step.fence, VK_TRUE, 4'000'000'000ull) != VK_SUCCESS)
+            return false;
+        step.pending = false;
+        return true;
+    }
+
+    void SharedBarrier(VkCommandBuffer cmd, VkImageLayout before, VkImageLayout after, uint32_t sourceFamily,
+                       uint32_t targetFamily, VkAccessFlags sourceAccess, VkAccessFlags targetAccess,
+                       VkPipelineStageFlags sourceStage, VkPipelineStageFlags targetStage, VkImage image)
     {
         VkImageMemoryBarrier barrier { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
         barrier.srcAccessMask = sourceAccess;
@@ -797,10 +931,38 @@ struct Bridge
         barrier.newLayout = after;
         barrier.srcQueueFamilyIndex = sourceFamily;
         barrier.dstQueueFamilyIndex = targetFamily;
-        barrier.image = image ? image : sharedImage;
+        barrier.image = image;
         barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         barrier.subresourceRange.levelCount = barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(command, sourceStage, targetStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        vkCmdPipelineBarrier(cmd, sourceStage, targetStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    }
+
+    // Copies `source` into `target` where one of them is a shared image, after this queue's earlier copies of it.
+    void CopyShared(VkCommandBuffer cmd, VkImage source, VkImage target, bool into, bool initialized)
+    {
+        const VkImage shared = into ? target : source;
+        const VkImage image = into ? source : target;
+        ImageBarrier(cmd, image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                     into ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                     into ? VK_ACCESS_TRANSFER_READ_BIT : VK_ACCESS_TRANSFER_WRITE_BIT);
+        SharedBarrier(cmd, initialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                      into ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_QUEUE_FAMILY_EXTERNAL, family, 0,
+                      into ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT, shared);
+        VkImageCopy region {};
+        region.srcSubresource.aspectMask = region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.srcSubresource.layerCount = region.dstSubresource.layerCount = 1;
+        region.extent = { extent.width, extent.height, 1 };
+        vkCmdCopyImage(cmd, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &region);
+        SharedBarrier(cmd, into ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_IMAGE_LAYOUT_GENERAL, family, VK_QUEUE_FAMILY_EXTERNAL,
+                      into ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_TRANSFER_READ_BIT, 0,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, shared);
+        ImageBarrier(cmd, image, into ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, into ? VK_ACCESS_TRANSFER_READ_BIT : VK_ACCESS_TRANSFER_WRITE_BIT,
+                     0);
     }
 
     // The game's wait semaphores are spent once a submit has waited on them. Until the present gets ours, it
@@ -811,62 +973,74 @@ struct Bridge
         present.pWaitSemaphores = nullptr;
     }
 
-    // After a failed step the present goes out once our last submit has finished. Returns false only when the
+    // After a failed step the present goes out once our submits have finished. Returns false only when the
     // device is lost.
     bool Settle()
     {
-        if (!submitted)
-            return true;
-        const VkResult result = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
-        submitted = result != VK_SUCCESS;
+        VkResult result = VK_SUCCESS;
+        for (auto& row : steps)
+            for (auto& step : row)
+                if (step.pending)
+                {
+                    const VkResult waited = vkWaitForFences(device, 1, &step.fence, VK_TRUE, UINT64_MAX);
+                    step.pending = waited != VK_SUCCESS;
+                    if (waited != VK_SUCCESS)
+                        result = waited;
+                }
         if (result != VK_SUCCESS)
             LOG_ERROR("Vulkan final-image bridge: fence wait returned {}", (int) result);
         return result != VK_ERROR_DEVICE_LOST;
     }
 
-    bool ProcessShared(VkPresentInfoKHR& present)
+    // With the GPU link nothing here waits for NR: queue12 starts once the image is in, and the copy back waits
+    // for NR on the GPU. Without it each step is waited for on the CPU.
+    bool ProcessShared(VkPresentInfoKHR& present, bool neural, bool wantFg)
     {
         const uint32_t imageIndex = present.pImageIndices[0];
-        if (imageIndex >= images.size() || !Begin()) return false;
+        if (imageIndex >= images.size())
+            return false;
+        if (link)
+            set ^= 1;
+        Step& in = steps[set][0];
+        Step& out = steps[set][link ? 1 : 0];
+        if (!Begin(in))
+            return false;
         auto image = images[imageIndex];
-        ImageBarrier(command, image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                     0, VK_ACCESS_TRANSFER_READ_BIT);
-        SharedBarrier(sharedInitialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
-                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_EXTERNAL, family,
-                      0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        VkImageCopy region {};
-        region.srcSubresource.aspectMask = region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        region.srcSubresource.layerCount = region.dstSubresource.layerCount = 1;
-        region.extent = { extent.width, extent.height, 1 };
-        vkCmdCopyImage(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       sharedImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-        SharedBarrier(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                      family, VK_QUEUE_FAMILY_EXTERNAL, VK_ACCESS_TRANSFER_WRITE_BIT, 0,
-                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-        ImageBarrier(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                     VK_ACCESS_TRANSFER_READ_BIT, 0);
-        if (vkEndCommandBuffer(command) != VK_SUCCESS) return false;
-        std::vector<VkPipelineStageFlags> waitStages(present.waitSemaphoreCount,
-                                                    VK_PIPELINE_STAGE_TRANSFER_BIT);
-        VkSubmitInfo submit { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-        submit.waitSemaphoreCount = present.waitSemaphoreCount;
-        submit.pWaitSemaphores = present.pWaitSemaphores;
-        submit.pWaitDstStageMask = waitStages.empty() ? nullptr : waitStages.data();
-        submit.commandBufferCount = 1; submit.pCommandBuffers = &command;
-        if (vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS) return false;
-        submitted = true;
+        CopyShared(in.buffer, image, sharedImage, true, sharedInitialized);
+        // Besides the game's semaphores the copy waits until queue12 has read the shared images of the last frame.
+        std::vector<VkSemaphore> waits(present.pWaitSemaphores, present.pWaitSemaphores + present.waitSemaphoreCount);
+        std::vector<uint64_t> waitValues(waits.size(), 0);
+        if (link && d3d12Done)
+        {
+            waits.push_back(link);
+            waitValues.push_back(d3d12Done);
+        }
+        const uint64_t copied = linkValue + 1;
+        if (!Submit(in, waits, waitValues, link ? std::vector { link } : std::vector<VkSemaphore> {}, { copied }))
+            return false;
         Spent(present);
-        if (vkWaitForFences(device, 1, &fence, VK_TRUE, 4'000'000'000ull) != VK_SUCCESS) return false;
-        submitted = false;
+        if (link)
+            linkValue = copied;
+        else if (!Finish(in))
+            return false;
         sharedInitialized = true;
 
         auto settings = DlssNr::AmdBridge::SettingsFromConfig(
             *Config::Instance(), Config::Instance()->AmdNrScale.value_or_default());
         settings.spinDraw = 0;
+        if (link && FAILED(queue12->Wait(link12.Get(), copied)))
+            return false;
         if (!AmdPresentExperimental::RenderResource(shared12.Get(), d12.Get(), queue12.Get(),
-                                                    Util::DllPath().parent_path(), settings, &fgGuides))
+                                                    Util::DllPath().parent_path(), settings, &fgGuides, neural,
+                                                    link != VK_NULL_HANDLE))
             stopped = true;
+        const uint64_t processed = linkValue + 1;
+        if (link)
+        {
+            if (FAILED(queue12->Signal(link12.Get(), processed)))
+                return false;
+            linkValue = d3d12Done = processed;
+        }
         static bool loggedGuides = false;
         if (fgGuides.motion && fgGuides.depth && !loggedGuides)
         {
@@ -874,9 +1048,6 @@ struct Bridge
                      fgGuides.width, fgGuides.height);
             loggedGuides = true;
         }
-        const bool wantFg = Config::Instance()->FGEnabled.value_or_default() &&
-            State::Instance().activeFgInput == FGInput::Upscaler &&
-            State::Instance().activeFgOutput == FGOutput::XeFG;
         const HWND root = GetAncestor(hwnd, GA_ROOT);
         const HWND foreground = GetForegroundWindow();
         const bool background = root && IsWindowVisible(root) && foreground &&
@@ -895,8 +1066,8 @@ struct Bridge
         if (wantFg && !background && !fgFailed && fgGuides.motion && fgGuides.depth)
         {
             if ((!overlay12 && !CreateShared(overlayImage, overlayMemory, overlay12)) ||
-                (!fg.window &&
-                 !fg.Create(hwnd, d12.Get(), queue12.Get(), extent.width, extent.height, shared12->GetDesc().Format)))
+                (!fg.window && !fg.Create(hwnd, d12.Get(), queue12.Get(), extent.width, extent.height,
+                                          shared12->GetDesc().Format, presentMode == VK_PRESENT_MODE_IMMEDIATE_KHR)))
             {
                 fg.Release();
                 fgFailed = true;
@@ -908,25 +1079,12 @@ struct Bridge
         else if (fg.window && !fgGuides.motion)
             fg.Pause();
 
-        if (!Begin()) return false;
-        SharedBarrier(VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                      VK_QUEUE_FAMILY_EXTERNAL, family, 0, VK_ACCESS_TRANSFER_READ_BIT,
-                      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        ImageBarrier(command, image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                     0, VK_ACCESS_TRANSFER_WRITE_BIT);
-        vkCmdCopyImage(command, sharedImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-        ImageBarrier(command, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                     VK_ACCESS_TRANSFER_WRITE_BIT, 0);
-        SharedBarrier(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                      family, VK_QUEUE_FAMILY_EXTERNAL, VK_ACCESS_TRANSFER_READ_BIT, 0,
-                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-        if (vkEndCommandBuffer(command) != VK_SUCCESS) return false;
-        VkSubmitInfo output { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-        output.commandBufferCount = 1; output.pCommandBuffers = &command;
-        output.signalSemaphoreCount = 1; output.pSignalSemaphores = &ready[imageIndex];
-        if (vkQueueSubmit(queue, 1, &output, fence) != VK_SUCCESS) return false;
-        submitted = true;
+        if (!Begin(out))
+            return false;
+        CopyShared(out.buffer, sharedImage, image, false, true);
+        if (!Submit(out, link ? std::vector { link } : std::vector<VkSemaphore> {}, { processed },
+                    { ready[imageIndex] }, { 0 }))
+            return false;
         present.waitSemaphoreCount = 1;
         present.pWaitSemaphores = &ready[imageIndex];
         return true;
@@ -941,47 +1099,38 @@ struct Bridge
         const uint32_t imageIndex = present.pImageIndices[0];
         if (imageIndex != fgImage)
             return true;
-        if (!Begin())
+        Step& copy = steps[set][link ? 2 : 0];
+        if (!Begin(copy))
             return false;
-        auto image = images[imageIndex];
-        ImageBarrier(command, image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0,
-                     VK_ACCESS_TRANSFER_READ_BIT);
-        SharedBarrier(overlayInitialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
-                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_EXTERNAL, family, 0,
-                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                      overlayImage);
-        VkImageCopy region {};
-        region.srcSubresource.aspectMask = region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        region.srcSubresource.layerCount = region.dstSubresource.layerCount = 1;
-        region.extent = { extent.width, extent.height, 1 };
-        vkCmdCopyImage(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, overlayImage,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-        SharedBarrier(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, family, VK_QUEUE_FAMILY_EXTERNAL,
-                      VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, overlayImage);
-        ImageBarrier(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                     VK_ACCESS_TRANSFER_READ_BIT, 0);
-        if (vkEndCommandBuffer(command) != VK_SUCCESS)
+        CopyShared(copy.buffer, images[imageIndex], overlayImage, true, overlayInitialized);
+        std::vector<VkSemaphore> waits(present.pWaitSemaphores, present.pWaitSemaphores + present.waitSemaphoreCount);
+        std::vector<VkSemaphore> signals { overlaid[imageIndex] };
+        const uint64_t shown = linkValue + 1;
+        if (link)
+            signals.push_back(link);
+        if (!Submit(copy, waits, std::vector<uint64_t>(waits.size(), 0), signals, { 0, shown }))
             return false;
-        std::vector<VkPipelineStageFlags> waitStages(present.waitSemaphoreCount, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        VkSubmitInfo submit { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-        submit.waitSemaphoreCount = present.waitSemaphoreCount;
-        submit.pWaitSemaphores = present.pWaitSemaphores;
-        submit.pWaitDstStageMask = waitStages.empty() ? nullptr : waitStages.data();
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &command;
-        submit.signalSemaphoreCount = 1;
-        submit.pSignalSemaphores = &overlaid[imageIndex];
-        if (vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS)
-            return false;
-        submitted = true;
         present.waitSemaphoreCount = 1;
         present.pWaitSemaphores = &overlaid[imageIndex];
-        if (vkWaitForFences(device, 1, &fence, VK_TRUE, 4'000'000'000ull) != VK_SUCCESS)
+        if (link)
+            linkValue = shown;
+        else if (!Finish(copy))
             return false;
-        submitted = false;
         overlayInitialized = true;
-        if (!fg.Present(overlay12.Get(), shared12.Get(), fgGuides, queue12.Get()))
+        // queue12 copies both images once they are in and tells Vulkan it has read them before XeFG presents;
+        // without the link the CPU waits for that copy instead.
+        bool copied =
+            (!link || SUCCEEDED(queue12->Wait(link12.Get(), shown))) && fg.Copy(overlay12.Get(), shared12.Get());
+        if (link)
+        {
+            const uint64_t read = linkValue + 1;
+            if (FAILED(queue12->Signal(link12.Get(), read)))
+                return false;
+            linkValue = d3d12Done = read;
+        }
+        else
+            copied = copied && fg.Reached(fg.serial);
+        if (!copied || !fg.Present(fgGuides))
         {
             fg.Release();
             fgFailed = true;
@@ -990,43 +1139,41 @@ struct Bridge
         return true;
     }
 
-    bool Process(VkPresentInfoKHR& present)
+    bool Process(VkPresentInfoKHR& present, bool neural, bool wantFg)
     {
         if (gpuInterop)
-            return ProcessShared(present);
+            return ProcessShared(present, neural, wantFg);
+        // The host readback has no guides-only frame and no XeFG.
+        if (!neural)
+            return true;
         const uint32_t imageIndex = present.pImageIndices[0];
         if (imageIndex >= images.size()) return false;
-        if (!Begin()) return false;
+        Step& step = steps[0][0];
+        if (!Begin(step))
+            return false;
         auto image = images[imageIndex];
-        ImageBarrier(command, image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                     0, VK_ACCESS_TRANSFER_READ_BIT);
+        ImageBarrier(step.buffer, image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0,
+                     VK_ACCESS_TRANSFER_READ_BIT);
         VkBufferImageCopy region {};
         region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         region.imageSubresource.layerCount = 1;
         region.imageExtent = { extent.width, extent.height, 1 };
-        vkCmdCopyImageToBuffer(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
-        ImageBarrier(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        vkCmdCopyImageToBuffer(step.buffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+        ImageBarrier(step.buffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                      VK_ACCESS_TRANSFER_READ_BIT, 0);
         VkBufferMemoryBarrier hostRead { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
         hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
         hostRead.srcQueueFamilyIndex = hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         hostRead.buffer = buffer; hostRead.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
-                             0, 0, nullptr, 1, &hostRead, 0, nullptr);
-        if (vkEndCommandBuffer(command) != VK_SUCCESS) return false;
-        std::vector<VkPipelineStageFlags> waitStages(present.waitSemaphoreCount,
-                                                    VK_PIPELINE_STAGE_TRANSFER_BIT);
-        VkSubmitInfo submit { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-        submit.waitSemaphoreCount = present.waitSemaphoreCount;
-        submit.pWaitSemaphores = present.pWaitSemaphores;
-        submit.pWaitDstStageMask = waitStages.empty() ? nullptr : waitStages.data();
-        submit.commandBufferCount = 1; submit.pCommandBuffers = &command;
-        if (vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS) return false;
-        submitted = true;
+        vkCmdPipelineBarrier(step.buffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
+                             &hostRead, 0, nullptr);
+        if (!Submit(step, { present.pWaitSemaphores, present.pWaitSemaphores + present.waitSemaphoreCount }, {}, {},
+                    {}))
+            return false;
         Spent(present);
-        if (vkWaitForFences(device, 1, &fence, VK_TRUE, 4'000'000'000ull) != VK_SUCCESS) return false;
-        submitted = false;
+        if (!Finish(step))
+            return false;
 
         const UINT pitch = extent.width * 4;
         immediate->UpdateSubresource(colour.Get(), 0, nullptr, mapped, pitch, 0);
@@ -1043,25 +1190,22 @@ struct Bridge
                         static_cast<unsigned char*>(result.pData) + size_t(y) * result.RowPitch, pitch);
         immediate->Unmap(readback.Get(), 0);
 
-        if (!Begin()) return false;
+        if (!Begin(step))
+            return false;
         VkBufferMemoryBarrier hostWrite { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
         hostWrite.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
         hostWrite.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         hostWrite.srcQueueFamilyIndex = hostWrite.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         hostWrite.buffer = buffer; hostWrite.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             0, 0, nullptr, 1, &hostWrite, 0, nullptr);
-        ImageBarrier(command, image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                     0, VK_ACCESS_TRANSFER_WRITE_BIT);
-        vkCmdCopyBufferToImage(command, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-        ImageBarrier(command, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        vkCmdPipelineBarrier(step.buffer, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1,
+                             &hostWrite, 0, nullptr);
+        ImageBarrier(step.buffer, image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                     VK_ACCESS_TRANSFER_WRITE_BIT);
+        vkCmdCopyBufferToImage(step.buffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        ImageBarrier(step.buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                      VK_ACCESS_TRANSFER_WRITE_BIT, 0);
-        if (vkEndCommandBuffer(command) != VK_SUCCESS) return false;
-        VkSubmitInfo output { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-        output.commandBufferCount = 1; output.pCommandBuffers = &command;
-        output.signalSemaphoreCount = 1; output.pSignalSemaphores = &ready[imageIndex];
-        if (vkQueueSubmit(queue, 1, &output, fence) != VK_SUCCESS) return false;
-        submitted = true;
+        if (!Submit(step, {}, {}, { ready[imageIndex] }, {}))
+            return false;
         present.waitSemaphoreCount = 1;
         present.pWaitSemaphores = &ready[imageIndex];
         return true;
@@ -1108,6 +1252,7 @@ void Created(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice devi
     bridge.enabledFamily = graphicsFamily;
     bridge.swapchain = swapchain; bridge.extent = description.imageExtent;
     bridge.format = description.imageFormat;
+    bridge.presentMode = description.presentMode;
     const bool rgba8 = bridge.format == VK_FORMAT_R8G8B8A8_UNORM ||
                        bridge.format == VK_FORMAT_R8G8B8A8_SRGB ||
                        bridge.format == VK_FORMAT_B8G8R8A8_UNORM ||
@@ -1115,8 +1260,8 @@ void Created(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice devi
     bridge.copyAllowed = rgba8 && (description.imageUsage &
         (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) ==
         (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-    LOG_INFO("Vulkan final-image bridge: swapchain {}x{}, format {}, transfer {}",
-             bridge.extent.width, bridge.extent.height, (int) bridge.format, bridge.copyAllowed);
+    LOG_INFO("Vulkan final-image bridge: swapchain {}x{}, format {}, transfer {}, present mode {}", bridge.extent.width,
+             bridge.extent.height, (int) bridge.format, bridge.copyAllowed, (int) bridge.presentMode);
     uint32_t count = 0;
     if (vkGetSwapchainImagesKHR(device, swapchain, &count, nullptr) == VK_SUCCESS && count > 0)
     {
@@ -1135,7 +1280,17 @@ void Destroyed(VkDevice device, VkSwapchainKHR swapchain)
 bool Process(VkQueue queue, VkPresentInfoKHR& present)
 {
     auto config = Config::Instance();
-    if (!config->DlssNrEnabled.value_or_default() || !config->DlssNrPresent.value_or_default() ||
+    const bool neural = config->DlssNrEnabled.value_or_default();
+    // With NR off XeFG keeps running on the optical-flow guides alone, as on the DXGI routes.
+    const bool wantFg = config->FGEnabled.value_or_default() && State::Instance().activeFgInput == FGInput::Upscaler &&
+                        State::Instance().activeFgOutput == FGOutput::XeFG;
+    static bool neuralBefore = true;
+    if (config->DlssNrPresent.value_or_default() && neural != neuralBefore)
+    {
+        neuralBefore = neural;
+        LOG_INFO("Vulkan final-image bridge: NR {}", neural ? "on" : wantFg ? "off, XeFG runs on its guides" : "off");
+    }
+    if ((!neural && !wantFg) || !config->DlssNrPresent.value_or_default() ||
         DlssNr::Backend::ActiveKindFromConfig() != DlssNr::Backend::Kind::Daniel || present.swapchainCount != 1 ||
         State::Instance().swapchainApi != API::Vulkan)
     {
@@ -1177,7 +1332,7 @@ bool Process(VkQueue queue, VkPresentInfoKHR& present)
         return true;
     }
     const auto start = std::chrono::steady_clock::now();
-    if (!bridge.Process(present))
+    if (!bridge.Process(present, neural, wantFg))
     {
         bridge.stopped = true;
         AmdPresentExperimental::Report("Vulkan NR: copy or synchronization failed; NR is off until the game restarts");

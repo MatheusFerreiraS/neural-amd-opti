@@ -165,8 +165,10 @@ The swapchain must support transfer source and destination usage, and Vulkan nee
 turning it on. On native Vulkan, XeFG/MFG presents through a D3D12 swapchain in a child window over the
 game: set FG Input to OptiFG and FG Output to XeFG, then tick Frame Generation (Vulkan XeFG)
 Active or press the FG key. The OptiScaler menu and overlays stay visible and usable over the
-generated frames. XeFG pauses while the game window is in the background and while NR or
-frame generation is off.
+generated frames, and the FPS overlay shows XeFG's frame rate beside the game's. XeFG pauses while
+the game window is in the background and while frame generation is off; with NR off it keeps
+generating from the optical-flow guides. Vulkan and D3D12 order their work on the GPU through a
+shared fence, so the game goes on to its next frame while NR runs.
 The first six frames after a reset use zero motion while the estimator warms up.
 Its scene-change score resets neural history before a cut frame runs. The noise
 seed is fixed on supported AMD runtime versions (0.4.1 through 0.6.0). On D3D11,
