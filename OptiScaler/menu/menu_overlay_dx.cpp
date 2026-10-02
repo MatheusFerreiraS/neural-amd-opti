@@ -531,6 +531,7 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (AmdPresentExperimental::IsTarget() &&
         Config::Instance()->DlssNrEnabled.value_or_default() &&
         !State::Instance().currentFeature &&
+        State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx9wDx12 &&
         !(State::Instance().activeFgOutput == FGOutput::XeFG &&
           State::Instance().currentFGSwapchain == pSwapChain &&
           !FGHooks::IsDx12InteropPresentSC(pSwapChain)) &&

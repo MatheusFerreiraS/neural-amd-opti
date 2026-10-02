@@ -198,6 +198,29 @@ warmed up and the neural frame and guides are ready. It uses synthetic depth
 on the bridge, so disocclusions and the HUD may still show artifacts. XeFG
 requires its D3D12 proxy swapchain even though the game renders with D3D11.
 
+### 64-bit D3D9 games (experimental)
+
+Name the OptiScaler DLL `d3d9.dll` and put it beside the game's 64-bit
+executable, with the runtime files above. Do not also install OptiScaler as
+`dxgi.dll` in the same folder. If `TargetProcessName` is set, it must name the
+D3D9 executable. A `plugins\d3d9.dll` or `d3d9-original.dll` is loaded in place
+of the system D3D9 runtime, for chaining another D3D9 wrapper.
+
+The full OptiScaler menu (Insert) is drawn on the D3D9 device. With the
+final-image settings above, each frame crosses from D3D9 to D3D12 through system
+memory, because a D3D9 device cannot share a texture with D3D12. NR runs there and
+the result is copied back before the D3D9 Present. The copies cost about 1.5 ms
+per frame at 1280x720 on an RX 9070 XT, on top of the network. The backbuffer
+must be unmultisampled for NR on this route.
+
+With the XeFG settings from the D3D11 section, a D3D12 XeFG swapchain takes over
+the game window at the first frame and the D3D9 Present is skipped; the menu is
+then drawn by the D3D12 overlay. This needs a windowed or borderless D3D9 device.
+Frame generation runs while NR runs, since its guides come from NR's optical
+flow: turning NR off turns generation off and the frames keep going out through
+the same swapchain. The End key toggles generation and Numpad 5 toggles NR.
+32-bit D3D9 games are not handled by this DLL.
+
 The Optical Flow build needs an in-game visual and resize test before packaging for users.
 
 ## Optional DLSS Frame Generation

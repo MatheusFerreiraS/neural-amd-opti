@@ -37,6 +37,7 @@ typedef enum API
     DX11,
     DX12,
     Vulkan,
+    DX9,
 } API;
 
 enum class Upscaler
