@@ -1471,6 +1471,14 @@ void MenuCommon::UpdateMenuInputMode(RenderMenuContext& ctx)
     }
 }
 
+// XeFG on the Vulkan final image: the FG key and the menu section that switch it.
+static bool VulkanFinalImageFG(State& state, Config* config)
+{
+    return state.swapchainApi == API::Vulkan && config->DlssNrPresent.value_or_default() &&
+           config->DlssNrEnabled.value_or_default() && config->NrBackend.value_or_default() == "daniel" &&
+           state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::XeFG;
+}
+
 void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
@@ -1483,11 +1491,9 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
         {
             inputFG = false;
 
-            const bool vulkanFinalImage =
-                state.swapchainApi == API::Vulkan && config->DlssNrPresent.value_or_default() &&
-                state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::XeFG;
             if (state.activeFgInput != FGInput::NoFG && state.activeFgOutput != FGOutput::NoFG &&
-                (state.currentFGSwapchain != nullptr || state.activeFgInput == FGInput::NvngxFG || vulkanFinalImage))
+                (state.currentFGSwapchain != nullptr || state.activeFgInput == FGInput::NvngxFG ||
+                 VulkanFinalImageFG(state, config)))
             {
                 config->FGEnabled = !config->FGEnabled.value_or_default();
                 LOG_DEBUG("FG toggle key pressed, setting FGEnabled to {}", config->FGEnabled.value_or_default());
@@ -6054,10 +6060,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         }
     }
 
-    if (state.swapchainApi == API::Vulkan && config->DlssNrPresent.value_or_default() &&
-        config->DlssNrEnabled.value_or_default() && config->NrBackend.value_or_default() == "daniel" &&
-        state.activeFgInput == FGInput::Upscaler &&
-        state.activeFgOutput == FGOutput::XeFG)
+    if (VulkanFinalImageFG(state, config))
     {
         ImGui::SeparatorText("Frame Generation (Vulkan XeFG)");
         bool enabled = config->FGEnabled.value_or_default();
