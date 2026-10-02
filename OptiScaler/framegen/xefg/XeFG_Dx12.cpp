@@ -200,6 +200,11 @@ bool XeFG_Dx12::DestroySwapchainContext()
         else
         {
             State::Instance().currentFGSwapchain = nullptr;
+
+            // The D3D9 presenter makes its swapchain again after exclusive fullscreen or a window change. A new one
+            // starts at its largest interpolation count, so the count is sent again.
+            if (State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx9wDx12)
+                _framesToInterpolate = -1;
         }
     }
 
@@ -823,6 +828,12 @@ bool XeFG_Dx12::Dispatch()
                 if (targetCount != gameCount)
                     LOG_WARN("Game requested interpolation count {} but max supported is {}, capping to max", gameCount,
                              _maxInterpolationCount);
+            }
+            // A D3D9 game has no multiplier to follow, and XeFG paces one generated frame per frame badly on the
+            // D3D9 presenter (about 50 ms per rendered frame at 1920x1080, against 18 ms with two)
+            else if (state.swapchainInteropApi == SwapchainInteropApi::Dx9wDx12)
+            {
+                targetCount = std::min(2, _maxInterpolationCount);
             }
         }
 
