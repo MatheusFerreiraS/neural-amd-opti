@@ -241,7 +241,7 @@ void RenderMenu(Config* config, float menuResScale)
                    "\nRequires the danielblnc AMD runtime. The HUD is included."
                    "\nFidelityFX estimates motion. D3D11 uses a bound shader-readable depth buffer when available."
                    "\nVulkan shares the image with D3D12 when the driver permits; otherwise host readback adds latency."
-                   "\nD3D9 copies each frame through system memory."
+                   "\nA classic D3D9 device copies each frame through system memory; D3D9Ex shares it with D3D12."
                    "\nScene cuts reset history; the runtime noise seed is fixed on supported versions.");
 
         // With more than one runtime installed, choose the one the next launch uses. This session keeps the

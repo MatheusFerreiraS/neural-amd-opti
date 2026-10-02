@@ -216,16 +216,18 @@ backbuffers are resolved on the way in and drawn over on the way back.
 
 With the XeFG settings from the D3D11 section, a D3D12 XeFG swapchain takes over
 the game window at the first frame and the D3D9 Present is skipped; the menu is
-then drawn by the D3D12 overlay. This needs a windowed or borderless D3D9 device.
-If the game switches to exclusive fullscreen or moves to another window, the
-D3D12 swapchain is released, D3D9 presents again with NR and the menu, and frame
-generation stays off until the game is restarted.
+then drawn by the D3D12 overlay. This needs a windowed or borderless D3D9 device,
+and a D3D9Ex device with `D3DSWAPEFFECT_FLIPEX` cannot have it, as its own
+swapchain already holds the window (NR and the menu still run there). In
+exclusive fullscreen D3D9 presents again, with NR and the menu. Back in a window,
+or when the game moves to another window, the XeFG swapchain is made again and
+frame generation resumes; the game stops for about 5 seconds while XeFG starts.
 Frame generation runs while NR runs, since its guides come from NR's optical
 flow: turning NR off turns generation off and the frames keep going out through
 the same swapchain. The End key toggles generation and Numpad 5 toggles NR.
-Use `InterpolationCount=2` or more: with one generated frame per frame XeFG paces
-this route badly (about 50 ms per rendered frame at 1920x1080, against 18 ms with
-two). 32-bit D3D9 games are not handled by this DLL.
+Without an `InterpolationCount` in the INI this route generates two frames per
+frame: with one, XeFG paces it badly (about 50 ms per rendered frame at
+1920x1080, against 18 ms with two). 32-bit D3D9 games are not handled by this DLL.
 
 The Optical Flow build needs an in-game visual and resize test before packaging for users.
 
