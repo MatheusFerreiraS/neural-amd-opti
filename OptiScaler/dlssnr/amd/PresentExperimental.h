@@ -56,6 +56,7 @@ struct Context
     // Guides frame generation may still hold from before a resize, kept until two frames after it.
     ComPtr<ID3D12Resource> retired[2];
     UINT64 retiredUntil = 0;
+    UINT busyFrames = 0;
     ComPtr<ID3D12DescriptorHeap> heap, clearCpu;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pipeline;
@@ -412,6 +413,8 @@ struct Context
         {
             stableLast = false;
             status = backend->Status();
+            if (++busyFrames <= 3 || busyFrames % 300 == 0)
+                LOG_INFO("Final-image NR: runtime still busy, frame left without NR ({})", busyFrames);
             return false;
         }
         auto desc = back->GetDesc();
