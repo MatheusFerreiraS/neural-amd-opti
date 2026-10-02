@@ -2,16 +2,21 @@
 // presents through IDirect3DDevice9::Present, PresentEx or IDirect3DSwapChain9::Present, and follows a script of
 // key presses posted to its window (the menu, NR and frame-generation keys), device Resets with a new size and screen
 // samples. It prints the frame time of each scripted phase and whether sampled frames still change on screen.
-//   dx9_present_smoke.exe [--ex] [--chain] [--msaa] [--vsync] [--borderless] [--size WxH] [--cursor XxY]
-//                         [--frames N] [--shots folder]
+//   dx9_present_smoke.exe [--ex] [--flipex] [--chain] [--msaa] [--vsync] [--borderless] [--size WxH]
+//                         [--cursor XxY] [--frames N] [--shots folder]
 //                         [--script "frame:action,..."]
+// --flipex is a D3D9Ex device with D3DSWAPEFFECT_FLIPEX.
 // Actions: menu (Insert), nr (Numpad 5), fg (End), still (stops or restarts the scrolling), press and release
 // (the left button, where --cursor XxY put the cursor before OptiScaler started), minimize, restore, window2 (presents
-// into a new window from then on, as a game that recreates its window), cpu=ms (busy CPU work per frame), reset=WxH,
-// shot=name, motion=name, diff=name (compares the screen with an earlier shot), mark=name.
+// into a new window from then on, as a game that recreates its window), recreate (releases the device and creates
+// another one on the same window), cpu=ms (busy CPU work per frame), reset=WxH, fullscreen (a Reset into exclusive
+// fullscreen at the desktop size), windowed (a Reset back to the window), remove12=ms (another thread puts the
+// process's D3D12 device, the one OptiScaler made, into the removed state after ms), shot=name, motion=name,
+// diff=name (compares the screen with an earlier shot), mark=name.
 #define NOMINMAX
 #include <windows.h>
 #include <d3d9.h>
+#include <d3d12.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -19,6 +24,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -227,7 +233,7 @@ void Draw(IDirect3DDevice9* device, int frame, int width, int height)
 
 int main(int argc, char** argv)
 {
-    bool ex = false, chainPresent = false, msaa = false, vsync = false;
+    bool ex = false, flipex = false, chainPresent = false, msaa = false, vsync = false;
     POINT cursor { -1, -1 };
     int width = 1280, height = 720, frames = 300;
     std::string shots = ".", script;
@@ -239,6 +245,8 @@ int main(int argc, char** argv)
 
         if (arg == "--ex")
             ex = true;
+        else if (arg == "--flipex")
+            ex = flipex = true;
         else if (arg == "--chain")
             chainPresent = true;
         else if (arg == "--msaa")
@@ -340,12 +348,12 @@ int main(int argc, char** argv)
 
     D3DPRESENT_PARAMETERS params {};
     params.Windowed = TRUE;
-    params.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    params.SwapEffect = flipex ? D3DSWAPEFFECT_FLIPEX : D3DSWAPEFFECT_DISCARD;
     params.hDeviceWindow = window;
     params.BackBufferWidth = width;
     params.BackBufferHeight = height;
     params.BackBufferFormat = D3DFMT_X8R8G8B8;
-    params.BackBufferCount = 1;
+    params.BackBufferCount = flipex ? 2 : 1;
     params.EnableAutoDepthStencil = TRUE;
     params.AutoDepthStencilFormat = D3DFMT_D24S8;
     params.MultiSampleType = msaa ? D3DMULTISAMPLE_4_SAMPLES : D3DMULTISAMPLE_NONE;
@@ -353,13 +361,20 @@ int main(int argc, char** argv)
 
     IDirect3DDevice9* device = nullptr;
     IDirect3DDevice9Ex* deviceEx = nullptr;
-    HRESULT result = ex ? apiEx->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window,
-                                                D3DCREATE_HARDWARE_VERTEXPROCESSING, &params, nullptr, &deviceEx)
-                        : api->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window,
-                                            D3DCREATE_HARDWARE_VERTEXPROCESSING, &params, &device);
+    auto create = [&]
+    {
+        const HRESULT created =
+            ex ? apiEx->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, D3DCREATE_HARDWARE_VERTEXPROCESSING,
+                                       &params, nullptr, &deviceEx)
+               : api->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, D3DCREATE_HARDWARE_VERTEXPROCESSING,
+                                   &params, &device);
 
-    if (ex)
-        device = deviceEx;
+        if (ex)
+            device = deviceEx;
+
+        return created;
+    };
+    HRESULT result = create();
 
     if (FAILED(result))
     {
@@ -465,6 +480,70 @@ int main(int argc, char** argv)
             {
                 pending[action.substr(7)] = Capture();
                 motions.emplace(frame + 3, action.substr(7));
+            }
+            else if (action == "recreate")
+            {
+                const ULONG left = device->Release();
+                result = create();
+                std::printf("recreate: old device %lu references left, new device %08X\n", left, unsigned(result));
+
+                if (FAILED(result))
+                {
+                    std::printf("FAIL: CreateDevice\n");
+                    return 4;
+                }
+            }
+            else if (action.rfind("remove12=", 0) == 0)
+            {
+                // A process has one D3D12 device per adapter: this is the one the bridge uses.
+                const DWORD delay = DWORD(std::atoi(action.c_str() + 9));
+                std::thread(
+                    [delay]
+                    {
+                        using CreateFn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
+                        Sleep(delay);
+                        const auto create12 =
+                            reinterpret_cast<CreateFn>(GetProcAddress(LoadLibraryW(L"d3d12.dll"), "D3D12CreateDevice"));
+                        ID3D12Device5* device12 = nullptr;
+                        const HRESULT made =
+                            create12 ? create12(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device12)) : E_FAIL;
+
+                        if (device12 != nullptr)
+                        {
+                            device12->RemoveDevice();
+                            device12->Release();
+                        }
+
+                        std::printf("D3D12 device removed: %08X\n", unsigned(made));
+                    })
+                    .detach();
+            }
+            else if (action == "fullscreen" || action == "windowed")
+            {
+                params.Windowed = action == "windowed";
+                params.BackBufferWidth = params.Windowed ? width : GetSystemMetrics(SM_CXSCREEN);
+                params.BackBufferHeight = params.Windowed ? height : GetSystemMetrics(SM_CYSCREEN);
+                HRESULT reset = ex ? deviceEx->ResetEx(&params, nullptr) : device->Reset(&params);
+                std::printf("reset %s %ux%u: %08X\n", action.c_str(), params.BackBufferWidth, params.BackBufferHeight,
+                            unsigned(reset));
+
+                // A failed Reset leaves the device lost until a Reset succeeds: back to the window then.
+                if (FAILED(reset) && !params.Windowed)
+                {
+                    params.Windowed = TRUE;
+                    params.BackBufferWidth = width;
+                    params.BackBufferHeight = height;
+                    reset = ex ? deviceEx->ResetEx(&params, nullptr) : device->Reset(&params);
+                }
+
+                if (FAILED(reset))
+                {
+                    std::printf("FAIL: Reset\n");
+                    return 5;
+                }
+
+                if (params.Windowed)
+                    ClientSize(width, height);
             }
             else if (action.rfind("reset=", 0) == 0 && std::sscanf(action.c_str() + 6, "%dx%d", &width, &height) == 2)
             {

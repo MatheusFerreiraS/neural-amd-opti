@@ -43,7 +43,7 @@ $fgLog = @("OptiScaler working as d3d9.dll", "D3D9 device hooks installed", "D3D
            "D3D9 bridge frame \d+: menu open", "D3D9 bridge frame \d+: menu closed",
            "D3D9 bridge frame 2[89]\d: frame generation off", "D3D9 bridge frame 3[4-9]\d: frame generation on",
            "D3D9 bridge frame 4[3-9]\d: frame generation off", "D3D9 bridge frame [45]\d\d: frame generation on",
-           "D3D9 bridge frame 601: XeFG presenter, NR true at scale [01]\.\d\d, FG true, XeFG last present [2-9] frames",
+           "D3D9 bridge frame 601: XeFG presenter, NR true at scale [01]\.\d\d, FG true, XeFG last present 3 frames",
            "Reset.*: 0, 1600x900", "XeFG presenter 1280x720 -> 1600x900: 0", "D3D9 bridge frame 8[4-9]\d: menu open")
 
 # Generation stays on through the scale change.
@@ -85,14 +85,54 @@ $cases = @(
        ClickOut = @("(?s)diff fg-section-before: [0-9.]+ of the pixels changed, mean difference 0\.[0-4].*" +
                "diff fg-section-before: (?:0\.0[2-9]|0\.[1-9])\d* of the pixels changed") },
     # The game moves to a new window: after two quiet seconds on the old one the bridge follows it. With FG the
-    # presenter is released and D3D9 presents from then on, with the menu on the D3D9 device.
+    # presenter moves to the new window and frame generation comes back there.
     @{ Name = "window-nr"; Args = @(); Fg = $false; Frames = 700
        Script = "150:window2,151:cpu=6,600:cpu=0,620:menu,635:shot=window2-menu,645:menu,680:motion=window2"
        Log = @("(?s)following device \w+, window \w+.*following device \w+, window \w+.*D3D9 menu ready.*menu open") },
     @{ Name = "window-fg"; Args = @(); Fg = $true; Frames = 700
        Script = "150:window2,151:cpu=6,600:cpu=0,620:menu,635:shot=window2-menu,645:menu,680:motion=window2"
-       Log = @("(?s)XeFG presenter \w+ on window.*releasing the XeFG presenter.*D3D9 menu ready.*menu open")
-       NotLog = @("(?s)releasing the XeFG presenter.*XeFG presenter \w+ on window") },
+       Log = @("(?s)XeFG presenter \w+ on window (\w+).*releasing the XeFG presenter.*XeFG presenter \w+ on window (?!\1)\w+.*frame generation on.*menu open",
+               "D3D9 bridge frame 301: XeFG presenter, NR true at scale 1.00, FG true, XeFG last present 3 frames") },
+    # The game releases its device and creates another on the same window. The XeFG presenter follows the new device
+    # at once (the screen keeps changing right after it); without it the bridge follows after two quiet seconds.
+    @{ Name = "recreate-fg"; Args = @(); Fg = $true; Frames = 700
+       Script = "150:motion=before,200:recreate,203:motion=recreated,400:menu,415:shot=recreate-menu,425:menu,600:motion=after"
+       Log = @("(?s)following device \w+, window (\w+).*following device \w+, window \1.*frame generation on",
+               "D3D9 bridge frame 4\d\d: menu open")
+       NotLog = @("releasing the XeFG presenter") },
+    @{ Name = "recreate-nr"; Args = @(); Fg = $false; Frames = 900
+       Script = "150:motion=before,200:recreate,201:cpu=6,210:motion=gap,700:cpu=0,720:menu,735:shot=recreate-menu,745:menu,800:motion=after"
+       Log = @("(?s)following device \w+, window (\w+).*following device \w+, window \1.*D3D9 menu ready.*menu open") },
+    # The D3D12 device is removed while frames go through it: the bridge releases the presenter and D3D9 goes on
+    # presenting, with the menu on the D3D9 device and without NR. The window keeps the presenter's last frame (D3D9
+    # cannot show a windowed frame where a flip-model swapchain presented), so this case only checks that the game
+    # carries on: no crash, no failed Present, the menu toggles.
+    @{ Name = "removed-fg"; Args = @(); Fg = $true; Frames = 600; Errors = $true; Frozen = $true
+       Script = "150:motion=before,200:remove12=4,260:motion=removed,300:menu,315:shot=removed-menu,325:menu,500:motion=after"
+       Log = @("(?s)releasing the XeFG presenter; frame generation stays off.*D3D12 device was removed.*D3D9 menu ready.*menu open.*menu closed")
+       Out = @("D3D12 device removed: 00000000") },
+    @{ Name = "removed-nr"; Args = @(); Fg = $false; Frames = 600; Errors = $true
+       Script = "150:motion=before,200:remove12=4,260:motion=removed,300:menu,315:shot=removed-menu,325:menu,500:motion=after"
+       Log = @("(?s)D3D12 device was removed.*menu open")
+       Out = @("D3D12 device removed: 00000000") },
+    # A D3D9Ex FLIPEX swapchain holds the window's flip-model presentation, so XeFG is not tried: NR and the menu run
+    # on the D3D9 device.
+    @{ Name = "flipex-fg"; Args = @("--flipex"); Fg = $true; Frames = 400
+       Script = "150:motion=nr,200:menu,215:shot=flipex-menu,225:menu,300:motion=after"
+       Log = @("XeFG needs a windowed or borderless D3D9 device without D3DSWAPEFFECT_FLIPEX", "shared with D3D12",
+               "D3D9 bridge frame \d+: D3D9 present, NR true", "D3D9 menu ready", "menu open")
+       NotLog = @("XeFG presenter \w+ on window", "CreateSwapChainForHwnd failed") },
+    # A Reset into exclusive fullscreen: the XeFG presenter leaves the window before the Reset and NR runs on the
+    # D3D9 device in fullscreen. Back in the window the presenter returns (D3D9 cannot show a windowed frame there
+    # any more) with frame generation, and the screen keeps changing.
+    @{ Name = "fullscreen-fg"; Args = @(); Fg = $true; Frames = 700
+       Script = "150:motion=before,200:fullscreen,260:motion=fullscreen,300:windowed,400:motion=windowed,480:menu,495:shot=fullscreen-menu,505:menu,600:motion=after"
+       Log = @(("(?s)releasing the XeFG presenter.*Reset: 0, \d+x\d+, windowed 0.*D3D9 bridge: \d+x\d+ format \d+, MSAA 0, copies.*" +
+                "Reset: 0, 1280x720, windowed 1.*XeFG presenter \w+ on window.*frame generation on.*menu open"),
+               "D3D9 bridge frame 601: XeFG presenter, NR true at scale 1.00, FG true, XeFG last present 3 frames") },
+    # An InterpolationCount in the INI wins over the D3D9 default of two generated frames.
+    @{ Name = "fg-2x"; Args = @(); Fg = $true; Frames = 320; Ini = "[XeFG]`r`nInterpolationCount=1`r`n"; Script = "250:motion=fg-2x"
+       Log = @("D3D9 bridge frame 301: XeFG presenter, NR true at scale 1.00, FG true, XeFG last present 2 frames") },
     # Thousands of generated frames in a row (the 32-bit bridge lost its D3D12 device after about 2000), with two
     # generated frames per rendered frame.
     @{ Name = "soak-fg"; Args = @(); Fg = $true; Frames = 6000; Ini = "[XeFG]`r`nInterpolationCount=2`r`n"
@@ -184,9 +224,9 @@ foreach ($c in $cases) {
     }
     foreach ($line in ($stdout -split "`r?`n" | Where-Object { $_ -match "^motion (\S+): ([0-9.]+)" })) {
         $null = $line -match "^motion (\S+): ([0-9.]+)"
-        if ([double]$Matches[2] -lt 0.02) { $problems += "frozen on screen: $line" }
+        if ([double]$Matches[2] -lt 0.02 -and -not ($c.Frozen -and $Matches[1] -ne "before")) { $problems += "frozen on screen: $line" }
     }
-    if ($log -match "\[error\].*D3D9") { $problems += "D3D9 error in the log" }
+    if (-not $c.Errors -and $log -match "\[E\] .*D3D9") { $problems += "D3D9 error in the log" }
 
     Write-Host "== $($c.Name): $(if ($problems.Count) { 'FAIL' } else { 'PASS' })$note"
     $stdout -split "`r?`n" | Where-Object { $_ -match "^(phase|motion|shot|reset|diff)" } | ForEach-Object { Write-Host "   $_" }
