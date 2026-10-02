@@ -1476,8 +1476,7 @@ void MenuCommon::UpdateMenuInputMode(RenderMenuContext& ctx)
 static bool ChildWindowFinalImageFG(State& state, Config* config)
 {
     return (state.swapchainApi == API::Vulkan || state.swapchainApi == API::OpenGL) &&
-           config->DlssNrPresent.value_or_default() &&
-           config->DlssNrEnabled.value_or_default() &&
+           config->DlssNrPresent.value_or_default() && config->DlssNrEnabled.value_or_default() &&
            DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel &&
            state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::XeFG;
 }
@@ -5226,8 +5225,9 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     const bool childWindowFinalImageFg = childWindowFgApi && config->DlssNrPresent.value_or_default() &&
                                          config->DlssNrEnabled.value_or_default() &&
                                          DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
-    inputOptions[optiFgIndex].set_disabled(childWindowFgApi && !childWindowFinalImageFg,
-                                           "XeFG on Vulkan and OpenGL requires final-image NR on the danielblnc runtime");
+    inputOptions[optiFgIndex].set_disabled(
+        childWindowFgApi && !childWindowFinalImageFg,
+        "XeFG on Vulkan and OpenGL requires final-image NR on the danielblnc runtime");
     inputOptions[optiFgIndex].set_disabled(config->DlssNrPresent.value_or_default() &&
                                                config->FGOutput.value_or_default() != FGOutput::XeFG,
                                            "Final-image NR has no upscaler motion/depth inputs for OptiFG");
@@ -5313,8 +5313,9 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // XeFG output requirements
     auto constexpr xefgOutputIndex = (uint32_t) FGOutput::XeFG;
-    outputOptions[xefgOutputIndex].set_disabled(childWindowFgApi && !childWindowFinalImageFg,
-                                                "XeFG requires final-image NR on the danielblnc runtime on Vulkan and OpenGL");
+    outputOptions[xefgOutputIndex].set_disabled(
+        childWindowFgApi && !childWindowFinalImageFg,
+        "XeFG requires final-image NR on the danielblnc runtime on Vulkan and OpenGL");
     // Unsupported FG input selected
     const auto currentInputIndex = (uint32_t) state.activeFgInput;
     if (config->FGInput != FGInput::NoFG && inputOptions.size() > currentInputIndex &&

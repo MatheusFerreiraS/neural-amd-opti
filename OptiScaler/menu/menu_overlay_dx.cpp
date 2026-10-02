@@ -570,8 +570,8 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
           !FGHooks::IsDx12InteropPresentSC(pSwapChain)) &&
         (!State::Instance().currentFG || !State::Instance().currentFG->IsActive() ||
          State::Instance().currentFG->IsPaused()) &&
-        DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel &&
-        !(Flags & DXGI_PRESENT_TEST) && pDevice && (!hWnd || !IsIconic(hWnd)))
+        DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel && !(Flags & DXGI_PRESENT_TEST) &&
+        pDevice && (!hWnd || !IsIconic(hWnd)))
     {
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
         if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue))))
