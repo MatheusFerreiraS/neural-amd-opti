@@ -6,7 +6,7 @@
 #             makes the session lmxxf: the final image stays off.
 #   daniel    PresentWithoutUpscaler=true with danielblnc: the runtime processes frames.
 #   stall     as daniel at 2160p with AmdStallStandDownMs=1: the stall watch stands the final image down.
-# With VULKAN_SDK set it also runs tests\vulkan_present_smoke.cpp (OptiScaler.dll beside it) in four cases:
+# With VULKAN_SDK set it also runs tests\vulkan_gate_smoke.cpp (OptiScaler.dll beside it) in four cases:
 #   vk-off, vk-off-nomenu   PresentWithoutUpscaler=false, with OverlayMenu on and off: no final image, and with
 #                           the menu off no device hook, as in 0.4.9.
 #   vk-on, vk-on-nomenu     PresentWithoutUpscaler=true with danielblnc, with OverlayMenu on and off: the
@@ -117,10 +117,10 @@ $log = Text (Join-Path $d 'OptiScaler.log')
 Expect ($log -cmatch 'Final-image NR: off until the game restarts') 'stall: a 1 ms limit stands the final image down'
 
 if ($env:VULKAN_SDK) {
-    $vk = Join-Path $OutDir 'vulkan_present_smoke.exe'
+    $vk = Join-Path $OutDir 'vulkan_gate_smoke.exe'
     # The smoke's asserts make its calls, so it is built without NDEBUG.
-    & cl /nologo /std:c++20 /EHsc /Od /MD /utf-8 "/I$env:VULKAN_SDK\Include" tests\vulkan_present_smoke.cpp "/Fe$vk" `
-        "/Fo$OutDir\vulkan_present_smoke.obj" /link "$env:VULKAN_SDK\Lib\vulkan-1.lib" user32.lib | Out-Host
+    & cl /nologo /std:c++20 /EHsc /Od /MD /utf-8 "/I$env:VULKAN_SDK\Include" tests\vulkan_gate_smoke.cpp "/Fe$vk" `
+        "/Fo$OutDir\vulkan_gate_smoke.obj" /link "$env:VULKAN_SDK\Lib\vulkan-1.lib" user32.lib | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Vulkan smoke build failed' }
     $noMenu = "[Menu]`r`nOverlayMenu=false`r`n"
     foreach ($menu in @('', $noMenu)) {
