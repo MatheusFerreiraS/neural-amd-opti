@@ -5,10 +5,11 @@
 // and drives OptiScaler the way a player does: menu, NR and FG keys with real key input. Settings
 // without a key (NR scale, passes, menu section) are written into OptiScaler's own Config through
 // the PDB, the same fields the menu writes. Checks read OptiScaler.log, amd_presr.log, the DXGI
-// present count, the RivaTuner Statistics Server shared memory when RTSS runs, and the screen.
+// present count, the RivaTuner Statistics Server shared memory when RTSS runs, and the screen (Desktop Duplication
+// counts what the compositor shows).
 //
-//   dx11_final_image_smoke.exe fg|nr|keys|focus|fgoff|resize|menu|pace [seconds per phase] [log level]
-//   [Section/Key=Value ...]
+//   dx11_final_image_smoke.exe fg|nr|keys|focus|fgoff|resize|recreate|menu|pace [seconds per phase] [log level]
+//   [Section/Key=Value ...] [sync=1]
 #define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
@@ -36,6 +37,7 @@ static fs::path dir;
 static int failures = 0;
 static std::atomic<unsigned> progress { 0 };
 static std::atomic<const char*> phaseName { "start" };
+static UINT syncInterval = 0; // sync=1 on the command line presents with vsync
 
 static void check(HRESULT hr, const char* what)
 {
@@ -518,6 +520,11 @@ struct Game
         check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, &level, 1,
                                 D3D11_SDK_VERSION, &device, nullptr, &context),
               "D3D11CreateDevice");
+        Swapchain();
+        Shaders();
+    }
+    void Swapchain()
+    {
         ComPtr<IDXGIDevice> dxgi;
         check(device.As(&dxgi), "IDXGIDevice");
         ComPtr<IDXGIAdapter> adapter;
@@ -535,6 +542,21 @@ struct Game
         desc.Windowed = TRUE;
         desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         check(factory->CreateSwapChain(device.Get(), &desc, &swap), "CreateSwapChain");
+    }
+    // What a game does on a display mode or graphics settings change in many engines: drop the swapchain, make another.
+    void Recreate()
+    {
+        context->OMSetRenderTargets(0, nullptr, nullptr);
+        target.Reset();
+        depthView.Reset();
+        context->ClearState();
+        context->Flush();
+        swap.Reset();
+        Swapchain();
+        Views();
+    }
+    void Shaders()
+    {
         ComPtr<ID3DBlob> blob, errors;
         check(D3DCompile(kShader, strlen(kShader), "scene", nullptr, nullptr, "vs", "vs_5_0", 0, 0, &blob, &errors), "vs");
         check(device->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, &vs), "vs");
@@ -609,7 +631,7 @@ struct Game
             QueryPerformanceCounter(&now);
         while ((now.QuadPart - start.QuadPart) * 1000.0 / f.QuadPart < cpuMs);
         // The depth buffer stays bound through Present, as in most D3D11 games.
-        return swap->Present(0, 0);
+        return swap->Present(syncInterval, 0);
     }
 } game;
 
@@ -707,6 +729,112 @@ static Cadence PresentCadence(const Logs& from)
     return c;
 }
 
+// ---- What reaches the screen -------------------------------------------------------------------
+// Desktop Duplication hands over one frame per desktop update that touches the window. A present the compositor
+// replaces before the next refresh never reaches the screen and is not counted. It runs as a second copy of this exe
+// ("screens"), which loads the system dxgi.dll and never OptiScaler.
+static int CountScreenUpdates(double seconds, RECT area)
+{
+    LoadLibraryExW(L"dxgi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    using FactoryFn = HRESULT(WINAPI*)(REFIID, void**);
+    auto create = (FactoryFn) GetProcAddress(GetModuleHandleW(L"dxgi.dll"), "CreateDXGIFactory1");
+    ComPtr<IDXGIFactory1> factory;
+    check(create ? create(IID_PPV_ARGS(&factory)) : E_FAIL, "CreateDXGIFactory1");
+    ComPtr<IDXGIAdapter1> adapter;
+    ComPtr<IDXGIOutput1> output;
+    DXGI_OUTPUT_DESC where {};
+    const POINT centre { (area.left + area.right) / 2, (area.top + area.bottom) / 2 };
+    for (UINT a = 0; !output && factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a)
+    {
+        ComPtr<IDXGIOutput> o;
+        for (UINT i = 0; !output && adapter->EnumOutputs(i, &o) != DXGI_ERROR_NOT_FOUND; ++i)
+            if (SUCCEEDED(o->GetDesc(&where)) && PtInRect(&where.DesktopCoordinates, centre))
+                o.As(&output);
+        if (!output)
+            adapter.Reset();
+    }
+    check(output ? S_OK : E_FAIL, "output holding the window");
+    ComPtr<ID3D11Device> device;
+    check(D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &device,
+                            nullptr, nullptr),
+          "D3D11CreateDevice");
+    ComPtr<IDXGIOutputDuplication> duplication;
+    check(output->DuplicateOutput(device.Get(), &duplication), "DuplicateOutput");
+    OffsetRect(&area, -where.DesktopCoordinates.left, -where.DesktopCoordinates.top);
+    unsigned updates = 0;
+    std::vector<BYTE> rects;
+    const ULONGLONG end = GetTickCount64() + ULONGLONG(seconds * 1000);
+    while (GetTickCount64() < end)
+    {
+        DXGI_OUTDUPL_FRAME_INFO info {};
+        ComPtr<IDXGIResource> image;
+        const HRESULT hr = duplication->AcquireNextFrame(50, &info, &image);
+        if (hr == DXGI_ERROR_WAIT_TIMEOUT)
+            continue;
+        check(hr, "AcquireNextFrame");
+        bool window = false;
+        if (info.LastPresentTime.QuadPart && info.TotalMetadataBufferSize)
+        {
+            rects.resize(info.TotalMetadataBufferSize);
+            UINT size = 0;
+            if (SUCCEEDED(duplication->GetFrameDirtyRects((UINT) rects.size(), (RECT*) rects.data(), &size)))
+                for (UINT i = 0; i < size / sizeof(RECT) && !window; ++i)
+                {
+                    RECT overlap;
+                    window = IntersectRect(&overlap, (RECT*) rects.data() + i, &area);
+                }
+        }
+        updates += window;
+        duplication->ReleaseFrame();
+    }
+    std::printf("%u\n", updates);
+    return 0;
+}
+// Starts counting what reaches the screen inside the window for the given time; Visible() returns frames per second.
+struct ScreenCounter
+{
+    HANDLE process = nullptr, output = nullptr;
+    double seconds = 0;
+    void Start(double time)
+    {
+        seconds = time;
+        RECT client;
+        GetClientRect(window, &client);
+        MapWindowPoints(window, nullptr, (POINT*) &client, 2);
+        SECURITY_ATTRIBUTES inherit { sizeof(inherit), nullptr, TRUE };
+        HANDLE write = nullptr;
+        CreatePipe(&output, &write, &inherit, 0);
+        SetHandleInformation(output, HANDLE_FLAG_INHERIT, 0);
+        wchar_t self[MAX_PATH], line[400];
+        GetModuleFileNameW(nullptr, self, MAX_PATH);
+        std::swprintf(line, 400, L"\"%s\" screens %.2f %ld %ld %ld %ld", self, seconds, client.left, client.top,
+                      client.right, client.bottom);
+        STARTUPINFOW si { sizeof(si) };
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdOutput = si.hStdError = write;
+        PROCESS_INFORMATION pi {};
+        if (CreateProcessW(nullptr, line, nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+        {
+            process = pi.hProcess;
+            CloseHandle(pi.hThread);
+        }
+        CloseHandle(write);
+    }
+    double Visible()
+    {
+        if (!process)
+            return 0;
+        WaitForSingleObject(process, 10000);
+        CloseHandle(process);
+        char text[256] {};
+        DWORD read = 0;
+        ReadFile(output, text, sizeof(text) - 1, &read, nullptr);
+        CloseHandle(output);
+        process = output = nullptr;
+        return std::atof(text) / seconds;
+    }
+};
+
 // The image on screen keeps moving: two looks a little apart differ.
 static bool Moving()
 {
@@ -729,8 +857,13 @@ int wmain(int argc, wchar_t** argv)
         dir = fs::path(self).parent_path();
         const std::wstring mode = argc > 1 ? argv[1] : L"fg";
         const double phase = argc > 2 ? _wtof(argv[2]) : 4.0;
+        if (mode == L"screens" && argc > 6)
+            return CountScreenUpdates(phase, { _wtol(argv[3]), _wtol(argv[4]), _wtol(argv[5]), _wtol(argv[6]) });
+        for (int i = 3; i < argc; ++i)
+            if (wcsncmp(argv[i], L"sync=", 5) == 0)
+                syncInterval = (UINT) _wtoi(argv[i] + 5);
         const bool fg = mode == L"fg" || mode == L"focus" || mode == L"fgoff" || mode == L"resize" || mode == L"menu" ||
-                        mode == L"pace";
+                        mode == L"pace" || mode == L"recreate";
         fs::remove(dir / "OptiScaler.log");
         fs::remove(dir / "amd_presr.log");
         WriteIni(fg, argc > 3 ? argv[3] : (mode == L"pace" ? L"1" : nullptr),
@@ -806,27 +939,78 @@ int wmain(int argc, wchar_t** argv)
             expect(logs.Opti("XeFG swapchain created") > 0, "XeFG swapchain created");
         }
         const double expected = fg ? 3.0 : 1.0;
-        auto FgShowing = [&](const Stats& s) { return s.presentsPerFrame > expected - 0.5; };
+        auto FgShowing = [&](const Stats& s) { return std::abs(s.presentsPerFrame - expected) < 0.5; };
         if (mode == L"pace")
         {
             // How XeFG spaces its presents with FG on, and how many presents a game frame makes with FG off.
             Logs mark;
             mark.Mark();
+            ScreenCounter screen;
+            screen.Start(phase - 0.5);
             const Stats on = Run("FG on", phase);
+            const double visibleOn = screen.Visible();
             const Cadence fgOn = PresentCadence(mark);
             std::printf("  FG on: %u presents for %u game frames, time between presents p10 %.2f p50 %.2f p90 %.2f ms, "
-                        "%u under 4 ms\n",
-                        fgOn.presents, on.frames, fgOn.p10, fgOn.p50, fgOn.p90, fgOn.bunched);
+                        "%u under 4 ms; on screen %.1f fps for %.1f game fps\n",
+                        fgOn.presents, on.frames, fgOn.p10, fgOn.p50, fgOn.p90, fgOn.bunched, visibleOn, on.appFps);
             expect(fgOn.presents > on.frames * 5 / 2, "FG on: XeFG presents about 3 frames per game frame");
-            // Measured, not checked: on the test machine about one present per game frame comes under 4 ms after the
-            // previous one, with XeFG ExtraPacing on or off.
+            // With the game at a quarter of the refresh rate, 3X fits on the screen: every frame XeFG presents should
+            // be seen.
+            MONITORINFOEXW monitor {};
+            monitor.cbSize = sizeof(monitor);
+            GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor);
+            DEVMODEW display {};
+            display.dmSize = sizeof(display);
+            EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &display);
+            const double refresh = display.dmDisplayFrequency > 1 ? display.dmDisplayFrequency : 60;
+            game.cpuMs = float(4000.0 / refresh);
+            Run("slow game settle", 1, true);
+            screen.Start(phase - 0.5);
+            const Stats slow = Run("FG on, slow game", phase);
+            const double visibleSlow = screen.Visible();
+            game.cpuMs = 2;
+            std::printf("  FG on, game at %.1f fps on a %.0f Hz screen: on screen %.1f fps (%.2f per game frame, %.2f "
+                        "presents per game frame)\n",
+                        slow.appFps, refresh, visibleSlow, visibleSlow / slow.appFps, slow.presentsPerFrame);
+            expect(visibleSlow > slow.appFps * 2.5, "FG on: about 3 frames per game frame reach the screen");
             Press(VK_END);
             Run("FG off settle", 1, true);
             mark.Mark();
+            screen.Start(phase - 0.5);
             const Stats off = Run("FG off", phase);
+            const double visibleOff = screen.Visible();
             const Cadence fgOff = PresentCadence(mark);
-            std::printf("  FG off: %u presents for %u game frames\n", fgOff.presents, off.frames);
+            std::printf("  FG off: %u presents for %u game frames; on screen %.1f fps for %.1f game fps\n",
+                        fgOff.presents, off.frames, visibleOff, off.appFps);
             expect(fgOff.presents <= off.frames + 2, "FG off: one present per game frame");
+            std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
+            return failures ? 1 : 0;
+        }
+        if (mode == L"recreate")
+        {
+            // The swapchain dropped and made again with FG on, every other time with the menu open.
+            for (int round = 0; round < 4; ++round)
+            {
+                const bool menu = round % 2 == 1;
+                if (menu)
+                    Press(VK_INSERT);
+                game.Recreate();
+                Run("recreate settle", 3, true);
+                Stats after = Run(menu ? "recreated, menu open" : "recreated", phase);
+                expect(after.nr > after.frames * 9 / 10, "NR runs after the swapchain is recreated");
+                expect(FgShowing(after), "XeFG presents generated frames after the swapchain is recreated");
+                expect(Moving(), "image moves after the swapchain is recreated");
+                if (menu)
+                {
+                    expect(*opti.menuVisible, "menu stays open through the swapchain recreation");
+                    Press(VK_INSERT);
+                }
+            }
+            expect(logs.Opti("Dx11wDx12SC 5 created") == 1, "every swapchain went through the D3D12 bridge");
+            const auto log = ReadShared(dir / "OptiScaler.log");
+            expect(Count(log, "DEVICE_HUNG") == 0 && Count(log, "887A0005") == 0 && Count(log, "Device removed") == 0 &&
+                       Count(log, "restart required") == 0 && Count(log, "GPU timeout") == 0,
+                   "no device removal or NR stop");
             std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
             return failures ? 1 : 0;
         }
