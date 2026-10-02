@@ -122,6 +122,9 @@ int main()
     ComPtr<ID3D12Resource> nt12;
     d12->OpenSharedHandle(nt, IID_PPV_ARGS(&nt12));
     std::printf("shared chain ready: %d %d %d\n", from9 != nullptr, nt11 != nullptr, nt12 != nullptr);
+    ComPtr<ID3D12Resource> direct12;
+    std::printf("D3D12 opening the D3D9Ex handle directly: %08X\n",
+                unsigned(d12->OpenSharedHandle(legacy, IID_PPV_ARGS(&direct12))));
 
     auto wait9 = [&]
     {
