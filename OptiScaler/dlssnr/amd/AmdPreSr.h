@@ -54,6 +54,7 @@ struct Settings
 {
     UINT encoding = 1; // 1 Linear, 2 sRGB, 3 Gamma 2.2
     bool everyFrame = false;
+    bool fixedSeed = false;
     // How many frames may be running at the NR stage at once. Too few and a frame that
     // finds every buffer busy carries no NR at all. In one YYSLS AB session the
     // counter rose by about 1200-1440 per two-slot segment and stayed flat with

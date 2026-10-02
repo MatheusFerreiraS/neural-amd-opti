@@ -313,6 +313,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="dlssnr\amd\RtgiNative.h" />
     <ClCompile Include="dlssnr\amd\AmdPreSr.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader><ForcedIncludeFiles>$(IntDir)amd_graphics_source_id.h;%(ForcedIncludeFiles)</ForcedIncludeFiles></ClCompile>
     <ClCompile Include="dlssnr\amd\AmdBridge.cpp" />
+    <ClCompile Include="dlssnr\amd\VulkanPresentExperimental.cpp" />
+    <ClInclude Include="dlssnr\amd\VulkanPresentExperimental.h" />
     <ClCompile Include="dlssnr\backend\Selector.cpp" />
     <ClCompile Include="dlssnr\backend\DanielBackend.cpp" />
     <ClCompile Include="dlssnr\backend\LmxxfBackend.cpp" />
@@ -918,6 +920,13 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
   <ItemGroup>
     <ResourceCompile Include="OptiScaler.rc" />
   </ItemGroup>
+  <ItemGroup Condition="'$(Platform)'=='x64'">
+    <ClCompile Include="$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\api\internal\ffx_assert.cpp;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\api\internal\ffx_message.cpp;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\api\internal\ffx_object_management.cpp;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\backend\dx12\ffx_backends_dx12.cpp;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\backend\dx12\ffx_dx12.cpp;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\framegeneration\fsr3\internal\ffx_opticalflow.cpp;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\framegeneration\fsr3\internal\ffx_opticalflow_shaderblobs.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions>NOMINMAX;TIF=OptiFfxTIF;flushBarriers=OptiFfxFlushBarriers;getDX12ResourcePtr=OptiFfxGetDX12ResourcePtr;ffxGetCommandListDX12=OptiFfxGetCommandListDX12;ffxGetDeviceDX12=OptiFfxGetDeviceDX12;ffxGetResourceDX12=OptiFfxGetResourceDX12;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\api\include;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\api\internal;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\backend\dx12;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\framegeneration\fsr3\include;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\framegeneration\fsr3\internal;$(ProjectDir)..\external\FidelityFX-SDK\sdk\libs\pix;$(IntDir)ffx-of;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemGroup>
   <ItemGroup>
     <None Include="shaders\magnifier\precompile\Magnifier_Shader_Vk.spv" />
     <None Include="shaders\fsrd_preprocess\precompile\FSRDPreprocessCommon.hlsli" />
@@ -930,6 +939,9 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Target Name="WriteAmdGraphicsSourceIdentity" BeforeTargets="ClCompile">
     <Exec WorkingDirectory="$(ProjectDir)" Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\tools\write-amd-graphics-source-id.ps1&quot; -ProjectDirectory &quot;$(ProjectDir).&quot; -OutputPath &quot;$(IntDir)amd_graphics_source_id.h&quot;" />
+  </Target>
+  <Target Name="GenerateAmdOpticalFlowShaders" BeforeTargets="ClCompile" Condition="'$(Platform)'=='x64'">
+    <Exec WorkingDirectory="$(ProjectDir)" Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(ProjectDir)..\tools\gen_ffx_opticalflow.ps1&quot; -SdkDirectory &quot;$(ProjectDir)..\external\FidelityFX-SDK-v2&quot; -OutputDirectory &quot;$(IntDir)ffx-of&quot;" />
   </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

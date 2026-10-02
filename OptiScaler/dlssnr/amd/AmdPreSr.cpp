@@ -1612,6 +1612,12 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             // Every-frame mode matches author 0.3: skip history inputs, do not
             // clear history-valid (0x8d018) each frame.
             At<uint8_t>(r, L->temporal) = cfg.everyFrame ? 0 : 1;
+            if (cfg.fixedSeed && L->seedCounter && L->seedSelfCheck)
+            {
+                if (At<int>(r, L->seedCounter) > 0)
+                    At<int>(r, L->seedSelfCheck) = -1;
+                At<int>(r, L->seedCounter) = 0;
+            }
             // The history-valid flag and the current borrowed history view (engine
             // +0x120/+0x118 in 0.3.1, +0x150/+0x148 in 0.4.x). Clear only at a
             // quiescent frame boundary.

@@ -139,6 +139,67 @@ Keep the game's genuine `nvngx_dlssd.dll` (RR) separate from `nvngx_dlssnr.dll` 
 For an RR-only comparison, disable the master NR switch; “Apply the model” merely hides the edit
 and still incurs NR's GPU cost. Successful RR initialization alone does not prove image quality.
 
+## AMD games without an upscaler (experimental)
+
+The final-image route can run the danielblnc AMD runtime at D3D11 or D3D12
+`Present`, without an upscaler call. Put `dlssnr_amd_pass1.dll` and its
+weights beside the OptiScaler proxy, then enable:
+
+```ini
+[DlssNr]
+Enabled=true
+PresentWithoutUpscaler=true
+NrBackend=daniel
+```
+
+The **Neural** tab has the same final-image switch and shows its status. It starts
+off by default. The final image includes the game's HUD. FidelityFX Optical Flow
+estimates motion directly from successive frames, without installing ReShade.
+The current route requires an unmultisampled RGBA8 or BGRA8 backbuffer; OpenGL,
+DXVK D3D11 and HDR swapchains are not supported. Native Vulkan final-image NR
+uses a Vulkan-to-D3D12 shared image when supported, with host readback as fallback.
+The swapchain must support transfer source and destination usage.
+XeFG/MFG is still unavailable for native Vulkan presentation; the bundled XeFG SDK exposes a D3D12 swapchain.
+The first six frames after a reset use zero motion while the estimator warms up.
+Its scene-change score resets neural history before a cut frame runs. The noise
+seed is fixed on supported AMD runtime versions (0.4.1 through 0.5.0). On D3D11,
+a bound, shader-readable depth buffer at Present is copied as a real depth guide;
+otherwise depth remains synthetic. D3D12 final-image mode uses synthetic depth.
+The look can still differ from the ReShade add-on and
+the ordinary pre-SR path. If Optical Flow fails, the route uses zero motion and
+reports the fallback in the Neural tab. A residual filter smooths small changes
+with default strength 0.8 and threshold 4/255. The model keeps its temporal
+history by default. Set `AmdEveryFrame=true` to compare the independent-frame
+path, which can flicker more. ResizeBuffers releases its own
+backbuffer reference after bounded GPU waits. If a wait fails, the route stops
+for that process rather than reusing an unfinished image.
+The Neural tab also lets you set one to three passes and 50–100% model scale.
+
+### XeFG from a D3D11 final image (experimental)
+
+The D3D11→D3D12 swapchain bridge can feed the final-image Optical Flow guides
+to XeFG. Keep the settings above and add:
+
+```ini
+[FrameGen]
+Enabled=true
+FGInput=upscaler
+FGOutput=xefg
+
+[XeFG]
+InterpolationCount=2
+```
+
+Place `libxess_fg.dll` and `libxell.dll` where OptiScaler loads its XeFG runtime.
+`InterpolationCount=2` requests two generated frames between rendered frames;
+the provider can cap this to its supported count. Restart the game after changing
+the input or output. This path starts interpolation only after Optical Flow has
+warmed up and the neural frame and guides are ready. It uses synthetic depth
+on the bridge, so disocclusions and the HUD may still show artifacts. XeFG
+requires its D3D12 proxy swapchain even though the game renders with D3D11.
+
+The Optical Flow build needs an in-game visual and resize test before packaging for users.
+
 ## Optional DLSS Frame Generation
 
 For the six NVIDIA Streamline/FG dependencies, the pinned download command, and separate instructions

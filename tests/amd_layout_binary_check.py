@@ -50,6 +50,8 @@ INI_KEYS = {
 }
 # Fields the checks in check_layout pin by what the code does with them (besides INI_KEYS).
 BEHAVIOUR_CHECKED = {"enabled", "nativeFailure", "initDone", "trampoline"}
+SEED_OFFSETS = {"0.4.1": (0x3c, 0x104), "0.4.2": (0x3c, 0x104),
+                "0.4.3": (0x3c, 0x104), "0.5.0": (0x4c, 0x114)}
 
 # Pinned reference sites for every other data field: (field, site RVA, opcode bytes before the
 # rip disp32, bytes after it, layout function the site must lie in or None, layout function the
@@ -586,6 +588,8 @@ def check_layout(image, layout, bootstrap, start_bytes, check):
 def unpinned_fields(layout):
     """Non-zero data fields that no INI store, behaviour check or pinned site covers."""
     covered = set(INI_KEYS.values()) | BEHAVIOUR_CHECKED | {a[0] for a in ANCHORS.get(layout["name"], [])}
+    if layout["name"] in SEED_OFFSETS:
+        covered |= {"seedCounter", "seedSelfCheck"}
     return sorted(n for n, v in layout["fields"].items() if v and n not in NOT_DATA and n not in covered)
 
 
@@ -631,6 +635,12 @@ def main(argv):
     check(sorted(bootstraps) == sorted(layouts), "every table has one bootstrap entry")
     for var, layout in layouts.items():
         check(len(layout["fields"]) == len(members) - 3, f"{var}: {len(layout['fields'])} fields parsed")
+        seed = SEED_OFFSETS.get(layout["name"])
+        if seed:
+            f = layout["fields"]
+            check((f["seedCounter"], f["seedSelfCheck"]) ==
+                  (f["engine"] + seed[0], f["engine"] + seed[1]),
+                  f"{var}: pinned seed offsets relative to engine")
         if layout["name"] in NO_BINARY:
             print(f"  note {var}: no {layout['name']} binary at hand, its data fields have no pinned site")
             continue

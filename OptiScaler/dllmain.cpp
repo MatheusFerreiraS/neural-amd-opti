@@ -1949,6 +1949,31 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             LOG_INFO("External frame generation: leaving Streamline/Reflex and MFG control to the game or unlocker; "
                      "NR/SR remain available");
         }
+        if (Config::Instance()->DlssNrPresent.value_or_default() &&
+            Config::Instance()->FGEnabled.value_or_default() &&
+            Config::Instance()->FGOutput.value_or_default() == FGOutput::XeFG &&
+            Config::Instance()->FGInput.value_or_default() == FGInput::NoFG)
+        {
+            Config::Instance()->FGInput.set_volatile_value(FGInput::Upscaler);
+            LOG_INFO("Final-image NR: using optical-flow guides as XeFG input");
+        }
+        if (Config::Instance()->DlssNrPresent.value_or_default() &&
+            Config::Instance()->FGInput.value_or_default() == FGInput::Upscaler &&
+            Config::Instance()->FGOutput.value_or_default() == FGOutput::XeFG)
+        {
+            // Optical flow is generated at output resolution; synthetic depth is not inverted.
+            Config::Instance()->FGXeFGHighResMV.set_volatile_value(true);
+            Config::Instance()->FGXeFGDepthInverted.set_volatile_value(false);
+        }
+        else if (Config::Instance()->DlssNrPresent.value_or_default() &&
+                 Config::Instance()->FGInput.value_or_default() == FGInput::Upscaler)
+        {
+            // Final-image NR has no upscaler evaluation to supply OptiFG's motion/depth inputs.
+            Config::Instance()->FGInput.set_volatile_value(FGInput::NoFG);
+            Config::Instance()->FGOutput.set_volatile_value(FGOutput::NoFG);
+            Config::Instance()->FGEnabled.set_volatile_value(false);
+            LOG_WARN("Final-image NR: OptiFG Upscaler input requires a game upscaler; FG disabled for this session");
+        }
         State::Instance().activeFgInput = Config::Instance()->FGInput.value_or_default();
         State::Instance().activeFgOutput = Config::Instance()->FGOutput.value_or_default();
         State::Instance().activeFgNvngx = Config::Instance()->FGNvngxReplacement.value_or_default();

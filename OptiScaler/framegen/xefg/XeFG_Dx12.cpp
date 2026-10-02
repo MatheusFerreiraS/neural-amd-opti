@@ -303,10 +303,11 @@ bool XeFG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQu
     {
         LOG_DEBUG("Creating swapchain context for the first time");
 
-        if (State::Instance().currentD3D12Device == nullptr)
+        Microsoft::WRL::ComPtr<ID3D12Device> queueDevice;
+        if (FAILED(cmdQueue->GetDevice(IID_PPV_ARGS(&queueDevice))))
             return false;
 
-        CreateSwapchainContext(State::Instance().currentD3D12Device);
+        CreateSwapchainContext(queueDevice.Get());
 
         if (_swapChainContext == nullptr)
             return false;
@@ -506,10 +507,11 @@ bool XeFG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
 
     if (_swapChainContext == nullptr)
     {
-        if (State::Instance().currentD3D12Device == nullptr)
+        Microsoft::WRL::ComPtr<ID3D12Device> queueDevice;
+        if (FAILED(cmdQueue->GetDevice(IID_PPV_ARGS(&queueDevice))))
             return false;
 
-        CreateSwapchainContext(State::Instance().currentD3D12Device);
+        CreateSwapchainContext(queueDevice.Get());
 
         if (_swapChainContext == nullptr)
             return false;
@@ -663,8 +665,13 @@ void XeFG_Dx12::Activate()
     if (State::Instance().activeFgInput == FGInput::Upscaler && currentFeature != nullptr)
         nativeAA = currentFeature->RenderWidth() == currentFeature->DisplayWidth();
 
+    const bool finalImageFlow = Config::Instance()->DlssNrPresent.value_or_default() &&
+                                State::Instance().currentD3D11Device != nullptr &&
+                                State::Instance().activeFgInput == FGInput::Upscaler && currentFeature == nullptr;
+
     if (_swapChainContext != nullptr && _fgContext != nullptr && !_isActive &&
-        (IsLowResMV() || nativeAA || (State::Instance().gameQuirks & GameQuirk::ForceFGRenderSizeMVs) ||
+        (IsLowResMV() || nativeAA || finalImageFlow ||
+         (State::Instance().gameQuirks & GameQuirk::ForceFGRenderSizeMVs) ||
          Config::Instance()->FGXeFGIgnoreInitChecks.value_or_default()))
     {
         auto result = XeFGProxy::SetEnabled()(_swapChainContext, true);
@@ -925,6 +932,13 @@ bool XeFG_Dx12::Dispatch()
                           XMVectorSet(XMVectorGetZ(right), XMVectorGetZ(up), XMVectorGetZ(forward), 0.0f),
                           XMVectorSet(x, y, z, 1.0f) };
 
+        memcpy(constData.viewMatrix, view.r, sizeof(view));
+    }
+    else if (Config::Instance()->DlssNrPresent.value_or_default() &&
+             state.currentD3D11Device != nullptr)
+    {
+        // Final-image optical flow has no game camera transform.
+        const auto view = XMMatrixIdentity();
         memcpy(constData.viewMatrix, view.r, sizeof(view));
     }
 

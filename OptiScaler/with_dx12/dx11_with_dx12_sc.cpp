@@ -11,6 +11,8 @@
 
 #include <Util.h>
 #include <Config.h>
+#include <dlssnr/amd/PresentExperimental.h>
+#include <dlssnr/amd/AmdBridge.h>
 
 #include <d3d11.h>
 #include <d3d11_4.h>
@@ -136,6 +138,7 @@ Dx11wDx12SC::Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Devi
     }
 
     State::Instance().swapchainInteropApi = SwapchainInteropApi::Dx11wDx12;
+    State::Instance().swapchainApi = API::DX11;
 
     _RefreshCachedSwapchainDesc();
 
@@ -343,6 +346,64 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
 
     const bool fgHookedPresenter =
         State::Instance().currentFGSwapchain == _fgSwapChain && !FGHooks::IsDx12InteropPresentSC(_fgSwapChain);
+
+    if (fgHookedPresenter && State::Instance().activeFgOutput == FGOutput::XeFG &&
+        !State::Instance().currentFeature &&
+        AmdPresentExperimental::IsTarget() && Config::Instance()->DlssNrEnabled.value_or_default() &&
+        Config::Instance()->NrBackend.value_or_default() == "daniel")
+    {
+        auto settings = DlssNr::AmdBridge::SettingsFromConfig(
+            *Config::Instance(), Config::Instance()->AmdNrScale.value_or_default());
+        settings.spinDraw = 0;
+        AmdPresentExperimental::Guides guides;
+        const bool ready = AmdPresentExperimental::Render(_fgSwapChain, _dx12CommandQueue,
+                                                          Util::DllPath().parent_path(), settings, &guides);
+        static unsigned unavailableFrames = 0;
+        if (ready)
+            unavailableFrames = 0;
+        else if (++unavailableFrames == 1 || unavailableFrames % 120 == 0)
+            LOG_WARN("XeFG final-image guides unavailable: {}", AmdPresentExperimental::Status());
+        if (_fg && State::Instance().activeFgInput == FGInput::Upscaler)
+        {
+            if (Config::Instance()->FGEnabled.value_or_default())
+                _fg->StartNewFrame();
+            if (!ready && _fg->IsActive())
+                _fg->Deactivate();
+            FG_Constants constants {};
+            constants.flags |= FG_Flags::DisplayResolutionMVs;
+            DXGI_SWAP_CHAIN_DESC desc {};
+            _fgSwapChain->GetDesc(&desc);
+            constants.displayWidth = ready ? guides.width : desc.BufferDesc.Width;
+            constants.displayHeight = ready ? guides.height : desc.BufferDesc.Height;
+            if (ready || !_fg->FrameGenerationContext() || !Config::Instance()->FGEnabled.value_or_default())
+                _fg->EvaluateState(_dx12Device, constants);
+            if (ready && _fg->IsActive() && !_fg->IsPaused())
+            {
+                _fg->SetCameraValues(0.1f, 1000.0f, 1.5707963f,
+                                     float(guides.width) / float(guides.height));
+                _fg->SetMVScale(1.0f, 1.0f);
+                _fg->SetJitter(0.0f, 0.0f);
+                _fg->SetReset(guides.reset);
+                _fg->SetInterpolationRect(guides.width, guides.height);
+                Dx12Resource resource {};
+                resource.width = guides.width;
+                resource.height = guides.height;
+                resource.state = D3D12_RESOURCE_STATE_COMMON;
+                resource.validity = FG_ResourceValidity::UntilPresent;
+                resource.type = FG_ResourceType::Velocity;
+                resource.resource = guides.motion.Get();
+                const bool motionTagged = _fg->SetResource(&resource);
+                resource.type = FG_ResourceType::Depth;
+                resource.resource = guides.depth.Get();
+                const bool depthTagged = _fg->SetResource(&resource);
+                if (!motionTagged || !depthTagged)
+                {
+                    LOG_WARN("Final-image NR: XeFG rejected motion or depth guides");
+                    _fg->Deactivate();
+                }
+            }
+        }
+    }
 
     // The game-facing DX11 swapchain is never presented in this wrapper.
     // For a plain external DX12 presenter, draw Opti's overlay here.

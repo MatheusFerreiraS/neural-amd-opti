@@ -234,6 +234,14 @@ void RenderMenu(Config* config, float menuResScale)
         bool enabled = config->DlssNrEnabled.value_or_default();
         if (ImGui::Checkbox("Enable NR", &enabled))
             config->DlssNrEnabled = enabled;
+        bool present = config->DlssNrPresent.value_or_default();
+        if (ImGui::Checkbox("Final image (D3D11/D3D12/Vulkan, no upscaler)", &present))
+            config->DlssNrPresent = present;
+        HelpMarker("Processes the D3D11, D3D12 or Vulkan final image when no upscaler is active."
+                   "\nRequires the danielblnc AMD runtime. The HUD is included."
+                   "\nFidelityFX estimates motion. D3D11 uses a bound shader-readable depth buffer when available."
+                   "\nVulkan shares the image with D3D12 when the driver permits; otherwise host readback adds latency."
+                   "\nScene cuts reset history; the runtime noise seed is fixed on supported versions.");
 
         // With more than one runtime installed, choose the one the next launch uses. This session keeps the
         // one it started with: each installs its own D3D12 hooks as the device is created.
@@ -683,14 +691,16 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nmore flicker and shimmer. With the INI-only single slot (AmdSlots=1) the"
                        "\nrender thread also waits for the model every frame."
                        "\n\nChanging it restarts the model's history.");
-            float stabilizer = config->AmdStabilizerStrength.value_or_default();
+            float stabilizer = AmdPresentExperimental::IsTarget() && !config->AmdStabilizerStrength.has_value()
+                                   ? .8f : config->AmdStabilizerStrength.value_or_default();
             if (ImGui::SliderFloat("Stabilizer", &stabilizer, 0.0f, 1.0f, "%.2f"))
                 config->AmdStabilizerStrength = stabilizer;
-            HelpMarker("Smooths small frame-to-frame changes of the neural effect along the game's motion"
-                       "\nvectors, after the runtime and before the upscaler. Changes larger than the threshold"
+            HelpMarker("Smooths small frame-to-frame changes of the neural effect along motion"
+                       "\nvectors when available, after the runtime. Changes larger than the threshold"
                        "\npass through, and the game's own image is untouched. 0 turns it off; higher values can"
-                       "\nsoften fine detail in motion.");
-            float stabilizerThreshold = config->AmdStabilizerThreshold.value_or_default();
+                       "\nsoften fine detail in motion. Final-image mode defaults to 0.8 with optical flow.");
+            float stabilizerThreshold = AmdPresentExperimental::IsTarget() && !config->AmdStabilizerThreshold.has_value()
+                                            ? 4.f : config->AmdStabilizerThreshold.value_or_default();
             if (ImGui::SliderFloat("Stabilizer threshold", &stabilizerThreshold, 0.5f, 8.0f, "%.1f / 255"))
                 config->AmdStabilizerThreshold = stabilizerThreshold;
             HelpMarker("Largest frame-to-frame change of the effect, in 1/255, that the stabilizer smooths.");
@@ -769,30 +779,23 @@ void RenderMenu(Config* config, float menuResScale)
             }
         };
 
-        if (AmdPresentExperimental::IsTarget())
+        const bool finalImage = AmdPresentExperimental::IsTarget();
+        if (finalImage)
         {
             if (DlssNr::AmdBridge::HasFiles())
                 scheduling();
             ImGui::TextWrapped(
-                "Experimental final-image neural: synthetic motion/depth, no temporal history. Includes game HUD.");
-            ImGui::TextUnformatted("One pass, 100% image resolution. Restart after resizing the output.");
-            float strength = config->AmdNeuralLightingStrength.value_or_default();
-            if (ImGui::SliderFloat("Lightning Strength", &strength, 0.f, 1.f))
-                config->AmdNeuralLightingStrength = strength;
+                "Final-image neural: optical flow, scene resets, fixed noise seed and depth when available. Includes game HUD.");
+            ImGui::TextUnformatted("D3D11/D3D12 final image; HUD included.");
+            float scale = std::clamp(config->AmdNrScale.value_or_default(), .5f, 1.f);
+            if (ImGui::SliderFloat("Model scale", &scale, .5f, 1.f))
+                config->AmdNrScale = scale;
             ImGui::TextWrapped("%s", AmdPresentExperimental::Status().c_str());
-            return;
         }
 
         if (DlssNr::AmdBridge::HasFiles())
         {
-            NeuralPassLine(config, "GPU time the game's queue spends on the model each frame, all passes"
-                                   "\ntogether: copying its inputs, waiting for its result and applying it."
-                                   "\n\nThe fps is 1000 divided by that time: how many frames per second the"
-                                   "\nmodel alone could keep up with. The game runs slower than that, because"
-                                   "\nthe rest of the frame takes time too.");
-
-            // Stage costly neural parameter edits in ImGui state. Keep rendering
-            // with the committed parameters until release/text-edit completion.
+            // Commit model parameters after editing; each change rebuilds runtime history.
             auto neuralSlider = [](const char* label, auto& option, float lo, float hi)
             {
                 auto storage = ImGui::GetStateStorage();
@@ -807,87 +810,96 @@ void RenderMenu(Config* config, float menuResScale)
                 if (commit)
                     option = value;
             };
-            ImGui::SeparatorText("Processing");
-            // Where the model sits, and what its resolution is a percentage OF. This line used to be
-            // fixed text claiming "before Super Resolution" whichever placement was running, while
-            // the switch that chose it sat in a branch this backend never reaches -- so the
-            // percentage below had no stated frame of reference at all.
-            //
-            // ApplyAfterRR alone decides it, the same key EvaluateAtSeam reads. RunBeforeSR is not
-            // consulted on this backend.
-            int placement = config->DlssNrApplyAfterRR.value_or_default() ? 1 : 0;
-
-            if (ImGui::Combo("Processing point", &placement, "Before Super Resolution\0After the finished frame\0"))
-                config->DlssNrApplyAfterRR = (placement != 0);
-
-            HelpMarker(placement == 0 ? "The model is handed the render-resolution frame the upscaler is about to"
-                                        "\nread, so the percentage below is of that render resolution. The upscaler"
-                                        "\nthen enlarges the model\'s work along with everything else."
-                                        "\n\nA game driving Ray Reconstruction never reaches this point: RR denoises"
-                                        "\nand enlarges in one dispatch, leaving no seam before it. Pick the other"
-                                        "\nplacement there, or the model will not run at all."
-                                      : "The model is handed the finished frame, and the percentage below is of"
-                                        "\nthat frame: at 50% a 4K picture is reduced to 1080p, the model runs on"
-                                        "\nit, and its answer is enlarged back to fill the frame."
-                                        "\n\nThis is the placement Ray Reconstruction titles need, and the only one"
-                                        "\nthey can reach.");
-
-            // A Ray Reconstruction title has no seam before the upscaler, and the pass declines the
-            // one after it unless this switch picks it, so in this placement the model does not run.
-            if (placement == 0)
+            if (!finalImage)
             {
-                if (auto feature = State::Instance().currentFeature; feature != nullptr)
+                NeuralPassLine(config, "GPU time the game's queue spends on the model each frame, all passes"
+                                       "\ntogether: copying its inputs, waiting for its result and applying it."
+                                       "\n\nThe fps is 1000 divided by that time: how many frames per second the"
+                                       "\nmodel alone could keep up with. The game runs slower than that, because"
+                                       "\nthe rest of the frame takes time too.");
+
+                ImGui::SeparatorText("Processing");
+                // Where the model sits, and what its resolution is a percentage OF. This line used to be
+                // fixed text claiming "before Super Resolution" whichever placement was running, while
+                // the switch that chose it sat in a branch this backend never reaches -- so the
+                // percentage below had no stated frame of reference at all.
+                //
+                // ApplyAfterRR alone decides it, the same key EvaluateAtSeam reads. RunBeforeSR is not
+                // consulted on this backend.
+                int placement = config->DlssNrApplyAfterRR.value_or_default() ? 1 : 0;
+
+                if (ImGui::Combo("Processing point", &placement, "Before Super Resolution\0After the finished frame\0"))
+                    config->DlssNrApplyAfterRR = (placement != 0);
+
+                HelpMarker(placement == 0 ? "The model is handed the render-resolution frame the upscaler is about to"
+                                            "\nread, so the percentage below is of that render resolution. The upscaler"
+                                            "\nthen enlarges the model\'s work along with everything else."
+                                            "\n\nA game driving Ray Reconstruction never reaches this point: RR denoises"
+                                            "\nand enlarges in one dispatch, leaving no seam before it. Pick the other"
+                                            "\nplacement there, or the model will not run at all."
+                                          : "The model is handed the finished frame, and the percentage below is of"
+                                            "\nthat frame: at 50% a 4K picture is reduced to 1080p, the model runs on"
+                                            "\nit, and its answer is enlarged back to fill the frame."
+                                            "\n\nThis is the placement Ray Reconstruction titles need, and the only one"
+                                            "\nthey can reach.");
+
+                // A Ray Reconstruction title has no seam before the upscaler, and the pass declines the
+                // one after it unless this switch picks it, so in this placement the model does not run.
+                if (placement == 0)
                 {
-                    const auto kind = feature->GetUpscalerType();
-                    if (kind == Upscaler::DLSSD || kind == Upscaler::FSR_RR)
-                        ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f),
-                                           "This title drives Ray Reconstruction, which has no seam before it:"
-                                           "\nthe model is not running. Choose \"After the finished frame\".");
+                    if (auto feature = State::Instance().currentFeature; feature != nullptr)
+                    {
+                        const auto kind = feature->GetUpscalerType();
+                        if (kind == Upscaler::DLSSD || kind == Upscaler::FSR_RR)
+                            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f),
+                                               "This title drives Ray Reconstruction, which has no seam before it:"
+                                               "\nthe model is not running. Choose \"After the finished frame\".");
+                    }
                 }
-            }
 
-            // One slider, bound to whichever placement is live. The two keep separate values, so
-            // switching back and forth does not make you retune each time.
-            auto& modelScale = placement == 0 ? config->AmdNrScale : config->DlssNrRRWorkingScale;
-            static float scale = 100.f;
-            static bool editingScale = false;
-            if (!editingScale)
-                scale = modelScale.value_or_default() * 100.f;
-            // With dynamic resolution on, this is the ceiling it steps down from.
-            const bool dynamicScale = config->AmdDynamicScale.value_or_default();
-            ImGui::SliderFloat(
-                placement == 0 ? (dynamicScale ? "NR resolution, maximum (% of render)" : "NR resolution (% of render)")
-                               : (dynamicScale ? "NR resolution, maximum (% of frame)" : "NR resolution (% of frame)"),
-                &scale, 25, 100, "%.0f%%");
-            editingScale = ImGui::IsItemActive();
-            // Commit once after dragging or text entry, not one model rebuild per mouse move.
-            if (ImGui::IsItemDeactivatedAfterEdit())
-                modelScale = scale / 100.f;
+                // One slider, bound to whichever placement is live. The two keep separate values, so
+                // switching back and forth does not make you retune each time.
+                auto& modelScale = placement == 0 ? config->AmdNrScale : config->DlssNrRRWorkingScale;
+                static float scale = 100.f;
+                static bool editingScale = false;
+                if (!editingScale)
+                    scale = modelScale.value_or_default() * 100.f;
+                // With dynamic resolution on, this is the ceiling it steps down from.
+                const bool dynamicScale = config->AmdDynamicScale.value_or_default();
+                ImGui::SliderFloat(
+                    placement == 0 ? (dynamicScale ? "NR resolution, maximum (% of render)" : "NR resolution (% of render)")
+                                   : (dynamicScale ? "NR resolution, maximum (% of frame)" : "NR resolution (% of frame)"),
+                    &scale, 25, 100, "%.0f%%");
+                editingScale = ImGui::IsItemActive();
+                // Commit once after dragging or text entry, not one model rebuild per mouse move.
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                    modelScale = scale / 100.f;
 
-            bool dynamic = dynamicScale;
-            if (ImGui::Checkbox("Dynamic NR resolution", &dynamic))
-                config->AmdDynamicScale = dynamic;
-            HelpMarker("Lowers the model's resolution while the game runs under the target frame"
-                       "\nrate, in steps of 85%, 70%, 55% and 40% of the resolution above."
-                       "\n\nIt steps down after 2 s under the target and back up after 5 s with 15%"
-                       "\nheadroom, and waits 10 s after every change (60 s after a step down"
-                       "\nbefore it tries to go back up). Each change rebuilds the model, so the"
-                       "\neffect is off for one to five seconds and its history restarts."
-                       "\n\nThe AMD runtime keeps a little more VRAM after every rebuild, so it makes"
-                       "\nat most 8 changes per session and then stays where it is. Turning this"
-                       "\noff and on again resets the count."
-                       "\n\nWith a frame cap, set the target a little below the cap, or it never"
-                       "\nsees the headroom to step back up.");
-            if (dynamic)
-            {
-                int target = config->AmdDynamicTargetFps.value_or_default();
-                if (ImGui::SliderInt("Target FPS (rendered)", &target, 30, 240))
-                    config->AmdDynamicTargetFps = target;
-                if (const auto status = DlssNr::AmdBridge::DynamicStatus(); !status.empty())
-                    ImGui::TextDisabled("%s", status.c_str());
+                bool dynamic = dynamicScale;
+                if (ImGui::Checkbox("Dynamic NR resolution", &dynamic))
+                    config->AmdDynamicScale = dynamic;
+                HelpMarker("Lowers the model's resolution while the game runs under the target frame"
+                           "\nrate, in steps of 85%, 70%, 55% and 40% of the resolution above."
+                           "\n\nIt steps down after 2 s under the target and back up after 5 s with 15%"
+                           "\nheadroom, and waits 10 s after every change (60 s after a step down"
+                           "\nbefore it tries to go back up). Each change rebuilds the model, so the"
+                           "\neffect is off for one to five seconds and its history restarts."
+                           "\n\nThe AMD runtime keeps a little more VRAM after every rebuild, so it makes"
+                           "\nat most 8 changes per session and then stays where it is. Turning this"
+                           "\noff and on again resets the count."
+                           "\n\nWith a frame cap, set the target a little below the cap, or it never"
+                           "\nsees the headroom to step back up.");
+                if (dynamic)
+                {
+                    int target = config->AmdDynamicTargetFps.value_or_default();
+                    if (ImGui::SliderInt("Target FPS (rendered)", &target, 30, 240))
+                        config->AmdDynamicTargetFps = target;
+                    if (const auto status = DlssNr::AmdBridge::DynamicStatus(); !status.empty())
+                        ImGui::TextDisabled("%s", status.c_str());
+                }
+                ImGui::SeparatorText("Scheduling");
+                scheduling();
             }
-            ImGui::SeparatorText("Scheduling");
-            scheduling();
             ImGui::SeparatorText("Effect");
             // Only a runtime whose layout maps its Scale can take a strength.
             bool hasToneCurve = false;
@@ -1130,7 +1142,8 @@ void RenderMenu(Config* config, float menuResScale)
 
             if (ImGui::TreeNode("Info"))
             {
-                ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
+                if (!finalImage)
+                    ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
                 ImGui::TextWrapped("AMD HIP backend. Each pass owns independent temporal history. More passes increase "
                                    "GPU time and memory. Restart the game after a backend failure.");
                 ImGui::TreePop();

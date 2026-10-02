@@ -1,11 +1,13 @@
 #include "pch.h"
 #include <dlssnr/amd/PresentExperimental.h>
+#include <dlssnr/amd/AmdBridge.h>
 #include "menu_overlay_base.h"
 #include "menu_overlay_dx.h"
 
 #include <Util.h>
 #include <Logger.h>
 #include <Config.h>
+#include <hooks/FG_Hooks.h>
 
 #include <imgui/imgui_impl_dx11.h>
 #include <imgui/imgui_impl_dx12.h>
@@ -267,15 +269,6 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain)
         if (pSwapChainPlain->QueryInterface(IID_PPV_ARGS(&pSwapChain)) != S_OK || pSwapChain == nullptr)
             return;
 
-        if (AmdPresentExperimental::IsTarget() && Config::Instance()->DlssNrEnabled.value_or_default())
-        {
-            AmdPreSr::Settings settings;
-            settings.toneChannels = true;
-            settings.tone = Config::Instance()->AmdNeuralLightingStrength.value_or_default();
-            AmdPresentExperimental::Render(pSwapChain, (ID3D12CommandQueue*) currentSCCommandQueue,
-                                           Util::DllPath().parent_path(), settings);
-        }
-
         if (!MenuOverlayBase::IsInited())
             break;
 
@@ -516,6 +509,7 @@ ID3D12GraphicsCommandList* MenuOverlayDx::MenuCommandList() { return g_pd3dComma
 void MenuOverlayDx::CleanupRenderTarget(bool clearQueue, HWND hWnd)
 {
     LOG_FUNC();
+    AmdPresentExperimental::BeforeResize();
 
     auto fg = State::Instance().currentFG;
     if (fg != nullptr && fg->FrameGenerationContext() != nullptr && fg->IsActive())
@@ -534,6 +528,37 @@ void MenuOverlayDx::CleanupRenderTarget(bool clearQueue, HWND hWnd)
 void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                             const DXGI_PRESENT_PARAMETERS* pPresentParameters, IUnknown* pDevice, HWND hWnd, bool isUWP)
 {
+    if (AmdPresentExperimental::IsTarget() &&
+        Config::Instance()->DlssNrEnabled.value_or_default() &&
+        !State::Instance().currentFeature &&
+        !(State::Instance().activeFgOutput == FGOutput::XeFG &&
+          State::Instance().currentFGSwapchain == pSwapChain &&
+          !FGHooks::IsDx12InteropPresentSC(pSwapChain)) &&
+        (!State::Instance().currentFG || !State::Instance().currentFG->IsActive() ||
+         State::Instance().currentFG->IsPaused()) &&
+        Config::Instance()->NrBackend.value_or_default() == "daniel" &&
+        !(Flags & DXGI_PRESENT_TEST) && pDevice && (!hWnd || !IsIconic(hWnd)))
+    {
+        Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
+        if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue))))
+        {
+            auto settings = DlssNr::AmdBridge::SettingsFromConfig(
+                *Config::Instance(), Config::Instance()->AmdNrScale.value_or_default());
+            settings.spinDraw = 0;
+            AmdPresentExperimental::Render(pSwapChain, queue.Get(), Util::DllPath().parent_path(), settings);
+        }
+        else
+        {
+            Microsoft::WRL::ComPtr<ID3D11Device> device11;
+            if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&device11))))
+            {
+                auto settings = DlssNr::AmdBridge::SettingsFromConfig(
+                    *Config::Instance(), Config::Instance()->AmdNrScale.value_or_default());
+                settings.spinDraw = 0;
+                AmdPresentExperimental::Render11(pSwapChain, device11.Get(), Util::DllPath().parent_path(), settings);
+            }
+        }
+    }
     if (!Config::Instance()->OverlayMenu.value_or_default())
     {
         MenuOverlayBase::Present();

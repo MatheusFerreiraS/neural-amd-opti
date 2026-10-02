@@ -5177,7 +5177,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     inputOptions = {
         { FGInput::NoFG, "None" },
         { FGInput::Upscaler, "OptiFG (Upscaler)",
-            "Upscaler must be enabled\n\nCan be used with any FG Output, but might be imperfect with some\nTo prevent UI glitching, HUDfix required" },
+            "Requires an upscaler, or D3D11 final-image NR with XeFG\n\nCan be used with any FG Output, but might be imperfect with some\nTo prevent UI glitching, HUDfix required" },
         { FGInput::DLSSG, "DLSSG via Streamline",
             "Can be used with any FG Output\n\nRequires enabling DLSS-FG in game settings\nSupports HUDless out of the box\n\nLimited to games that use Streamline" },
         { FGInput::NvngxFG, "DLSSG via Nvngx",
@@ -5199,7 +5199,14 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // OptiFG requirements
     auto constexpr optiFgIndex = (uint32_t) FGInput::Upscaler;
-    inputOptions[optiFgIndex].set_disabled(state.swapchainApi == API::Vulkan, "Unsupported API");
+    const bool vulkanFinalImageFg = state.swapchainApi == API::Vulkan &&
+        config->DlssNrPresent.value_or_default() && config->DlssNrEnabled.value_or_default() &&
+        config->NrBackend.value_or_default() == "daniel";
+    inputOptions[optiFgIndex].set_disabled(state.swapchainApi == API::Vulkan && !vulkanFinalImageFg,
+                                           "Vulkan XeFG requires final-image NR");
+    inputOptions[optiFgIndex].set_disabled(config->DlssNrPresent.value_or_default() &&
+                                               config->FGOutput.value_or_default() != FGOutput::XeFG,
+                                           "Final-image NR has no upscaler motion/depth inputs for OptiFG");
 
     if (!inputOptions[optiFgIndex].disabled && state.activeFgOutput == FGOutput::FSRFG && !FfxApiProxy::IsFGReady() &&
         !ffxInitTried)
@@ -5277,7 +5284,8 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // XeFG output requirements
     auto constexpr xefgOutputIndex = (uint32_t) FGOutput::XeFG;
-    outputOptions[xefgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan, "Unsupported API");
+    outputOptions[xefgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan && !vulkanFinalImageFg,
+                                                 "XeFG requires final-image NR on Vulkan");
     // Unsupported FG input selected
     const auto currentInputIndex = (uint32_t) state.activeFgInput;
     if (config->FGInput != FGInput::NoFG && inputOptions.size() > currentInputIndex &&
@@ -6043,6 +6051,24 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         }
     }
 
+    if (state.swapchainApi == API::Vulkan && config->DlssNrPresent.value_or_default() &&
+        config->DlssNrEnabled.value_or_default() && config->NrBackend.value_or_default() == "daniel" &&
+        state.activeFgInput == FGInput::Upscaler &&
+        state.activeFgOutput == FGOutput::XeFG)
+    {
+        ImGui::SeparatorText("Frame Generation (Vulkan XeFG)");
+        bool enabled = config->FGEnabled.value_or_default();
+        if (ImGui::Checkbox("Active##VulkanXeFG", &enabled))
+            config->FGEnabled = enabled;
+        if (enabled)
+            ImGui::TextDisabled("Close this menu to display generated frames.");
+        int count = config->FGXeFGInterpolationCount.value_or(2);
+        if (ImGui::SliderInt("Interpolated frames##VulkanXeFG", &count, 1, 4,
+                             "%d", ImGuiSliderFlags_AlwaysClamp))
+            config->FGXeFGInterpolationCount = count;
+        ImGui::TextDisabled("Output: %dx; limited by the XeFG provider", count + 1);
+    }
+
     // XeFG controls
     if (state.activeFgOutput == FGOutput::XeFG && state.activeFgInput != FGInput::NoFG &&
         state.activeFgInput != FGInput::ForceXeLL && state.currentFGSwapchain != nullptr && XeFGProxy::InitXeFG() &&
@@ -6056,7 +6082,10 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         if (state.activeFgInput == FGInput::Upscaler && currentFeature != nullptr)
             nativeAA = currentFeature->RenderWidth() == currentFeature->DisplayWidth();
 
-        const bool correctMVs = fgOutput->IsLowResMV() || nativeAA ||
+        const bool finalImageFlow = config->DlssNrPresent.value_or_default() &&
+                                    state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
+                                    state.activeFgInput == FGInput::Upscaler && currentFeature == nullptr;
+        const bool correctMVs = fgOutput->IsLowResMV() || nativeAA || finalImageFlow ||
                                 (State::Instance().gameQuirks & GameQuirk::ForceFGRenderSizeMVs) || ignoreChecks;
 
         if (!correctMVs || state.realExclusiveFullscreen)

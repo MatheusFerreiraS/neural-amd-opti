@@ -464,6 +464,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
             DlssNrEnabled.set_from_config(readBool("DlssNr", "Enabled"));
+            DlssNrPresent.set_from_config(readBool("DlssNr", "PresentWithoutUpscaler"));
             DlssNrRunBeforeSr.set_from_config(readBool("DlssNr", "RunBeforeSR"));
             DlssNrApplyAfterRR.set_from_config(readBool("DlssNr", "ApplyAfterRR"));
             DlssNrRRPasses.set_from_config(readUInt("DlssNr", "RRPasses"));
@@ -1631,6 +1632,8 @@ bool Config::SaveIni()
 
         // --- DLSS 5 Neural Rendering (OptiScaler/dlssnr) ---
         ini.SetValue("DlssNr", "Enabled", GetBoolValue(Instance()->DlssNrEnabled.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "PresentWithoutUpscaler",
+                     GetBoolValue(Instance()->DlssNrPresent.value_for_config()).c_str());
         ini.SetValue("DlssNr", "RunBeforeSR", GetBoolValue(Instance()->DlssNrRunBeforeSr.value_for_config()).c_str());
         ini.SetValue("DlssNr", "ApplyAfterRR", GetBoolValue(Instance()->DlssNrApplyAfterRR.value_for_config()).c_str());
         ini.SetValue("DlssNr", "RRPasses", GetIntValue(Instance()->DlssNrRRPasses.value_for_config()).c_str());

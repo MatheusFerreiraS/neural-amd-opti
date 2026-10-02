@@ -343,6 +343,82 @@ bool EnsureSubmissionHook(ID3D12CommandQueue* q)
     device->Release();
     return ready;
 }
+AmdPreSr::Settings SettingsFromConfig(const Config& cfg, float modelScale)
+{
+    AmdPreSr::Settings s {};
+    s.rtgi.enabled = cfg.AmdRtgiEnabled.value_or_default();
+    s.rtgi.quality = cfg.AmdRtgiQuality.value_or_default();
+    s.rtgi.denoiser = cfg.AmdRtgiDenoiser.value_or_default();
+    s.rtgi.inspect = cfg.AmdRtgiInspect.value_or_default();
+    s.rtgi.contact = cfg.AmdRtgiContact.value_or_default();
+    s.rtgi.saturation = cfg.AmdRtgiSaturation.value_or_default();
+    s.rtgi.radius = cfg.AmdRtgiRadius.value_or_default();
+    s.rtgi.mix = cfg.AmdRtgiMix.value_or_default();
+    s.rtgi.lighting = cfg.AmdRtgiLighting.value_or_default();
+    s.rtgi.occlusion = cfg.AmdRtgiOcclusion.value_or_default();
+    s.rtgi.ambient = cfg.AmdRtgiAmbient.value_or_default();
+    s.rtgi.thickness = cfg.AmdRtgiThickness.value_or_default();
+    s.rtgi.smoothness = cfg.AmdRtgiSmoothness.value_or_default();
+    s.rtgi.fade = cfg.AmdRtgiFade.value_or_default();
+    s.rtgi.fov = cfg.AmdRtgiFov.value_or_default();
+    s.rtgi.farPlane = cfg.AmdRtgiFarPlane.value_or_default();
+    s.look.enabled = cfg.AmdLookEnabled.value_or_default();
+    s.look.appearance = 2; // Single default profile; ignore legacy preset selections.
+    s.look.mix = cfg.AmdLookMix.value_or_default();
+    s.look.materialDetail = cfg.AmdLookMaterialDetail.value_or_default();
+    s.look.shapeDefinition = cfg.AmdLookShapeDefinition.value_or_default();
+    s.look.localLighting = cfg.AmdLookLocalLighting.value_or_default();
+    s.look.skinDetail = cfg.AmdLookSkinDetail.value_or_default();
+    s.look.skinSoftness = cfg.AmdLookSkinSoftness.value_or_default();
+    s.look.detectSkin = cfg.AmdLookDetectSkin.value_or_default();
+    s.look.specularControl = cfg.AmdLookSpecularControl.value_or_default();
+    s.look.highlightRollOff = cfg.AmdLookHighlightRollOff.value_or_default();
+    s.look.colourSeparation = cfg.AmdLookColourSeparation.value_or_default();
+    s.look.shadowDepth = cfg.AmdLookShadowDepth.value_or_default();
+    s.look.antiHalo = cfg.AmdLookAntiHalo.value_or_default();
+    s.look.flatAreaProtection = cfg.AmdLookFlatAreaProtection.value_or_default();
+    s.look.inspect = cfg.AmdLookInspect.value_or_default();
+    s.look.tone = cfg.AmdLookTone.value_or_default();
+    s.look.exposureEV = cfg.AmdLookExposureEV.value_or_default();
+    s.look.contrast = cfg.AmdLookContrast.value_or_default();
+    s.look.saturation = cfg.AmdLookSaturation.value_or_default();
+    s.look.highlightCompression = cfg.AmdLookHighlightCompression.value_or_default();
+    s.modelScale = modelScale;
+    // One pass chain whatever the placement. The AMD backend runs a separate runtime module per
+    // pass (dlssnr_amd_pass1-3.dll), not an NGX feature chain, and a game only ever reaches one of
+    // the two placements anyway -- a title driving Ray Reconstruction is always post-upscale.
+    // Reading the after-RR count here left the Passes control doing nothing in exactly that case.
+    s.passes = cfg.DlssNrPasses.value_or_default();
+    s.everyFrame = cfg.AmdEveryFrame.value_or_default();
+    s.slots = std::clamp(cfg.AmdSlots.value_or_default(), 1, 5);
+    // AmdGraphicsWait=1 requests the 1-pixel draw wait of 0.3.1 and later (this project's New wait).
+    // InitPass/Record still force SpinDraw=0 unless a freeze+restore plan armed.
+    s.spinDraw = cfg.AmdGraphicsWait.value_or_default() ? 1 : 0;
+    // The pinned AMD binary explicitly disables the broad lighting/colour
+    // channels. Its embedded UI warns that nonzero tone mostly darkens frames.
+    // An old INI's 0 (the former Auto, which converted nothing) reads as Linear, the default.
+    const int encoding = cfg.AmdEncoding.value_or_default();
+    s.encoding = encoding == 0 ? 1 : std::clamp(encoding, 1, 3);
+    // tone must be 0 whenever toneChannels is: 0.3.1 zeroed it itself, 0.4.x passes it through.
+    s.toneChannels = cfg.AmdNeuralLightingStrength.value_or_default() > 0;
+    s.tone = s.toneChannels ? std::clamp(cfg.AmdNeuralLightingStrength.value_or_default(), 0.f, 1.f) : 0.f;
+    s.structure = cfg.DlssNrLocalStructure.value_or_default();
+    s.skin = cfg.DlssNrSkinStructure.value_or_default();
+    if (s.skin < 0)
+        s.skin = s.structure;
+    // One Effect strength on danielblnc: with the RenoDX composition the runtime keeps its default and the strength is
+    // the composition's intensity, which moves without restarting the model's history.
+    s.strength = cfg.DlssNrRenoComposition.value_or_default()
+                     ? 1.f
+                     : std::clamp(cfg.AmdEffectStrength.value_or_default(), 0.f, 2.f);
+    s.fast = cfg.AmdQuality.value_or_default() == 0;
+    s.toneCurve = UINT(std::clamp(cfg.AmdToneCurve.value_or_default(), 0, 1));
+    s.toneLift = std::clamp(cfg.AmdToneLift.value_or_default(), 0.f, .25f);
+    s.gameExposure = cfg.AmdUseGameExposure.value_or_default();
+    s.style = UINT(std::clamp(cfg.AmdStyle.value_or_default(), 0, 2));
+    return s;
+}
+
 bool HasFiles()
 {
     // Proxy names such as winmm.dll can load before Util::DllPath is finalized.
@@ -782,77 +858,7 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         f.depthState = static_cast<D3D12_RESOURCE_STATES>(cfg.DepthResourceBarrier.value());
     if (cfg.ExposureResourceBarrier.has_value())
         f.exposureState = static_cast<D3D12_RESOURCE_STATES>(cfg.ExposureResourceBarrier.value());
-    AmdPreSr::Settings s {};
-    s.rtgi.enabled = cfg.AmdRtgiEnabled.value_or_default();
-    s.rtgi.quality = cfg.AmdRtgiQuality.value_or_default();
-    s.rtgi.denoiser = cfg.AmdRtgiDenoiser.value_or_default();
-    s.rtgi.inspect = cfg.AmdRtgiInspect.value_or_default();
-    s.rtgi.contact = cfg.AmdRtgiContact.value_or_default();
-    s.rtgi.saturation = cfg.AmdRtgiSaturation.value_or_default();
-    s.rtgi.radius = cfg.AmdRtgiRadius.value_or_default();
-    s.rtgi.mix = cfg.AmdRtgiMix.value_or_default();
-    s.rtgi.lighting = cfg.AmdRtgiLighting.value_or_default();
-    s.rtgi.occlusion = cfg.AmdRtgiOcclusion.value_or_default();
-    s.rtgi.ambient = cfg.AmdRtgiAmbient.value_or_default();
-    s.rtgi.thickness = cfg.AmdRtgiThickness.value_or_default();
-    s.rtgi.smoothness = cfg.AmdRtgiSmoothness.value_or_default();
-    s.rtgi.fade = cfg.AmdRtgiFade.value_or_default();
-    s.rtgi.fov = cfg.AmdRtgiFov.value_or_default();
-    s.rtgi.farPlane = cfg.AmdRtgiFarPlane.value_or_default();
-    s.look.enabled = cfg.AmdLookEnabled.value_or_default();
-    s.look.appearance = 2; // Single default profile; ignore legacy preset selections.
-    s.look.mix = cfg.AmdLookMix.value_or_default();
-    s.look.materialDetail = cfg.AmdLookMaterialDetail.value_or_default();
-    s.look.shapeDefinition = cfg.AmdLookShapeDefinition.value_or_default();
-    s.look.localLighting = cfg.AmdLookLocalLighting.value_or_default();
-    s.look.skinDetail = cfg.AmdLookSkinDetail.value_or_default();
-    s.look.skinSoftness = cfg.AmdLookSkinSoftness.value_or_default();
-    s.look.detectSkin = cfg.AmdLookDetectSkin.value_or_default();
-    s.look.specularControl = cfg.AmdLookSpecularControl.value_or_default();
-    s.look.highlightRollOff = cfg.AmdLookHighlightRollOff.value_or_default();
-    s.look.colourSeparation = cfg.AmdLookColourSeparation.value_or_default();
-    s.look.shadowDepth = cfg.AmdLookShadowDepth.value_or_default();
-    s.look.antiHalo = cfg.AmdLookAntiHalo.value_or_default();
-    s.look.flatAreaProtection = cfg.AmdLookFlatAreaProtection.value_or_default();
-    s.look.inspect = cfg.AmdLookInspect.value_or_default();
-    s.look.tone = cfg.AmdLookTone.value_or_default();
-    s.look.exposureEV = cfg.AmdLookExposureEV.value_or_default();
-    s.look.contrast = cfg.AmdLookContrast.value_or_default();
-    s.look.saturation = cfg.AmdLookSaturation.value_or_default();
-    s.look.highlightCompression = cfg.AmdLookHighlightCompression.value_or_default();
-    s.modelScale = sessionScale;
-    // One pass chain whatever the placement. The AMD backend runs a separate runtime module per
-    // pass (dlssnr_amd_pass1-3.dll), not an NGX feature chain, and a game only ever reaches one of
-    // the two placements anyway -- a title driving Ray Reconstruction is always post-upscale.
-    // Reading the after-RR count here left the Passes control doing nothing in exactly that case.
-    s.passes = cfg.DlssNrPasses.value_or_default();
-    s.everyFrame = cfg.AmdEveryFrame.value_or_default();
-    s.slots = std::clamp(cfg.AmdSlots.value_or_default(), 1, 5);
-    // AmdGraphicsWait=1 requests the 1-pixel draw wait of 0.3.1 and later (this project's New wait).
-    // InitPass/Record still force SpinDraw=0 unless a freeze+restore plan armed.
-    s.spinDraw = Config::Instance()->AmdGraphicsWait.value_or_default() ? 1 : 0;
-    // The pinned AMD binary explicitly disables the broad lighting/colour
-    // channels. Its embedded UI warns that nonzero tone mostly darkens frames.
-    // An old INI's 0 (the former Auto, which converted nothing) reads as Linear, the default.
-    const int encoding = cfg.AmdEncoding.value_or_default();
-    s.encoding = encoding == 0 ? 1 : std::clamp(encoding, 1, 3);
-    // tone must be 0 whenever toneChannels is: 0.3.1 zeroed it itself, 0.4.x passes it through.
-    s.toneChannels = cfg.AmdNeuralLightingStrength.value_or_default() > 0;
-    s.tone = s.toneChannels ? std::clamp(cfg.AmdNeuralLightingStrength.value_or_default(), 0.f, 1.f) : 0.f;
-    s.structure = cfg.DlssNrLocalStructure.value_or_default();
-    s.skin = cfg.DlssNrSkinStructure.value_or_default();
-    if (s.skin < 0)
-        s.skin = s.structure;
-    // One Effect strength on danielblnc: with the RenoDX composition the runtime keeps its default and the strength is
-    // the composition's intensity, which moves without restarting the model's history.
-    s.strength = cfg.DlssNrRenoComposition.value_or_default()
-                     ? 1.f
-                     : std::clamp(cfg.AmdEffectStrength.value_or_default(), 0.f, 2.f);
-    s.fast = cfg.AmdQuality.value_or_default() == 0;
-    s.toneCurve = UINT(std::clamp(cfg.AmdToneCurve.value_or_default(), 0, 1));
-    s.toneLift = std::clamp(cfg.AmdToneLift.value_or_default(), 0.f, .25f);
-    s.gameExposure = cfg.AmdUseGameExposure.value_or_default();
-    s.style = UINT(std::clamp(cfg.AmdStyle.value_or_default(), 0, 2));
+    auto s = SettingsFromConfig(cfg, sessionScale);
     // Evaluate cut: Split proxy + SetBetween(EnqueueHip). Live only when SubmissionHooksWanted() (NrBackend=lmxxf
     // or mochizuki).
     DlssNr::Backend::LmxxfCut::OnEvaluateBeforeRecord(cmd);

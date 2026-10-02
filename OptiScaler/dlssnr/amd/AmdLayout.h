@@ -132,6 +132,8 @@ struct AmdLayout
     // about 13% faster on RX 9000), 0 = reference (NVIDIA's own arithmetic). The runtime copies it
     // into the engine on every job, so it can change while the game runs. 0 = not mapped.
     std::uint32_t quality = 0;
+    std::uint32_t seedCounter = 0;
+    std::uint32_t seedSelfCheck = 0;
 };
 
 // 0.2.17 pass DLL, SHA256 bc97f3b0...
@@ -332,6 +334,8 @@ inline constexpr AmdLayout kAmd041 {
     .toneCurve = 0xaa66c,
     .toneLift = 0xaa670,
     .useGameExposure = 0xaa674,
+    .seedCounter = 0xa9934,
+    .seedSelfCheck = 0xa99fc,
 };
 
 // 0.4.2 and 0.4.3 version.dll (SHA 8aa2dcc5 and d1e32086). 0.4.2 is public since 2026-09-27 and 0.4.3 since
@@ -398,6 +402,8 @@ inline constexpr AmdLayout kAmd042 {
     .toneLift = 0xaf848,
     .useGameExposure = 0xaf84c,
     .quality = 0xaf84d,
+    .seedCounter = 0xaeaf4,
+    .seedSelfCheck = 0xaebbc,
 };
 
 inline constexpr AmdLayout kAmd043 {
@@ -457,6 +463,8 @@ inline constexpr AmdLayout kAmd043 {
     .toneLift = 0xb19c0,
     .useGameExposure = 0xb19c4,
     .quality = 0xb19c5,
+    .seedCounter = 0xb0c64,
+    .seedSelfCheck = 0xb0d2c,
 };
 
 // 0.5.0 version.dll (SHA cddfb09e), first an early build for danielblnc's supporters and public since
@@ -523,6 +531,8 @@ inline constexpr AmdLayout kAmd050 {
     .toneLift = 0xb69f8,
     .useGameExposure = 0xb69fc,
     .quality = 0xb69fd,
+    .seedCounter = 0xb5c7c,
+    .seedSelfCheck = 0xb5d44,
 };
 
 // 0.5.1 version.dll (SHA 493b4a3b), the next early build danielblnc gives his supporters, not

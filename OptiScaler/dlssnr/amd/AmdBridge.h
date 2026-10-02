@@ -2,8 +2,11 @@
 #include <d3d12.h>
 #include <nvsdk_ngx.h>
 #include <string>
+class Config;
+namespace AmdPreSr { struct Settings; }
 namespace DlssNr::AmdBridge
 {
+AmdPreSr::Settings SettingsFromConfig(const Config& cfg, float modelScale);
 bool HasFiles();
 // Install submission expansion before the first wrapped list is exposed. No runtime/HIP initialization.
 bool EnsureSubmissionHook(ID3D12CommandQueue*);

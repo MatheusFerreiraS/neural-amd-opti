@@ -18,6 +18,7 @@
 #include <vulkan/vulkan.hpp>
 
 #include <dlssnr/DlssNr_VkExtensions.h>
+#include <dlssnr/amd/VulkanPresentExperimental.h>
 
 #include <detours/detours.h>
 #include <misc/IdentifyGpu.h>
@@ -29,12 +30,14 @@ static VkDevice _device = VK_NULL_HANDLE;
 static VkInstance _instance = VK_NULL_HANDLE;
 static VkPhysicalDevice _PD = VK_NULL_HANDLE;
 static HWND _hwnd = nullptr;
+static uint32_t _nrGraphicsFamily = UINT32_MAX;
 
 PFN_vkCreateDevice o_vkCreateDevice = nullptr;
 PFN_vkCreateInstance o_vkCreateInstance = nullptr;
 PFN_vkCreateWin32SurfaceKHR o_vkCreateWin32SurfaceKHR = nullptr;
 PFN_vkQueuePresentKHR o_QueuePresentKHR = nullptr;
 PFN_vkCreateSwapchainKHR o_CreateSwapchainKHR = nullptr;
+static PFN_vkDestroySwapchainKHR o_DestroySwapchainKHR = nullptr;
 static PFN_vkGetInstanceProcAddr o_vkGetInstanceProcAddr = nullptr;
 static PFN_vkGetDeviceProcAddr o_vkGetDeviceProcAddr = nullptr;
 
@@ -48,6 +51,8 @@ PFN_vkAntiLagUpdateAMD VulkanHooks::o_vkAntiLagUpdateAMD = nullptr;
 static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo);
 static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR* pCreateInfo,
                                        const VkAllocationCallbacks* pAllocator, VkSwapchainKHR* pSwapchain);
+static void hkvkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                    const VkAllocationCallbacks* pAllocator);
 
 static void HookDevice(VkDevice InDevice)
 {
@@ -58,6 +63,7 @@ static void HookDevice(VkDevice InDevice)
 
     o_QueuePresentKHR = (PFN_vkQueuePresentKHR) (vkGetDeviceProcAddr(InDevice, "vkQueuePresentKHR"));
     o_CreateSwapchainKHR = (PFN_vkCreateSwapchainKHR) (vkGetDeviceProcAddr(InDevice, "vkCreateSwapchainKHR"));
+    o_DestroySwapchainKHR = (PFN_vkDestroySwapchainKHR) (vkGetDeviceProcAddr(InDevice, "vkDestroySwapchainKHR"));
 
     if (o_CreateSwapchainKHR)
     {
@@ -73,12 +79,16 @@ static void HookDevice(VkDevice InDevice)
         if (o_CreateSwapchainKHR != nullptr)
             DetourAttach(&(PVOID&) o_CreateSwapchainKHR, hkvkCreateSwapchainKHR);
 
+        if (o_DestroySwapchainKHR != nullptr)
+            DetourAttach(&(PVOID&) o_DestroySwapchainKHR, hkvkDestroySwapchainKHR);
+
         auto detourResult = DetourTransactionCommit();
         if (detourResult != NO_ERROR)
         {
             LOG_ERROR("Failed to hook VkDevice, error code: {:X}", detourResult);
             o_QueuePresentKHR = nullptr;
             o_CreateSwapchainKHR = nullptr;
+            o_DestroySwapchainKHR = nullptr;
         }
     }
 }
@@ -244,6 +254,15 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
             }
         }
 
+        if (!DlssNr::VkExt::ListHas(localCreteInfo.ppEnabledExtensionNames,
+                                    localCreteInfo.enabledExtensionCount,
+                                    VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME) &&
+            DlssNr::VkExt::Contains(supported, VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME))
+        {
+            nrExtensions.names.push_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+            added += std::string(added.empty() ? "" : ", ") + VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME;
+        }
+
         LOG_INFO("DLSS-NR Vulkan: device offers {} extensions. game already enabled: [{}]. added here: "
                  "[{}]. NOT AVAILABLE: [{}]",
                  supported.size(), present.empty() ? "none" : present, added.empty() ? "none" : added,
@@ -262,6 +281,28 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
 
     auto result = o_vkCreateDevice(physicalDevice, &localCreteInfo, pAllocator, pDevice);
 
+    if (result == VK_SUCCESS && !State::Instance().vulkanSkipHooks)
+    {
+        _PD = physicalDevice;
+        _device = *pDevice;
+        _nrGraphicsFamily = UINT32_MAX;
+        uint32_t count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &count, nullptr);
+        std::vector<VkQueueFamilyProperties> families(count);
+        vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &count, families.data());
+        for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; ++i)
+        {
+            const auto family = pCreateInfo->pQueueCreateInfos[i].queueFamilyIndex;
+            if (family < count && families[family].queueFlags & VK_QUEUE_GRAPHICS_BIT &&
+                pCreateInfo->pQueueCreateInfos[i].queueCount)
+            {
+                _nrGraphicsFamily = family;
+                break;
+            }
+        }
+        HookDevice(_device);
+    }
+
     if (Config::Instance()->DlssNrEnabled.value_or_default())
         LOG_INFO("DLSS-NR Vulkan: vkCreateDevice returned {} with {} extensions requested", (int) result,
                  localCreteInfo.enabledExtensionCount);
@@ -277,7 +318,6 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
             LOG_DEBUG("_PD captured: {0:X}", (UINT64) _PD);
             _device = *pDevice;
             LOG_DEBUG("_device captured: {0:X}", (UINT64) _device);
-            HookDevice(_device);
         }
 
         ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
@@ -356,6 +396,9 @@ static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPres
     VkPresentInfoKHR localPresentInfo {};
     memcpy(&localPresentInfo, pPresentInfo, sizeof(VkPresentInfoKHR));
 
+    if (!AmdVkPresent::Process(queue, localPresentInfo))
+        return VK_ERROR_DEVICE_LOST;
+
     // render menu if needed
     if (!MenuOverlayVk::QueuePresent(queue, &localPresentInfo))
     {
@@ -383,11 +426,29 @@ static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateI
 {
     LOG_FUNC();
 
+    if (!pCreateInfo)
+        return o_CreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
+
+    VkSwapchainCreateInfoKHR requested = *pCreateInfo;
+    // Transfer usage must be present before the user can enable NR from the menu.
+    if (!State::Instance().vulkanSkipHooks && _PD)
+    {
+        VkSurfaceCapabilitiesKHR capabilities {};
+        if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_PD, pCreateInfo->surface, &capabilities) == VK_SUCCESS)
+        {
+            constexpr auto transfers = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+            if ((capabilities.supportedUsageFlags & transfers) == transfers)
+                requested.imageUsage |= transfers;
+            else
+                LOG_WARN("Vulkan final-image NR: swapchain does not support transfer source and destination");
+        }
+    }
+
     ScopedVulkanCreatingSC scopedVulkanCreatingSC {};
     VkResult result = VK_SUCCESS;
     {
         ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
-        result = o_CreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
+        result = o_CreateSwapchainKHR(device, &requested, pAllocator, pSwapchain);
     }
 
     if (result == VK_SUCCESS && device != VK_NULL_HANDLE && pCreateInfo != nullptr && *pSwapchain != VK_NULL_HANDLE &&
@@ -443,11 +504,20 @@ static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateI
         _device = device;
         LOG_DEBUG("_device captured: {0:X}", (UINT64) _device);
 
+        AmdVkPresent::Created(_instance, _PD, device, _hwnd, _nrGraphicsFamily, *pSwapchain, requested);
+
         MenuOverlayVk::CreateSwapchain(device, _PD, _instance, _hwnd, pCreateInfo, pAllocator, pSwapchain);
     }
 
     LOG_FUNC_RESULT(result);
     return result;
+}
+
+static void hkvkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
+                                    const VkAllocationCallbacks* pAllocator)
+{
+    AmdVkPresent::Destroyed(device, swapchain);
+    o_DestroySwapchainKHR(device, swapchain, pAllocator);
 }
 
 VALIDATE_HOOK(hkvkGetInstanceProcAddr, PFN_vkGetInstanceProcAddr)
@@ -601,6 +671,9 @@ void VulkanHooks::Unhook()
     if (o_CreateSwapchainKHR != nullptr)
         DetourDetach(&(PVOID&) o_CreateSwapchainKHR, hkvkCreateSwapchainKHR);
 
+    if (o_DestroySwapchainKHR != nullptr)
+        DetourDetach(&(PVOID&) o_DestroySwapchainKHR, hkvkDestroySwapchainKHR);
+
     if (o_vkCreateDevice != nullptr)
         DetourDetach(&(PVOID&) o_vkCreateDevice, hkvkCreateDevice);
 
@@ -622,6 +695,7 @@ void VulkanHooks::Unhook()
     {
         o_QueuePresentKHR = nullptr;
         o_CreateSwapchainKHR = nullptr;
+        o_DestroySwapchainKHR = nullptr;
         o_vkCreateDevice = nullptr;
         o_vkCreateInstance = nullptr;
         o_vkGetInstanceProcAddr = nullptr;
