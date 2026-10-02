@@ -53,6 +53,10 @@ function Count([string]$log, [string]$text) {
     return @(Select-String -Path $path -SimpleMatch -Pattern $text).Count
 }
 
+Add-Type -AssemblyName System.Windows.Forms
+$refresh = [int](Get-CimInstance Win32_VideoController | Where-Object { $_.CurrentRefreshRate } |
+        Select-Object -First 1).CurrentRefreshRate
+if (-not $refresh) { $refresh = 60 }
 $results = [ordered]@{}
 $screen = $false
 $unhookedHosts = 0
@@ -80,6 +84,8 @@ function Run-Once([string]$name, [string[]]$ini, [string[]]$arguments, [scriptbl
         return
     }
     Get-Process OptiScalerDx9Host -ErrorAction SilentlyContinue | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
+    # A case that clipped the cursor and did not end by itself must not leave it clipped.
+    [Windows.Forms.Cursor]::Clip = [Drawing.Rectangle]::Empty
     $text = Get-Content $out -Raw
     $bmp = Join-Path $stage "$name.bmp"
     if (Test-Path $bmp) {
@@ -229,6 +235,81 @@ try {
     }
     Run-Case 'minimize-fg' $fg (@('--frames', '700', '--expect-bridged', '--expect-fg', '--minimize-at', '250', '350') +
         $screenArg) $null
+    # A fullscreen request for half-rate vsync: the device must still be made (windowed, at interval one in
+    # D3D9), and the host must present at interval 2, so a frame takes at least two refreshes.
+    $halfRate = {
+        param($text)
+        if ((Count 'dx9-host.log' 'at interval 2') -eq 0) { 'the host did not present at interval 2' }
+        if ($text -match 'ms_per_frame=([0-9.]+)' -and [double]$Matches[1] -lt 1600 / $refresh) {
+            "frames came faster than half the display rate ($($Matches[1]) ms at $refresh Hz)"
+        }
+    }
+    Run-Case 'fullscreen-interval2' @() (@('--fullscreen', '--interval', '2', '--frames', '200', '--expect-bridged') +
+        $screenArg) $halfRate
+    Run-Case 'fullscreen-interval2-ex' @() (@('--ex', '--fullscreen', '--interval', '2', '--frames', '200',
+            '--expect-bridged') + $screenArg) $halfRate
+    # A second device presenting to a second window stays native and costs no host; once the main window
+    # goes away, the second window gets a host of its own.
+    Run-Case 'two-devices' @() (@('--second-device', '--frames', '600', '--expect-bridged') + $screenArg) {
+        param($text)
+        if ((Count 'dx9-x86.log' 'presents to a new window') -ne 0) { 'the host was replaced for the second window' }
+    }
+    Run-Case 'two-devices-switch' @() (@('--second-device', '--switch-at', '200', '--frames', '500', '--expect-bridged') +
+        $screenArg) {
+        param($text)
+        if ((Count 'dx9-x86.log' 'host 2 connected') -eq 0) { 'no host for the second window' }
+    }
+    # A program that keeps moving between two windows: quick moves count as failures, so the proxy stops
+    # starting hosts and the program presents natively.
+    Run-Case 'two-devices-flip' @() @('--second-device', '--flip-every', '300', '--work', '2', '--frames', '8000') {
+        param($text)
+        if ((Count 'dx9-x86.log' 'host failed 4 times in a row') -eq 0) { 'the session did not go native' }
+    }
+    # The child window asked for again after the host took one: still one child.
+    Run-Case 'late-request' @() (@('--frames', '300', '--expect-bridged', '--late-request', '100') + $screenArg) $null
+    Run-Case 'late-request-ex' @() (@('--ex', '--frames', '300', '--expect-bridged', '--late-request', '100') +
+        $screenArg) $null
+    # Under the menu, keys the game polls read up and the game's cursor clip is lifted.
+    Run-Case 'menu-polls' $nr @('--frames', '300', '--menu-at', '100', '--poll-key', '0x51', '--clip') $null
+    # Present with a source and a destination rectangle: natively, and through the host.
+    Run-Case 'present-rects-native' @() (@('--native', '--present-rects', '--frames', '200') + $screenArg) $null
+    Run-Case 'present-rects' @() (@('--present-rects', '--frames', '300', '--expect-bridged') + $screenArg) $null
+    # The game's device reported lost for 30 frames, then reset: presented natively meanwhile, no host lost.
+    Run-Case 'device-lost' $nr (@('--frames', '400', '--expect-bridged', '--lose-device-at', '150') + $screenArg) {
+        param($text)
+        if ((Count 'dx9-x86.log' "the game's device is lost") -eq 0) { 'the proxy did not log the lost device' }
+    }
+
+    # Camera motion: a still textured scene panned right at a known speed. Without NR the window shows the
+    # same picture moved (the measure's own check); with NR, the motion OptiScaler's optical flow gives NR
+    # and how much the picture changes beyond the move are reported.
+    # Checked: the picture moved as the scene did (within one frame's move), less than $limit of 255 changed
+    # beyond the move, and with NR, every motion line of the runtime log within 75 to 110 % of the pan.
+    function Check-Pan([string]$text, [int]$pan, [double]$limit, [bool]$withNr) {
+        if ($text -notmatch 'moved (\d+) px in \d+ frames \(the scene moved (\d+)\), mean change left ([0-9.]+)') {
+            return 'no stability measure'
+        }
+        if ([math]::Abs([int]$Matches[1] - [int]$Matches[2]) -gt $pan) { "the picture moved $($Matches[1]) px, the scene $($Matches[2])" }
+        if ([double]$Matches[3] -ge $limit) { "the picture changed by $($Matches[3]) of 255 beyond the move (limit $limit)" }
+        if (-not $withNr) { return }
+        $lines = @(Select-String -Path (Join-Path $host64 'dlssnr_on_amd.log') -Pattern 'job \d+ motion: mean \|mv\| = \(([0-9.]+), ([0-9.]+)\)')
+        if (-not $lines.Count) { 'no motion lines in the runtime log' }
+        foreach ($line in $lines) {
+            $x = [double]$line.Matches[0].Groups[1].Value
+            $y = [double]$line.Matches[0].Groups[2].Value
+            if ($x -lt 0.75 * $pan -or $x -gt 1.1 * $pan + 0.05 -or $y -gt 0.5) { "motion given to NR off the pan: $($line.Line)" }
+        }
+    }
+    Run-Case 'pan-bridge' @() (@('--pan', '8', '--frames', '300', '--expect-bridged', '--measure-at', '200', '5') +
+        $screenArg) { param($text) Check-Pan $text 8 0.5 $false }
+    Run-Case 'still-nr' $nr @('--pan', '0', '--frames', '300', '--expect-bridged', '--measure-at', '200', '5') {
+        param($text) Check-Pan $text 0 2 $true
+    }
+    Run-Case 'pan-nr' $nr (@('--pan', '8', '--frames', '400', '--expect-bridged', '--measure-at', '300', '5') +
+        $screenArg) { param($text) Check-Pan $text 8 2 $true }
+    Run-Case 'pan-fast-nr' $nr (@('--pan', '40', '--frames', '400', '--expect-bridged', '--measure-at', '300', '2') +
+        $screenArg) { param($text) Check-Pan $text 40 2 $true }
+
     # OptiScaler without its DXGI hooks (no overlay menu, no frame generation, no DXGI spoofing): each host
     # must report it, be replaced, and after four the game presents natively.
     Run-Case 'unhooked' @('[Menu]', 'OverlayMenu=false', '[Spoofing]', 'Dxgi=false') (@('--frames', '200',

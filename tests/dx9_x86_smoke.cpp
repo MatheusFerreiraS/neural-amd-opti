@@ -26,6 +26,29 @@
 //   --subclass-at F      at F, make the window procedure one that calls nothing installed before it, as
 //                        an engine or overlay that replaces it after the device exists would
 //   --expect-unhooked    OptiScaler must be reported unhooked in each host, and the session native
+//   --fullscreen         ask for a fullscreen device (the proxy makes it windowed); never with --native
+//   --interval N         present interval 0 to 4 (default 0, or 1 with --vsync)
+//   --second-device      a second window and device, presented after the main one every frame; it must
+//                        stay native and cost no host
+//   --switch-at F        with --second-device: hide the main window at F and go on with the second device
+//                        only; it must get a new host, without a failure counted
+//   --flip-every N       with --second-device: every N frames hide the window presented to, show the
+//                        other and present only there; the proxy must stop starting hosts for it
+//   --late-request F     post the child window request again at F; the game window must still have one
+//                        child window at the end
+//   --poll-key VK        with --menu-at: hold VK before the menu opens and while it is open; polled with
+//                        GetAsyncKeyState, GetKeyState and GetKeyboardState it must read down only while
+//                        the menu is closed
+//   --clip               clip the cursor to part of the window every frame; with --menu-at the clip must
+//                        be lifted while the menu is open, and the game must still read its own
+//   --present-rects      a copy swap chain presented with the left half of the back buffer as the source
+//                        and the right half of the window as the destination; the right half of the back
+//                        buffer is magenta and must not show
+//   --lose-device-at F   TestCooperativeLevel reports the device lost for 30 frames from F, then not reset,
+//                        and the program resets it; the host must be kept
+//   --pan PX             a still textured scene moving PX pixels a frame to the right (0: still)
+//   --measure-at F K     capture the window at F and F+K and print how far the picture moved and how much
+//                        it changed beyond that move
 //   --screen             fail when the window's pixels on screen stop changing
 //   --shot-at F FILE     save what the window shows on screen at frame F as a BMP
 //   --work MS            spend MS milliseconds of CPU on each frame, as a game would
@@ -37,6 +60,7 @@
 #include <d3d9.h>
 #include <tlhelp32.h>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -51,6 +75,10 @@ namespace
 long mouseMessages = 0, keyMessages = 0, charMessages = 0;
 // The last key message the game's window procedure saw for watchVk (--hold-key).
 UINT watchVk = 0, watchLast = 0;
+// The real key and clip calls, past the import table the proxy patches (--poll-key, --clip).
+decltype(&GetAsyncKeyState) realAsyncKey = nullptr;
+decltype(&GetClipCursor) realGetClip = nullptr;
+decltype(&ClipCursor) realClip = nullptr;
 
 LRESULT CALLBACK Proc(HWND window, UINT message, WPARAM w, LPARAM l)
 {
@@ -180,7 +208,7 @@ bool Shot(HWND window, const char* path)
     return saved;
 }
 
-HWND MakeWindow(UINT width, UINT height)
+HWND MakeWindow(UINT width, UINT height, int x = -1, int y = 40)
 {
     WNDCLASSW type {};
     type.lpfnWndProc = Proc;
@@ -190,9 +218,9 @@ HWND MakeWindow(UINT width, UINT height)
     RegisterClassW(&type);
     RECT rect { 0, 0, LONG(width), LONG(height) };
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
-    const int left = std::max(0, GetSystemMetrics(SM_CXSCREEN) - int(rect.right - rect.left) - 40);
+    const int left = x >= 0 ? x : std::max(0, GetSystemMetrics(SM_CXSCREEN) - int(rect.right - rect.left) - 40);
     HWND window =
-        CreateWindowExW(WS_EX_TOPMOST, type.lpszClassName, L"OptiScaler DX9 x86 smoke", WS_OVERLAPPEDWINDOW, left, 40,
+        CreateWindowExW(WS_EX_TOPMOST, type.lpszClassName, L"OptiScaler DX9 x86 smoke", WS_OVERLAPPEDWINDOW, left, y,
                         rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, type.hInstance, nullptr);
     if (window)
     {
@@ -276,15 +304,123 @@ DWORD WINAPI Watchdog(LPVOID seconds)
     Sleep(static_cast<DWORD>(reinterpret_cast<uintptr_t>(seconds)) * 1000);
     printf("FAIL timeout\n");
     fflush(stdout);
+    if (realClip)
+        realClip(nullptr);
     TerminateProcess(GetCurrentProcess(), 3);
     return 0;
+}
+
+// --pan: a still scene of coloured rectangles (fixed seed), large ones under small ones so the whole
+// picture has detail, moved right by offset pixels and wrapped.
+void DrawPan(IDirect3DDevice9* device, UINT width, UINT height, int offset)
+{
+    static std::vector<Vertex> quads;
+    static UINT madeFor = 0;
+    if (madeFor != width * 65536 + height)
+    {
+        madeFor = width * 65536 + height;
+        quads.clear();
+        unsigned seed = 12345;
+        const auto next = [&] { return (seed = seed * 1103515245u + 12345u) >> 8; };
+        for (int i = 0; i < 4400; ++i)
+        {
+            const UINT size = i < 400 ? 96 : 12;
+            const float x = float(next() % width), y = float(next() % height);
+            const float w = float(size / 4 + next() % size), h = float(size / 4 + next() % size);
+            const DWORD colour = 0xff000000 | (next() & 0xffffff);
+            // Twice, one width apart, so the scene wraps when it moves.
+            for (const float shift : { 0.0f, -float(width) })
+            {
+                const Vertex a { x + shift, y, 0, 1, colour }, b { x + shift + w, y, 0, 1, colour },
+                    c { x + shift, y + h, 0, 1, colour }, d { x + shift + w, y + h, 0, 1, colour };
+                quads.insert(quads.end(), { a, b, c, b, d, c });
+            }
+        }
+    }
+    std::vector<Vertex> moved = quads;
+    const float dx = float(offset % int(width));
+    for (auto& v : moved)
+        v.x += dx;
+    device->Clear(0, nullptr, D3DCLEAR_TARGET, D3DCOLOR_XRGB(40, 40, 48), 1, 0);
+    device->BeginScene();
+    device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    device->SetRenderState(D3DRS_LIGHTING, FALSE);
+    device->DrawPrimitiveUP(D3DPT_TRIANGLELIST, UINT(moved.size() / 3), moved.data(), sizeof(Vertex));
+    device->EndScene();
+}
+
+// The window's client area as the screen shows it, 32-bit BGRX rows top down.
+std::vector<DWORD> Capture(HWND window, int width, int height)
+{
+    std::vector<DWORD> pixels(size_t(width) * height);
+    POINT origin {};
+    ClientToScreen(window, &origin);
+    BITMAPINFOHEADER header { sizeof(header), width, -height, 1, 32, BI_RGB };
+    void* bits = nullptr;
+    HDC screen = GetDC(nullptr), memory = CreateCompatibleDC(screen);
+    HBITMAP bitmap =
+        CreateDIBSection(screen, reinterpret_cast<BITMAPINFO*>(&header), DIB_RGB_COLORS, &bits, nullptr, 0);
+    const HGDIOBJ old = SelectObject(memory, bitmap);
+    BitBlt(memory, 0, 0, width, height, screen, origin.x, origin.y, SRCCOPY);
+    GdiFlush();
+    std::memcpy(pixels.data(), bits, pixels.size() * 4);
+    SelectObject(memory, old);
+    DeleteObject(bitmap);
+    DeleteDC(memory);
+    ReleaseDC(nullptr, screen);
+    return pixels;
+}
+
+// How far right the picture moved between two captures (searched up to maxShift pixels), and the mean
+// absolute difference per colour channel (0 to 255) that is left once that move is taken out. Measured
+// right of the left third (an on-screen display such as RivaTuner's draws there) and in the middle half
+// of the rows.
+void Compare(const std::vector<DWORD>& a, const std::vector<DWORD>& b, int width, int height, int maxShift, int& shift,
+             double& residual)
+{
+    shift = 0;
+    residual = 1e9;
+    const int x0 = width / 3, x1 = width - maxShift - 1, y0 = height / 4, y1 = height * 3 / 4;
+    for (int s = 0; s <= maxShift; ++s)
+    {
+        double sum = 0;
+        long count = 0;
+        for (int y = y0; y < y1; y += 2)
+            for (int x = x0; x < x1; x += 2, ++count)
+            {
+                const DWORD p = a[size_t(y) * width + x], q = b[size_t(y) * width + x + s];
+                for (int c = 0; c < 24; c += 8)
+                    sum += std::abs(int((p >> c) & 255) - int((q >> c) & 255));
+            }
+        const double mean = count ? sum / (3.0 * count) : 1e9;
+        if (mean < residual)
+        {
+            residual = mean;
+            shift = s;
+        }
+    }
+}
+
+// --lose-device-at: what TestCooperativeLevel reports while a lost device is simulated.
+using TestLevel = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*);
+TestLevel realTestLevel = nullptr;
+std::atomic<int> lostFrames { 0 };
+HRESULT STDMETHODCALLTYPE SimulatedTestLevel(IDirect3DDevice9* device)
+{
+    const int left = lostFrames;
+    return left > 1 ? D3DERR_DEVICELOST : left == 1 ? D3DERR_DEVICENOTRESET : realTestLevel(device);
 }
 } // namespace
 
 int main(int argc, char** argv)
 {
     bool ex = false, native = false, vsync = false, windowThread = false, expectBridged = false, expectFg = false,
-         screen = false, expectUnhooked = false;
+         screen = false, expectUnhooked = false, fullscreen = false, secondDevice = false, clip = false,
+         presentRects = false;
+    int interval = -1, switchAt = -1, flipEvery = 0, flips = 0, lateRequestAt = -1, lostAt = -1, pan = -1,
+        measureAt = -1, measureGap = 0;
+    WORD pollVk = 0;
     int frames = 240, menuAt = -1, resetAt = -1, killAt = -1, timeout = 120, shotAt = -1;
     int holdDown = -1, holdUp = -1, ctrlAt = -1, ctrlX = 0, ctrlY = 0, typeAt = -1, recreateAt = -1, minimizeAt = -1,
         restoreAt = -1, subclassAt = -1;
@@ -318,6 +454,33 @@ int main(int argc, char** argv)
             screen = true;
         else if (a == "--expect-unhooked")
             expectUnhooked = true;
+        else if (a == "--fullscreen")
+            fullscreen = true;
+        else if (a == "--interval")
+            interval = atoi(next());
+        else if (a == "--second-device")
+            secondDevice = true;
+        else if (a == "--switch-at")
+            switchAt = atoi(next());
+        else if (a == "--flip-every")
+            flipEvery = atoi(next());
+        else if (a == "--late-request")
+            lateRequestAt = atoi(next());
+        else if (a == "--poll-key")
+            pollVk = static_cast<WORD>(strtoul(next(), nullptr, 0));
+        else if (a == "--clip")
+            clip = true;
+        else if (a == "--present-rects")
+            presentRects = true;
+        else if (a == "--lose-device-at")
+            lostAt = atoi(next());
+        else if (a == "--pan")
+            pan = atoi(next());
+        else if (a == "--measure-at")
+        {
+            measureAt = atoi(next());
+            measureGap = atoi(next());
+        }
         else if (a == "--hold-key")
         {
             holdDown = atoi(next());
@@ -384,6 +547,12 @@ int main(int argc, char** argv)
         else
             return Fail(("unknown option " + a).c_str());
     }
+    if (fullscreen && native)
+        return Fail("--fullscreen with --native would change the display mode");
+    const HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    realAsyncKey = reinterpret_cast<decltype(realAsyncKey)>(GetProcAddress(user32, "GetAsyncKeyState"));
+    realGetClip = reinterpret_cast<decltype(realGetClip)>(GetProcAddress(user32, "GetClipCursor"));
+    realClip = reinterpret_cast<decltype(realClip)>(GetProcAddress(user32, "ClipCursor"));
     CreateThread(nullptr, 0, Watchdog, reinterpret_cast<LPVOID>(static_cast<uintptr_t>(timeout)), 0, nullptr);
 
     wchar_t path[MAX_PATH] {};
@@ -466,22 +635,116 @@ int main(int argc, char** argv)
     params.BackBufferHeight = height;
     params.BackBufferFormat = D3DFMT_X8R8G8B8;
     params.BackBufferCount = 1;
-    params.SwapEffect = D3DSWAPEFFECT_DISCARD;
+    // Present rectangles need a copy swap chain.
+    params.SwapEffect = presentRects ? D3DSWAPEFFECT_COPY : D3DSWAPEFFECT_DISCARD;
     params.hDeviceWindow = window;
-    params.Windowed = TRUE;
-    params.PresentationInterval = vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
+    params.Windowed = !fullscreen;
+    const DWORD intervals[] { D3DPRESENT_INTERVAL_IMMEDIATE, D3DPRESENT_INTERVAL_ONE, D3DPRESENT_INTERVAL_TWO,
+                              D3DPRESENT_INTERVAL_THREE, D3DPRESENT_INTERVAL_FOUR };
+    params.PresentationInterval = interval >= 0 && interval <= 4 ? intervals[interval]
+                                  : vsync                        ? D3DPRESENT_INTERVAL_ONE
+                                                                 : D3DPRESENT_INTERVAL_IMMEDIATE;
+    DEVMODEW desktop {};
+    desktop.dmSize = sizeof(desktop);
+    EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &desktop);
+    if (fullscreen)
+        params.FullScreen_RefreshRateInHz = desktop.dmDisplayFrequency;
+    D3DDISPLAYMODEEX mode { sizeof(mode),    width,
+                            height,          desktop.dmDisplayFrequency,
+                            D3DFMT_X8R8G8B8, D3DSCANLINEORDERING_PROGRESSIVE };
     IDirect3DDevice9* device = nullptr;
     IDirect3DDevice9Ex* deviceEx = nullptr;
     const DWORD flags = D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE;
-    if (ex)
+    auto Make = [&](HWND target, D3DPRESENT_PARAMETERS& with, IDirect3DDevice9*& made, IDirect3DDevice9Ex*& madeEx)
     {
-        if (FAILED(
-                apiEx->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, flags, &params, nullptr, &deviceEx)))
-            return Fail("CreateDeviceEx");
-        device = deviceEx;
+        made = nullptr;
+        madeEx = nullptr;
+        HRESULT hr = S_OK;
+        if (ex)
+        {
+            hr = apiEx->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, target, flags, &with,
+                                       with.Windowed ? nullptr : &mode, &madeEx);
+            made = madeEx;
+        }
+        else
+            hr = api->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, target, flags, &with, &made);
+        if (FAILED(hr))
+            printf("device creation failed %08lX (windowed %d, interval %08lX)\n", hr, with.Windowed,
+                   with.PresentationInterval);
+        return SUCCEEDED(hr);
+    };
+    if (!Make(window, params, device, deviceEx))
+        return Fail(ex ? "CreateDeviceEx" : "CreateDevice");
+    if (fullscreen)
+        printf("fullscreen device asked for: created with windowed %d, interval %08lX\n", params.Windowed,
+               params.PresentationInterval);
+    // --second-device: another window and device of the same program, bottom left.
+    HWND window2 = nullptr;
+    IDirect3DDevice9* device2 = nullptr;
+    IDirect3DDevice9Ex* device2Ex = nullptr;
+    D3DPRESENT_PARAMETERS params2 = params;
+    UINT width2 = 640, height2 = 360;
+    if (secondDevice)
+    {
+        window2 = MakeWindow(width2, height2, 20, 600);
+        Foreground(window);
+        params2.BackBufferWidth = width2;
+        params2.BackBufferHeight = height2;
+        params2.hDeviceWindow = window2;
+        if (!window2 || !Make(window2, params2, device2, device2Ex))
+            return Fail("the second device");
     }
-    else if (FAILED(api->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, flags, &params, &device)))
-        return Fail("CreateDevice");
+    // One frame of the main device: the scene (moving bar, or --pan), with the right half magenta for
+    // --present-rects; then its Present.
+    auto Render = [&](int n)
+    {
+        if (pan >= 0)
+            DrawPan(device, width, height, n * pan);
+        else
+            Draw(device, width, height, n);
+        if (presentRects)
+        {
+            const D3DRECT right { LONG(width / 2), 0, LONG(width), LONG(height) };
+            device->Clear(1, &right, D3DCLEAR_TARGET, D3DCOLOR_XRGB(255, 0, 255), 1, 0);
+        }
+    };
+    auto Show = [&]
+    {
+        const RECT source { 0, 0, LONG(width / 2), LONG(height) },
+            dest { LONG(width / 2), 0, LONG(width), LONG(height) };
+        const RECT* from = presentRects ? &source : nullptr;
+        const RECT* to = presentRects ? &dest : nullptr;
+        return ex ? deviceEx->PresentEx(from, to, nullptr, nullptr, 0) : device->Present(from, to, nullptr, nullptr);
+    };
+    auto ShowSecond = [&](int n)
+    {
+        if (!device2)
+            return;
+        Draw(device2, width2, height2, n + 40);
+        device2->Present(nullptr, nullptr, nullptr, nullptr);
+    };
+    // After the device or window changed: present until a new host presents, so the frames counted
+    // after are its (the old host's last answer may still be counted once the new device presents).
+    auto Rewarm = [&](const dx9wire::ProxyStatus& before, unsigned& newHostBridged)
+    {
+        const ULONGLONG until = GetTickCount64() + 60000;
+        int rewarm = 0;
+        bool newHost = false;
+        for (dx9wire::ProxyStatus now; !(now = Status()).disabled && GetTickCount64() < until;)
+        {
+            if (!newHost && now.hostStarts > before.hostStarts)
+            {
+                newHost = true;
+                newHostBridged = now.bridged;
+            }
+            else if (newHost && now.bridged > newHostBridged)
+                break;
+            Pump();
+            Render(rewarm++);
+            Show();
+        }
+        return rewarm;
+    };
 
     COLORREF samples[2] {};
     int sampled = 0;
@@ -489,8 +752,18 @@ int main(int argc, char** argv)
     long mouseWhileMenu = 0;
     bool menuOpenNow = false;
     unsigned bridgedAtReset = 0;
-    dx9wire::ProxyStatus atRecreate {};
+    dx9wire::ProxyStatus atRecreate {}, atLost {};
     unsigned newHostBridged = 0;
+    // --poll-key: frames the key read down through the program's imports while the menu was closed, and
+    // while it was open; frames it was really down while the menu was open.
+    unsigned polledClosed = 0, polledOpen = 0, realOpen = 0;
+    // --clip: frames with the menu open (or closed) for three frames or more, those where the real clip
+    // was lifted (or in place), and those where the program read back its own clip.
+    unsigned clipOpenFrames = 0, clipLifted = 0, clipSeen = 0, clipClosedFrames = 0, clipInPlace = 0;
+    int menuChangedAt = 0;
+    bool menuWasOpen = false, resetAfterLoss = false;
+    std::vector<DWORD> measured;
+    COLORREF samples2[2] {};
     // The proxy starts its host on a thread of its own and presents natively until the host is up, so
     // present until it is: the frames counted below are then the bridge's.
     dx9wire::ProxyStatus warm {};
@@ -501,9 +774,9 @@ int main(int argc, char** argv)
         while ((warm = Status()).bridged == 0 && !warm.disabled && GetTickCount64() < until)
         {
             Pump();
-            Draw(device, width, height, warmFrames++);
-            ex ? deviceEx->PresentEx(nullptr, nullptr, nullptr, nullptr, 0)
-               : device->Present(nullptr, nullptr, nullptr, nullptr);
+            Render(warmFrames);
+            Show();
+            ShowSecond(warmFrames++);
         }
         printf("warm-up: %d frames until the host presented\n", warmFrames);
     }
@@ -513,6 +786,96 @@ int main(int argc, char** argv)
     for (int frame = 0; frame < frames; ++frame)
     {
         Pump();
+        // A game that checks its device each frame and resets it once it can.
+        if (frame == lostAt)
+        {
+            auto table = *reinterpret_cast<void***>(device);
+            DWORD old = 0;
+            VirtualProtect(&table[3], sizeof(void*), PAGE_EXECUTE_READWRITE, &old);
+            realTestLevel = reinterpret_cast<TestLevel>(table[3]);
+            table[3] = reinterpret_cast<void*>(SimulatedTestLevel);
+            VirtualProtect(&table[3], sizeof(void*), old, &old);
+            atLost = Status();
+            lostFrames = 30;
+        }
+        if (lostAt >= 0 && device->TestCooperativeLevel() == D3DERR_DEVICENOTRESET)
+        {
+            const HRESULT hr = ex ? deviceEx->ResetEx(&params, nullptr) : device->Reset(&params);
+            printf("device reset after the simulated loss at frame %d: %08lX\n", frame, hr);
+            resetAfterLoss = SUCCEEDED(hr);
+            lostFrames = 0;
+        }
+        const bool menuNow = (Status().state & dx9wire::StateMenu) != 0;
+        if (menuNow != menuWasOpen)
+            menuChangedAt = frame;
+        menuWasOpen = menuNow;
+        const bool settled = frame - menuChangedAt >= 3;
+        if (pollVk && menuAt >= 0)
+        {
+            // Down before the menu opens, and again while it is open.
+            if (frame == menuAt - 30 || frame == menuAt + 25)
+                (Key(window, pollVk, false) ? keysSent : keysSkipped)++;
+            if (frame == menuAt - 20 || frame == menuAt + 45)
+                (Key(window, pollVk, true) ? keysSent : keysSkipped)++;
+            BYTE board[256] {};
+            GetKeyboardState(board);
+            const bool polled =
+                (GetAsyncKeyState(pollVk) & 0x8000) || (GetKeyState(pollVk) & 0x8000) || (board[pollVk] & 0x80);
+            polledClosed += polled && !menuNow ? 1 : 0;
+            polledOpen += polled && menuNow ? 1 : 0;
+            realOpen += (realAsyncKey(pollVk) & 0x8000) && menuNow ? 1 : 0;
+        }
+        if (clip)
+        {
+            POINT origin {};
+            ClientToScreen(window, &origin);
+            const RECT box { origin.x, origin.y, origin.x + 400, origin.y + 300 };
+            ClipCursor(&box);
+            RECT real {}, seen {};
+            realGetClip(&real);
+            GetClipCursor(&seen);
+            if (settled && menuNow)
+            {
+                ++clipOpenFrames;
+                clipLifted += EqualRect(&real, &box) ? 0 : 1;
+                clipSeen += EqualRect(&seen, &box) ? 1 : 0;
+            }
+            else if (settled)
+            {
+                ++clipClosedFrames;
+                clipInPlace += EqualRect(&real, &box) ? 1 : 0;
+            }
+        }
+        if (frame == lateRequestAt)
+            PostMessageW(window, RegisterWindowMessageW(L"OptiScalerDx9X86Surface"), 1, 0);
+        if (device2 && flipEvery > 0 && frame > 0 && frame % flipEvery == 0)
+        {
+            // The other window comes up and the program presents only there.
+            ShowWindow(window, SW_HIDE);
+            ShowWindow(window2, SW_SHOWNOACTIVATE);
+            std::swap(window, window2);
+            std::swap(device, device2);
+            std::swap(deviceEx, device2Ex);
+            std::swap(params, params2);
+            std::swap(width, width2);
+            std::swap(height, height2);
+            ++flips;
+        }
+        if (frame == switchAt && device2)
+        {
+            // The main window goes away and the program goes on with its second device only.
+            atRecreate = Status();
+            ShowWindow(window, SW_HIDE);
+            std::swap(window, window2);
+            std::swap(device, device2);
+            std::swap(deviceEx, device2Ex);
+            std::swap(params, params2);
+            std::swap(width, width2);
+            std::swap(height, height2);
+            const int rewarm = Rewarm(atRecreate, newHostBridged);
+            printf("switched to the second device at frame %d (bridged %u), %d frames until a new host presented it\n",
+                   frame, atRecreate.bridged, rewarm);
+        }
         // A drag: the cursor to the start, a relative nudge there and back (a menu reading another
         // process's window follows a mouse by its relative moves, from where the cursor was), button
         // down, twelve relative steps, button up; one event a frame, as OptiScaler reads the mouse once a
@@ -612,25 +975,7 @@ int main(int argc, char** argv)
                 return Fail("the device could not be made again");
             if (ex)
                 device = deviceEx;
-            // As at the start: present until a new host presents, so the frames counted are its (the old
-            // host's last answer may still be counted once the new device presents).
-            const ULONGLONG until = GetTickCount64() + 60000;
-            int rewarm = 0;
-            bool newHost = false;
-            for (dx9wire::ProxyStatus now; !(now = Status()).disabled && GetTickCount64() < until;)
-            {
-                if (!newHost && now.hostStarts > atRecreate.hostStarts)
-                {
-                    newHost = true;
-                    newHostBridged = now.bridged;
-                }
-                else if (newHost && now.bridged > newHostBridged)
-                    break;
-                Pump();
-                Draw(device, width, height, rewarm++);
-                ex ? deviceEx->PresentEx(nullptr, nullptr, nullptr, nullptr, 0)
-                   : device->Present(nullptr, nullptr, nullptr, nullptr);
-            }
+            const int rewarm = Rewarm(atRecreate, newHostBridged);
             printf("made a new device and window at frame %d (bridged %u), %d frames until a new host presented it\n",
                    frame, atRecreate.bridged, rewarm);
         }
@@ -673,18 +1018,38 @@ int main(int argc, char** argv)
                 return Fail("Reset");
             printf("reset to %ux%u at frame %d\n", width, height, frame);
         }
-        Draw(device, width, height, frame);
+        Render(frame);
         LARGE_INTEGER spin {}, now {};
         QueryPerformanceCounter(&spin);
         do
             QueryPerformanceCounter(&now);
         while (1000.0 * double(now.QuadPart - spin.QuadPart) / double(rate.QuadPart) < work);
-        const HRESULT hr = ex ? deviceEx->PresentEx(nullptr, nullptr, nullptr, nullptr, 0)
-                              : device->Present(nullptr, nullptr, nullptr, nullptr);
+        const HRESULT hr = Show();
         if (FAILED(hr))
         {
             printf("Present failed %08lX at frame %d\n", hr, frame);
             return Fail("Present");
+        }
+        if (flipEvery <= 0 && (switchAt < 0 || frame < switchAt))
+            ShowSecond(frame);
+        if (lostFrames > 1)
+            --lostFrames;
+        if (measureAt >= 0 && (frame == measureAt || frame == measureAt + measureGap))
+        {
+            Sleep(30);
+            auto picture = Capture(window, int(width), int(height));
+            if (frame == measureAt)
+                measured = std::move(picture);
+            else
+            {
+                const int reach = std::min<int>(std::max(0, (measureGap + 6) * pan), int(width) / 2);
+                int moved = 0;
+                double residual = 0;
+                Compare(measured, picture, int(width), int(height), reach, moved, residual);
+                printf("stability: the picture moved %d px in %d frames (the scene moved %d), mean change left %.2f "
+                       "of 255\n",
+                       moved, measureGap, measureGap * std::max(0, pan), residual);
+            }
         }
         if (frame == shotAt)
         {
@@ -695,6 +1060,8 @@ int main(int argc, char** argv)
         if (frame == frames - 40 || frame == frames - 10)
         {
             Sleep(30);
+            if (window2 && (switchAt < 0 || frame < switchAt))
+                samples2[sampled] = ScreenPixel(window2, width2 * 3 / 4, height2 / 2);
             samples[sampled++] = ScreenPixel(window, width * 3 / 4, height / 2);
         }
     }
@@ -717,8 +1084,74 @@ int main(int argc, char** argv)
     int failed = 0;
     if (screen && !screenMoves)
         failed = Fail("the window's pixels on screen did not change between samples");
-    // A Reset or an ended host may cost a host restart, presented natively meanwhile.
-    const unsigned allowance = 8 + (killAt >= 0 || resetAt >= 0 || recreateAt >= 0 ? 300 : 0);
+    // A Reset, an ended host, a new window or a lost device may cost frames presented natively.
+    const unsigned allowance =
+        8 + (killAt >= 0 || resetAt >= 0 || recreateAt >= 0 || switchAt >= 0 || lostAt >= 0 ? 300 : 0);
+    if (presentRects && (samples[0] == RGB(255, 0, 255) || samples[1] == RGB(255, 0, 255)))
+        failed = Fail("the window shows the part of the back buffer outside the Present source rectangle");
+    if (flipEvery > 0)
+    {
+        printf("flips: %d, host starts %u, faults %u, disabled %u\n", flips, s.hostStarts, s.faults, s.disabled);
+        if (!s.disabled || s.hostStarts > 6)
+            failed = Fail("a program moving between windows kept starting hosts");
+    }
+    else if (device2 && switchAt < 0)
+    {
+        const bool covered2 = samples2[0] == CLR_INVALID || samples2[1] == CLR_INVALID;
+        printf("second device: screen=%s samples=%06lX,%06lX\n",
+               covered2                     ? "covered"
+               : samples2[0] != samples2[1] ? "ok"
+                                            : "unchanged",
+               samples2[0], samples2[1]);
+        if (s.hostStarts != 1 || s.faults || s.native < unsigned(frames))
+            failed = Fail("a second device presenting to another window cost a host or was not presented natively");
+        if (screen && !covered2 && samples2[0] == samples2[1])
+            failed = Fail("the second device's window did not change on screen");
+    }
+    if (switchAt >= 0)
+    {
+        printf("switch: bridged before %u, when the new host started %u, at the end %u, starts %u, faults %u\n",
+               atRecreate.bridged, newHostBridged, s.bridged, s.hostStarts, s.faults);
+        if (s.hostStarts != atRecreate.hostStarts + 1 || s.faults != atRecreate.faults ||
+            s.bridged + 8 < newHostBridged + unsigned(frames - switchAt))
+            failed = Fail("the second device's window was not presented by a new host");
+    }
+    if (lateRequestAt >= 0)
+    {
+        int children = 0;
+        for (HWND child = FindWindowExW(window, nullptr, L"OptiScalerDx9X86Surface", nullptr); child;
+             child = FindWindowExW(window, child, L"OptiScalerDx9X86Surface", nullptr))
+            ++children;
+        printf("late request: %d child windows at the end\n", children);
+        if (children != 1)
+            failed = Fail("the game window does not have exactly one child window");
+    }
+    if (pollVk)
+    {
+        printf("polled key 0x%X: read down %u frames with the menu closed, %u with it open (really down %u)\n", pollVk,
+               polledClosed, polledOpen, realOpen);
+        if (!keysSkipped && (!polledClosed || !realOpen || polledOpen))
+            failed = Fail("polled keys were not held while the menu was open, or not seen while it was closed");
+    }
+    if (clip)
+    {
+        realClip(nullptr);
+        printf("clip: open %u frames, lifted %u, the program read its own %u; closed %u frames, in place %u\n",
+               clipOpenFrames, clipLifted, clipSeen, clipClosedFrames, clipInPlace);
+        if (menuAt >= 0 && !keysSkipped &&
+            (!clipOpenFrames || clipLifted != clipOpenFrames || clipSeen != clipOpenFrames ||
+             clipInPlace != clipClosedFrames))
+            failed = Fail("the cursor clip was not lifted under the menu, or not in place without it");
+    }
+    if (lostAt >= 0)
+    {
+        printf("lost device: native %u -> %u, bridged %u -> %u, starts %u -> %u, faults %u -> %u, reset %s\n",
+               atLost.native, s.native, atLost.bridged, s.bridged, atLost.hostStarts, s.hostStarts, atLost.faults,
+               s.faults, resetAfterLoss ? "done" : "not done");
+        if (!resetAfterLoss || s.hostStarts != atLost.hostStarts || s.faults != atLost.faults ||
+            s.native < atLost.native + 25 || s.bridged + 40 < atLost.bridged + unsigned(frames - lostAt))
+            failed = Fail("a lost device cost a host, or the bridge did not carry on after the reset");
+    }
     if (expectBridged && (s.bridged - warm.bridged + allowance < unsigned(frames) || s.disabled))
         failed = Fail("frames were not presented by the host");
     if (expectFg && !(s.state & dx9wire::StateFrameGen))
@@ -772,6 +1205,8 @@ int main(int argc, char** argv)
         printf("SKIP keys: %u key events not sent (window not in front)\n", keysSkipped);
 
     device->Release();
+    if (device2)
+        device2->Release();
     api->Release();
     if (!windowThread)
         DestroyWindow(window);

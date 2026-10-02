@@ -34,8 +34,16 @@ with posted messages: an engine that renders on a thread of its own may keep its
 for that very thread, so the Present never waits for the window thread (the game presents natively for
 the frame or two until the child exists; with no child after 3 s it is asked for again).
 
-A game that releases its device and window and makes new ones gets a new host on the new window
-(not counted as a failure); the host's swap chain stays on the child window it was made for.
+The host serves one window. A second device of the game that presents to another window (a launcher,
+a video or a tool view) is presented natively while the host's window is still shown and presented to,
+and costs no host. A game that releases its device and window and makes new ones, hides the window the
+host serves, or stops presenting to it for a second while it presents to another window, gets a new
+host on that window (not counted as a failure); the host's swap chain stays on the child window it was
+made for. A request for the child window that reaches the window's thread after a child was made or
+taken for that window makes none.
+
+A plain D3D9 device that is lost (`TestCooperativeLevel` does not report `D3D_OK`) presents natively,
+which gives the game the `D3DERR_DEVICELOST` it resets on, and the host is kept.
 
 When the host does not answer, reports its device lost, refuses a new back buffer size, dies, or
 reports that OptiScaler did not wrap its swap chain (no DXGI hooks, so no NR, frame generation or
@@ -54,11 +62,15 @@ stays native. The host starts on a thread of its own; the game presents natively
 - Plain D3D9 devices, which cannot share a texture: the copy is read back to system memory and
   written into a section of memory the host maps; the host uploads it.
 
+A Present with a source or destination rectangle hands over that part of the back buffer, stretched to
+where it would land in the window; the rest of the copy keeps the frame before. When the rectangles
+cannot be copied (a multisampled back buffer cannot be stretched) the whole back buffer is.
+
 With `Pipelined=true` (the default) the game side hands a frame over and returns to the game,
 which renders its next frame while the host presents; the host's answer is collected at the next
 Present, before the shared copy is written again. `Pipelined=false` waits for the host at every Present.
-At interval 0 the host presents with tearing allowed, so a game without vsync is not held to the
-display's rate.
+The host presents at the interval the game asked for. At interval 0 it presents with tearing allowed,
+so a game without vsync is not held to the display's rate.
 
 The game provides colour only. Motion comes from FidelityFX Optical Flow and depth is synthetic,
 exactly as in OptiScaler's D3D11 final-image route.
@@ -68,9 +80,12 @@ exactly as in OptiScaler's D3D11 final-image route.
 The host draws OptiScaler's menu into its swap chain. OptiScaler's input layer sees that the window
 belongs to another process and reads the keyboard and mouse itself (polled keys and cursor, raw mouse
 through an input sink). While the menu is open, the proxy holds the game's mouse and keyboard
-messages, `WM_INPUT`, and `GetCursorPos`/`SetCursorPos` from the game, so the camera does not move
-under the menu. It does so with a message hook (`WH_GETMESSAGE`) on the game window's thread, which
-sees every queued message before the game whatever window procedures are installed later; the cursor
+messages and `WM_INPUT`; `GetCursorPos` returns where the cursor was when the menu opened and
+`SetCursorPos` does nothing; `GetAsyncKeyState`, `GetKeyState` and `GetKeyboardState` read every key
+as up; and the game's cursor clip is lifted (`ClipCursor` is held and `GetClipCursor` returns the
+game's own clip), then put back when the menu closes. So the camera does not move and the game does
+not act on keys under the menu. It does so with a message hook (`WH_GETMESSAGE`) on the game window's thread, which
+sees every queued message before the game whatever window procedures are installed later; the key, cursor and clip
 calls are patched in the import tables of every module loaded when a host starts and when the menu
 opens. A key or mouse button the game saw go down before the menu opened still gets its release, so
 nothing stays held in the game. Games that read the mouse through DirectInput still see it.
@@ -114,7 +129,9 @@ The `[FrameGen]` part is only for XeFG. The proxy reads its own keys from the sa
 ; false leaves the game alone (the proxy only forwards)
 Enabled=true
 ; A fullscreen D3D9 device owns the display and the host's swap chain would never be seen, so a
-; fullscreen request is turned into a window of the same size. false keeps fullscreen.
+; fullscreen request is turned into a window of the same size. A windowed D3D9 device takes only
+; intervals 0 and 1, so one asked for 2, 3 or 4 is made 1 in D3D9 and the host presents at the asked
+; one. false keeps fullscreen.
 ForceWindowed=true
 ; true sends frames through memory even when the device can share a texture (for testing)
 SharedMemory=false
@@ -138,5 +155,10 @@ turned off, the menu with mouse input held from the game, a Reset without frame 
 on a thread that is blocked while the game renders (with and without a host replacement, and with
 XeFG), the host ended mid-run with and without frame generation, the final-image Model scale dragged
 in the menu with XeFG on, a key held across the menu, a value typed into the menu, a device and window
-made again, the window minimized with XeFG on, OptiScaler without its DXGI hooks, and frame times at
-1920x1080 (each timed case must have run what it times, in one host).
+made again, the window minimized with XeFG on, a fullscreen request at interval 2 (D3D9 and D3D9Ex), a
+second device on a second window and the move to it, a late request for the child window, keys polled
+and the cursor clipped under the menu, Present rectangles (natively and through the host), a device
+reported lost and then reset, a panned scene (the picture must move as the scene does; with NR, the
+motion NR gets must match the pan and the picture must change little beyond the move), OptiScaler
+without its DXGI hooks, and frame times at 1920x1080 (each timed case must have run what it times, in
+one host).

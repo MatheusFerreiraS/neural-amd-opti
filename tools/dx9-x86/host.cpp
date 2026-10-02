@@ -292,8 +292,8 @@ struct Host
         }
         const uint32_t state = overlayState ? overlayState() : 0;
         if (++presented == 1 || presented % 600 == 0)
-            Log("frame %llu presented (%llu so far), Present %08lX, menu %u, frame generation %u", frame.id, presented,
-                hr, state & StateMenu, (state & StateFrameGen) >> 1);
+            Log("frame %llu presented (%llu so far) at interval %u, Present %08lX, menu %u, frame generation %u",
+                frame.id, presented, frame.syncInterval, hr, state & StateMenu, (state & StateFrameGen) >> 1);
         return Reply(Kind::Frame, FAILED(hr) ? Result::Failed : Result::Presented, static_cast<uint32_t>(hr), frame.id,
                      state);
     }

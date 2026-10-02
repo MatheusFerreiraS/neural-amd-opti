@@ -118,15 +118,27 @@ bool Setting(const wchar_t* key, bool fallback)
 // that very thread, so the Present never waits for the window thread.
 const wchar_t* const surfaceClass = L"OptiScalerDx9X86Surface";
 UINT surfaceRequest = 0;
-std::atomic<HWND> madeSurface { nullptr };
+// The child made for the next host, and the one a host presents into.
+std::atomic<HWND> madeSurface { nullptr }, takenSurface { nullptr };
 // The game's top-level windows (those of its device window and its focus window).
 std::atomic<HWND> gameRoot { nullptr }, focusRoot { nullptr };
 
 // Input the game must not see while OptiScaler's menu is open. The host reads the mouse and keys
-// itself; the game's queued input messages and its cursor calls are what is held back here.
+// itself; the game's queued input messages, its key and cursor polls and its cursor clip are what is
+// held back here.
 POINT heldCursor {};
 decltype(&GetCursorPos) realGetCursorPos = GetCursorPos;
 decltype(&SetCursorPos) realSetCursorPos = SetCursorPos;
+decltype(&GetAsyncKeyState) realGetAsyncKeyState = GetAsyncKeyState;
+decltype(&GetKeyState) realGetKeyState = GetKeyState;
+decltype(&GetKeyboardState) realGetKeyboardState = GetKeyboardState;
+decltype(&ClipCursor) realClipCursor = ClipCursor;
+decltype(&GetClipCursor) realGetClipCursor = GetClipCursor;
+// The game's cursor clip while the menu is open (the menu needs the whole screen); put back when it
+// closes. clipNone: the game had no clip, or asked for none.
+std::mutex clipLock;
+RECT gameClip {};
+bool clipNone = true;
 // Keys and mouse buttons (by virtual key) the game saw go down, from window messages and from raw
 // input. Their release still reaches the game while the menu is open, so none stays held in the game.
 std::bitset<256> gameDown, rawDown;
@@ -251,10 +263,14 @@ void Filter(MSG& msg)
 {
     if (msg.message == surfaceRequest && surfaceRequest)
     {
+        // One child per game window: a request that arrives late, after a child was made or taken for
+        // this window, makes none.
+        const auto ours = [&](HWND child) { return child && IsWindow(child) && GetParent(child) == msg.hwnd; };
         if (msg.wParam)
         {
-            if (const HWND unused = madeSurface.exchange(MakeSurface(msg.hwnd)))
-                DestroyWindow(unused);
+            if (!ours(madeSurface) && !ours(takenSurface))
+                if (const HWND unused = madeSurface.exchange(MakeSurface(msg.hwnd)))
+                    DestroyWindow(unused);
         }
         else if (IsWindow(reinterpret_cast<HWND>(msg.lParam)))
             DestroyWindow(reinterpret_cast<HWND>(msg.lParam));
@@ -312,6 +328,47 @@ BOOL WINAPI HeldGetCursorPos(LPPOINT point)
     return realGetCursorPos(point);
 }
 BOOL WINAPI HeldSetCursorPos(int x, int y) { return menuOpen ? TRUE : realSetCursorPos(x, y); }
+// Keys polled while the menu is open read as up, as OptiScaler's own hold does in a game it runs in.
+SHORT WINAPI HeldGetAsyncKeyState(int vk) { return menuOpen ? 0 : realGetAsyncKeyState(vk); }
+SHORT WINAPI HeldGetKeyState(int vk) { return menuOpen ? 0 : realGetKeyState(vk); }
+BOOL WINAPI HeldGetKeyboardState(PBYTE keys)
+{
+    const BOOL result = realGetKeyboardState(keys);
+    if (result && keys && menuOpen)
+        std::memset(keys, 0, 256);
+    return result;
+}
+BOOL WINAPI HeldClipCursor(const RECT* rect)
+{
+    {
+        std::lock_guard guard(clipLock);
+        if (menuOpen)
+        {
+            clipNone = !rect;
+            if (rect)
+                gameClip = *rect;
+            return TRUE;
+        }
+    }
+    return realClipCursor(rect);
+}
+RECT VirtualScreen()
+{
+    const int x = GetSystemMetrics(SM_XVIRTUALSCREEN), y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    return { x, y, x + GetSystemMetrics(SM_CXVIRTUALSCREEN), y + GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+}
+BOOL WINAPI HeldGetClipCursor(LPRECT rect)
+{
+    {
+        std::lock_guard guard(clipLock);
+        if (menuOpen && rect)
+        {
+            *rect = clipNone ? VirtualScreen() : gameClip;
+            return TRUE;
+        }
+    }
+    return realGetClipCursor(rect);
+}
 
 void PatchImports(HMODULE module)
 {
@@ -321,26 +378,30 @@ void PatchImports(HMODULE module)
     const auto& directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     if (!directory.VirtualAddress)
         return;
+    const auto pair = [](auto real, auto replacement)
+    { return std::pair { reinterpret_cast<void*>(real), reinterpret_cast<void*>(replacement) }; };
+    const std::pair<void*, void*> held[] {
+        pair(realGetCursorPos, HeldGetCursorPos),         pair(realSetCursorPos, HeldSetCursorPos),
+        pair(realGetAsyncKeyState, HeldGetAsyncKeyState), pair(realGetKeyState, HeldGetKeyState),
+        pair(realGetKeyboardState, HeldGetKeyboardState), pair(realClipCursor, HeldClipCursor),
+        pair(realGetClipCursor, HeldGetClipCursor),
+    };
     for (auto entry = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + directory.VirtualAddress); entry->Name; ++entry)
     {
         if (_stricmp(reinterpret_cast<char*>(base + entry->Name), "user32.dll") != 0)
             continue;
         for (auto thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(base + entry->FirstThunk); thunk->u1.Function; ++thunk)
-        {
-            void* replacement = nullptr;
-            if (thunk->u1.Function == reinterpret_cast<uintptr_t>(realGetCursorPos))
-                replacement = reinterpret_cast<void*>(HeldGetCursorPos);
-            else if (thunk->u1.Function == reinterpret_cast<uintptr_t>(realSetCursorPos))
-                replacement = reinterpret_cast<void*>(HeldSetCursorPos);
-            void* original = nullptr;
-            if (replacement)
-                Replace(reinterpret_cast<void**>(&thunk->u1.Function), replacement, &original);
-        }
+            for (const auto& [real, replacement] : held)
+            {
+                void* original = nullptr;
+                if (thunk->u1.Function == reinterpret_cast<uintptr_t>(real))
+                    Replace(reinterpret_cast<void**>(&thunk->u1.Function), replacement, &original);
+            }
     }
 }
 // Every module loaded so far: run at each host start and each time the menu opens, so modules the
 // game loads later are covered too.
-void PatchCursorCalls()
+void PatchInputCalls()
 {
     HMODULE modules[1024] {};
     DWORD bytes = 0;
@@ -348,6 +409,28 @@ void PatchCursorCalls()
         for (DWORD i = 0; i < bytes / sizeof(HMODULE) && i < 1024; ++i)
             if (modules[i] != self)
                 PatchImports(modules[i]);
+}
+
+// OptiScaler's menu opened or closed in the host. While it is open the cursor the game reads stays
+// where it was and the game's cursor clip is lifted; on closing, the clip the game had, or asked for
+// meanwhile, is put back.
+void MenuChanged(bool open)
+{
+    if (open == menuOpen)
+        return;
+    if (open)
+    {
+        PatchInputCalls();
+        realGetCursorPos(&heldCursor);
+    }
+    std::lock_guard guard(clipLock);
+    if (open)
+    {
+        const RECT screen = VirtualScreen();
+        clipNone = !realGetClipCursor(&gameClip) || EqualRect(&gameClip, &screen);
+    }
+    menuOpen = open;
+    realClipCursor(open || clipNone ? nullptr : &gameClip);
 }
 
 // The message hook on the threads of the game's device and focus windows (once per thread), and the
@@ -372,7 +455,7 @@ void HookGame(HWND window, HWND focus)
         else
             Log("cannot hook the messages of thread %lu (%lu)", thread, GetLastError());
     }
-    PatchCursorCalls();
+    PatchInputCalls();
 }
 
 // The window a device presents to, and its focus window.
@@ -546,7 +629,9 @@ struct Bridge
     Stage stage;
     IDirect3DDevice9* device = nullptr;
     HWND window = nullptr;
-    UINT syncInterval = 1;
+    // The interval each device asked for, which the host presents at (a forced window may have made it
+    // one in D3D9).
+    std::vector<std::pair<IDirect3DDevice9*, UINT>> intervals;
     uint64_t generation = 0, frame = 0;
     bool built = false, disabled = false, pipelined = true;
     // A frame posted to the host whose answer is collected at the next Present (or before anything
@@ -566,6 +651,10 @@ struct Bridge
     HWND surface = nullptr;
     bool surfaceAsked = false;
     ULONGLONG surfaceAskedAt = 0;
+    // When the game last presented to the host's window, whether its device was lost then, and when a
+    // host was last replaced for a new window.
+    ULONGLONG windowPresentedAt = 0, restartedAt = 0;
+    bool lost = false;
     // Failures in a row. A host that presented 600 frames before it failed starts the count again, so
     // only a host that keeps failing early leaves the session native.
     uint32_t strikes = 0;
@@ -576,6 +665,7 @@ struct Bridge
     void Down()
     {
         host.Stop();
+        takenSurface = nullptr;
         if (surface && IsWindow(surface))
             PostMessageW(GetAncestor(surface, GA_PARENT), surfaceRequest, 0, LPARAM(surface));
         surface = nullptr;
@@ -583,7 +673,7 @@ struct Bridge
         link = Link::Down;
         built = false;
         pending = 0;
-        menuOpen = false;
+        MenuChanged(false);
     }
 
     void Fault(const char* why, bool retryNow = false)
@@ -602,12 +692,36 @@ struct Bridge
         retryAt = GetTickCount64() + (retryNow ? 0 : 1000ull * strikes);
     }
 
-    // The game presents to a new window: a new host for it, straight away. Not a failure.
+    // The game presents to a new window: a new host for it, straight away. Not a failure, unless the
+    // game moved within 10 s of the last move, so a game that keeps moving between windows cannot start
+    // hosts without end.
     void Restart(const char* why)
     {
+        const ULONGLONG tick = GetTickCount64();
+        const bool again = restartedAt && tick - restartedAt < 10000;
+        restartedAt = tick;
+        if (again)
+        {
+            Fault(why);
+            return;
+        }
         Log("host %u ended: %s; a new host starts", status.hostStarts, why);
         Down();
         retryAt = 0;
+    }
+
+    void SetInterval(IDirect3DDevice9* game, UINT interval)
+    {
+        const auto known = std::find_if(intervals.begin(), intervals.end(), [&](auto& i) { return i.first == game; });
+        if (known != intervals.end())
+            known->second = interval;
+        else
+            intervals.push_back({ game, interval });
+    }
+    UINT Interval(IDirect3DDevice9* game)
+    {
+        const auto known = std::find_if(intervals.begin(), intervals.end(), [&](auto& i) { return i.first == game; });
+        return known != intervals.end() ? known->second : 1;
     }
 
     void Drop()
@@ -628,6 +742,7 @@ struct Bridge
         LUID luid {};
         if (!(window = DeviceWindow(game, focus)) || !AdapterLuid(game, luid))
             return false;
+        windowPresentedAt = GetTickCount64();
         HookGame(window, focus);
         startLuid = luid;
         ++status.hostStarts;
@@ -672,7 +787,7 @@ struct Bridge
         {
             const HWND made = madeSurface.exchange(nullptr);
             if (made && GetAncestor(made, GA_PARENT) == window)
-                surface = made;
+                takenSurface = surface = made;
             else if (made && IsWindow(made))
                 PostMessageW(GetAncestor(made, GA_PARENT), surfaceRequest, 0, LPARAM(made));
         }
@@ -796,10 +911,33 @@ struct Bridge
         return done == S_OK;
     }
 
-    bool Capture(IDirect3DDevice9* game, IDirect3DSurface9* back)
+    // source and dest are the Present's: the part of the back buffer it shows, and where in the window's
+    // client area. The host stretches the copy over the client area, so dest is scaled to the copy; the
+    // rest of the copy keeps the frame before, as the window would. When the rectangles cannot be
+    // copied (a multisampled back buffer cannot be stretched), the whole back buffer is.
+    bool Capture(IDirect3DDevice9* game, IDirect3DSurface9* back, const RECT* source, const RECT* dest)
     {
-        if (FAILED(game->StretchRect(back, nullptr, stage.surface.Get(), nullptr, D3DTEXF_NONE)))
-            return false;
+        RECT into {}, client {};
+        const RECT whole { 0, 0, LONG(stage.width), LONG(stage.height) };
+        const bool scaled = dest && GetClientRect(window, &client) && client.right > 0 && client.bottom > 0;
+        if (scaled)
+        {
+            into = { MulDiv(dest->left, stage.width, client.right), MulDiv(dest->top, stage.height, client.bottom),
+                     MulDiv(dest->right, stage.width, client.right),
+                     MulDiv(dest->bottom, stage.height, client.bottom) };
+            IntersectRect(&into, &into, &whole);
+        }
+        const RECT shown = source ? *source : whole;
+        const RECT& to = scaled ? into : whole;
+        const bool same =
+            shown.right - shown.left == to.right - to.left && shown.bottom - shown.top == to.bottom - to.top;
+        const bool part = source || scaled;
+        if (!part ||
+            FAILED(game->StretchRect(back, &shown, stage.surface.Get(), &to, same ? D3DTEXF_NONE : D3DTEXF_LINEAR)))
+        {
+            if (FAILED(game->StretchRect(back, nullptr, stage.surface.Get(), nullptr, D3DTEXF_NONE)))
+                return false;
+        }
         if (stage.shared)
             return Wait9(game);
         D3DLOCKED_RECT from {};
@@ -815,20 +953,31 @@ struct Bridge
     }
 
     // True when the host presented this frame and the game's Present must be skipped.
-    bool Present(IDirect3DDevice9* game, IDirect3DSurface9* back)
+    bool Present(IDirect3DDevice9* game, IDirect3DSurface9* back, const RECT* source, const RECT* dest)
     {
         if (disabled || !back)
             return false;
         D3DSURFACE_DESC desc {};
-        if (FAILED(back->GetDesc(&desc)))
+        HWND focusNow = nullptr;
+        const HWND now = DeviceWindow(game, focusNow);
+        if (!now || FAILED(back->GetDesc(&desc)))
             return false;
+        // The host serves one window. Another device of the game presenting to another window (a
+        // launcher, a video or a tool view) is presented natively while the host's window is still
+        // shown and presented to; a game that has moved to a new window gets a new host there (below).
+        const ULONGLONG tick = GetTickCount64();
+        if (window && now != window && game != device && IsWindow(window) && IsWindowVisible(window) &&
+            tick - windowPresentedAt < 1000)
+            return false;
+        if (now == window)
+            windowPresentedAt = tick;
         // A provisional buffer (The Sims 4 shows 16x16 first). Once the host owns the window its last
         // frame stays up rather than D3D9 presenting under it.
         if (desc.Width < 64 || desc.Height < 64)
             return link == Link::Up;
         if (link == Link::Down)
         {
-            if (GetTickCount64() < retryAt)
+            if (tick < retryAt)
                 return false;
             if (!Connect(game))
             {
@@ -841,8 +990,7 @@ struct Bridge
             return false;
         // A game that releases its window and device and makes new ones: the host's swap chain is on a
         // child of the old window, so the new window gets a new host.
-        HWND focusNow = nullptr;
-        if (const HWND now = DeviceWindow(game, focusNow); now && now != window)
+        if (now != window)
         {
             Restart("the game presents to a new window");
             return false;
@@ -852,6 +1000,17 @@ struct Bridge
             Restart("its child window is gone");
             return false;
         }
+        // A lost plain D3D9 device (a lock screen, a display mode change) cannot hand its frame over. It
+        // presents natively, which gives the game the D3DERR_DEVICELOST it resets on, and the host is
+        // kept.
+        if (game->TestCooperativeLevel() != D3D_OK)
+        {
+            if (!lost)
+                Log("the game's device is lost; presenting natively until it is reset");
+            lost = true;
+            return false;
+        }
+        lost = false;
         if (!Surface())
             return false;
         if (!Ensure(game, desc))
@@ -862,7 +1021,7 @@ struct Bridge
                 Fault("the host could not take the new back buffer", true);
             return false;
         }
-        if (!Capture(game, back))
+        if (!Capture(game, back, source, dest))
         {
             Fault("the frame could not be handed over");
             return false;
@@ -870,7 +1029,7 @@ struct Bridge
         dx9wire::Frame request;
         request.generation = generation;
         request.id = ++frame;
-        request.syncInterval = syncInterval;
+        request.syncInterval = Interval(game);
         {
             std::lock_guard guard(typedLock);
             request.textCount = static_cast<uint32_t>(std::min<size_t>(typed.size(), std::size(request.text)));
@@ -912,12 +1071,7 @@ struct Bridge
             return false;
         }
         status.state = ack.state;
-        if ((ack.state & StateMenu) && !menuOpen)
-        {
-            realGetCursorPos(&heldCursor);
-            PatchCursorCalls();
-        }
-        menuOpen = (ack.state & StateMenu) != 0;
+        MenuChanged((ack.state & StateMenu) != 0);
         status.menuFrames += menuOpen ? 1 : 0;
         ++sinceStart;
         if (++status.bridged == 1)
@@ -932,7 +1086,7 @@ thread_local bool inPresent = false;
 
 // Runs the bridge for one Present of the device's own swap chain to its own window; false means
 // present natively.
-bool Bridged(IDirect3DDevice9* game, IDirect3DSwapChain9* chain, HWND target)
+bool Bridged(IDirect3DDevice9* game, IDirect3DSwapChain9* chain, HWND target, const RECT* source, const RECT* dest)
 {
     if (inPresent)
         return false;
@@ -947,7 +1101,7 @@ bool Bridged(IDirect3DDevice9* game, IDirect3DSwapChain9* chain, HWND target)
     if (FAILED(game->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)))
         return false;
     inPresent = true;
-    const bool done = bridge.Present(game, back.Get());
+    const bool done = bridge.Present(game, back.Get(), source, dest);
     inPresent = false;
     if (!done)
         ++status.native;
@@ -957,7 +1111,7 @@ bool Bridged(IDirect3DDevice9* game, IDirect3DSwapChain9* chain, HWND target)
 HRESULT STDMETHODCALLTYPE HookPresent(IDirect3DDevice9* device, const RECT* source, const RECT* dest, HWND window,
                                       const RGNDATA* dirty)
 {
-    if (Bridged(device, nullptr, window))
+    if (Bridged(device, nullptr, window, source, dest))
         return S_OK;
     const bool outer = !inPresent;
     inPresent = true;
@@ -968,7 +1122,7 @@ HRESULT STDMETHODCALLTYPE HookPresent(IDirect3DDevice9* device, const RECT* sour
 HRESULT STDMETHODCALLTYPE HookPresentEx(IDirect3DDevice9Ex* device, const RECT* source, const RECT* dest, HWND window,
                                         const RGNDATA* dirty, DWORD flags)
 {
-    if (!(flags & D3DPRESENT_DONOTFLIP) && Bridged(device, nullptr, window))
+    if (!(flags & D3DPRESENT_DONOTFLIP) && Bridged(device, nullptr, window, source, dest))
         return S_OK;
     const bool outer = !inPresent;
     inPresent = true;
@@ -980,7 +1134,7 @@ HRESULT STDMETHODCALLTYPE HookChain(IDirect3DSwapChain9* chain, const RECT* sour
                                     const RGNDATA* dirty, DWORD flags)
 {
     ComPtr<IDirect3DDevice9> device;
-    if (!inPresent && SUCCEEDED(chain->GetDevice(&device)) && Bridged(device.Get(), chain, window))
+    if (!inPresent && SUCCEEDED(chain->GetDevice(&device)) && Bridged(device.Get(), chain, window, source, dest))
         return S_OK;
     const bool outer = !inPresent;
     inPresent = true;
@@ -991,45 +1145,51 @@ HRESULT STDMETHODCALLTYPE HookChain(IDirect3DSwapChain9* chain, const RECT* sour
 
 // A fullscreen D3D9 device owns the display, and the host's swap chain on its window would never
 // be seen; Windowed=1 keeps the game's own window at its size. [Dx9X86] ForceWindowed=0 opts out.
-void Prepare(D3DPRESENT_PARAMETERS* params)
+// The host presents at the interval the game asked for. A windowed D3D9 device takes only the
+// default, immediate and one, so a fullscreen request for two, three or four is made one in D3D9.
+UINT Prepare(D3DPRESENT_PARAMETERS* params)
 {
     if (!params)
-        return;
-    if (!params->Windowed && Setting(L"ForceWindowed", true))
-    {
-        params->Windowed = TRUE;
-        params->FullScreen_RefreshRateInHz = 0;
-        Log("fullscreen %ux%u requested; running windowed so the host's swap chain is visible", params->BackBufferWidth,
-            params->BackBufferHeight);
-    }
-    bridge.syncInterval = params->PresentationInterval == D3DPRESENT_INTERVAL_IMMEDIATE ? 0
+        return 1;
+    const UINT interval = params->PresentationInterval == D3DPRESENT_INTERVAL_IMMEDIATE ? 0
                           : params->PresentationInterval == D3DPRESENT_INTERVAL_TWO     ? 2
                           : params->PresentationInterval == D3DPRESENT_INTERVAL_THREE   ? 3
                           : params->PresentationInterval == D3DPRESENT_INTERVAL_FOUR    ? 4
                                                                                         : 1;
+    if (!params->Windowed && Setting(L"ForceWindowed", true))
+    {
+        params->Windowed = TRUE;
+        params->FullScreen_RefreshRateInHz = 0;
+        if (interval > 1)
+            params->PresentationInterval = D3DPRESENT_INTERVAL_ONE;
+        Log("fullscreen %ux%u at interval %u requested; running windowed so the host's swap chain is visible",
+            params->BackBufferWidth, params->BackBufferHeight, interval);
+    }
+    return interval;
+}
+// The copy of the back buffer belongs to the device the host serves and goes before that device resets.
+void PrepareReset(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* params)
+{
+    std::lock_guard guard(lock);
+    if (device == bridge.device)
+        bridge.Drop();
+    bridge.SetInterval(device, Prepare(params));
 }
 HRESULT STDMETHODCALLTYPE HookReset(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* params)
 {
-    {
-        std::lock_guard guard(lock);
-        bridge.Drop();
-        Prepare(params);
-    }
+    PrepareReset(device, params);
     return reset9(device, params);
 }
 HRESULT STDMETHODCALLTYPE HookResetEx(IDirect3DDevice9Ex* device, D3DPRESENT_PARAMETERS* params, D3DDISPLAYMODEEX* mode)
 {
-    {
-        std::lock_guard guard(lock);
-        bridge.Drop();
-        Prepare(params);
-    }
+    PrepareReset(device, params);
     return reset9Ex(device, params, params && params->Windowed ? nullptr : mode);
 }
 
-void HookDevice(IDirect3DDevice9* device)
+void HookDevice(IDirect3DDevice9* device, UINT interval)
 {
     std::lock_guard guard(lock);
+    bridge.SetInterval(device, interval);
     auto table = *reinterpret_cast<void***>(device);
     Replace(&table[17], reinterpret_cast<void*>(HookPresent), reinterpret_cast<void**>(&present9));
     Replace(&table[16], reinterpret_cast<void*>(HookReset), reinterpret_cast<void**>(&reset9));
@@ -1048,20 +1208,20 @@ void HookDevice(IDirect3DDevice9* device)
 HRESULT STDMETHODCALLTYPE HookCreate(IDirect3D9* api, UINT adapter, D3DDEVTYPE type, HWND window, DWORD flags,
                                      D3DPRESENT_PARAMETERS* params, IDirect3DDevice9** out)
 {
-    Prepare(params);
+    const UINT interval = Prepare(params);
     const auto result = create9(api, adapter, type, window, flags, params, out);
     if (SUCCEEDED(result) && out && *out)
-        HookDevice(*out);
+        HookDevice(*out, interval);
     return result;
 }
 HRESULT STDMETHODCALLTYPE HookCreateEx(IDirect3D9Ex* api, UINT adapter, D3DDEVTYPE type, HWND window, DWORD flags,
                                        D3DPRESENT_PARAMETERS* params, D3DDISPLAYMODEEX* mode, IDirect3DDevice9Ex** out)
 {
-    Prepare(params);
+    const UINT interval = Prepare(params);
     const auto result =
         create9Ex(api, adapter, type, window, flags, params, params && params->Windowed ? nullptr : mode, out);
     if (SUCCEEDED(result) && out && *out)
-        HookDevice(*out);
+        HookDevice(*out, interval);
     return result;
 }
 void HookApi(IDirect3D9* api)
