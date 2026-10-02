@@ -1472,6 +1472,15 @@ void MenuCommon::UpdateMenuInputMode(RenderMenuContext& ctx)
     }
 }
 
+// XeFG on the Vulkan final image: the FG key and the menu section that switch it.
+static bool VulkanFinalImageFG(State& state, Config* config)
+{
+    return state.swapchainApi == API::Vulkan && config->DlssNrPresent.value_or_default() &&
+           config->DlssNrEnabled.value_or_default() &&
+           DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel &&
+           state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::XeFG;
+}
+
 void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
@@ -1485,7 +1494,8 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
             inputFG = false;
 
             if (state.activeFgInput != FGInput::NoFG && state.activeFgOutput != FGOutput::NoFG &&
-                (state.currentFGSwapchain != nullptr || state.activeFgInput == FGInput::NvngxFG))
+                (state.currentFGSwapchain != nullptr || state.activeFgInput == FGInput::NvngxFG ||
+                 VulkanFinalImageFG(state, config)))
             {
                 config->FGEnabled = !config->FGEnabled.value_or_default();
                 LOG_DEBUG("FG toggle key pressed, setting FGEnabled to {}", config->FGEnabled.value_or_default());
@@ -6052,17 +6062,12 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         }
     }
 
-    if (state.swapchainApi == API::Vulkan && config->DlssNrPresent.value_or_default() &&
-        config->DlssNrEnabled.value_or_default() && DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel &&
-        state.activeFgInput == FGInput::Upscaler &&
-        state.activeFgOutput == FGOutput::XeFG)
+    if (VulkanFinalImageFG(state, config))
     {
         ImGui::SeparatorText("Frame Generation (Vulkan XeFG)");
         bool enabled = config->FGEnabled.value_or_default();
         if (ImGui::Checkbox("Active##VulkanXeFG", &enabled))
             config->FGEnabled = enabled;
-        if (enabled)
-            ImGui::TextDisabled("Close this menu to display generated frames.");
         int count = config->FGXeFGInterpolationCount.value_or(2);
         if (ImGui::SliderInt("Interpolated frames##VulkanXeFG", &count, 1, 4,
                              "%d", ImGuiSliderFlags_AlwaysClamp))
