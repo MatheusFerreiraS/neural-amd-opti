@@ -14,7 +14,7 @@ if not exist "%SMOKE%\OptiScaler" mkdir "%SMOKE%\OptiScaler"
 for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_ROOT=%%I"
 call "%VS_ROOT%\VC\Auxiliary\Build\vcvarsall.bat" x64 -vcvars_ver=14.44 >nul
 if errorlevel 1 exit /b 1
-cl /nologo /std:c++20 /EHsc /O2 /W3 /utf-8 tests\dx12_final_image_smoke.cpp /Fe"%SMOKE%\dx12_final_image_smoke.exe" /Fo"%SMOKE%\dx12_final_image_smoke.obj" /link d3dcompiler.lib user32.lib dbghelp.lib
+cl /nologo /std:c++20 /EHsc /O2 /W3 /utf-8 tests\dx12_final_image_smoke.cpp /Fe"%SMOKE%\dx12_final_image_smoke.exe" /Fo"%SMOKE%\dx12_final_image_smoke.obj" /link d3dcompiler.lib user32.lib gdi32.lib dbghelp.lib
 if errorlevel 1 exit /b 1
 copy /y "exports\release-local\OptiScaler.dll" "%SMOKE%\dxgi.dll" >nul || exit /b 1
 copy /y "OptiScaler.ini" "%SMOKE%\OptiScaler.template.ini" >nul || exit /b 1
@@ -42,7 +42,7 @@ exit /b %FAILED%
 echo === dx12_final_image_smoke %*
 "%SMOKE%\dx12_final_image_smoke.exe" %* %LOCK%
 if errorlevel 1 set "FAILED=1"
-for %%L in (OptiScaler.log dx12_smoke_result.txt) do if exist "%SMOKE%\%%L" copy /y "%SMOKE%\%%L" "%SMOKE%\%~1%~2-%%L" >nul
+for %%L in (OptiScaler.log amd_presr.log dx12_smoke_result.txt) do if exist "%SMOKE%\%%L" copy /y "%SMOKE%\%%L" "%SMOKE%\%~1%~2-%%L" >nul
 exit /b 0
 :usage
 echo usage: %~nx0 ^<runtime dll^> ^<dlssnr_on_amd_weights.bin^> ^<XeFG folder^> [scenario args...]

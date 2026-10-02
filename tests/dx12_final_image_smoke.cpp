@@ -465,8 +465,10 @@ struct App
         readBack->Unmap(0, nullptr);
     }
 
+    // Over the frame right of 35% of its width: a driver performance overlay may draw on the left.
     ProbeResult Compare()
     {
+        const UINT left = width * 35 / 100;
         void* a = nullptr;
         void* b = nullptr;
         Check(readBack->Map(0, nullptr, &a), "Map");
@@ -476,7 +478,7 @@ struct App
         {
             auto rowA = (const unsigned char*) a + UINT64(y) * footprint.Footprint.RowPitch;
             auto rowB = (const unsigned char*) b + UINT64(y) * footprint.Footprint.RowPitch;
-            for (UINT x = 0; x < width; ++x)
+            for (UINT x = left; x < width; ++x)
             {
                 int worst = 0;
                 for (int c = 0; c < 3; ++c)
@@ -490,7 +492,7 @@ struct App
         }
         readBack->Unmap(0, nullptr);
         readReference->Unmap(0, nullptr);
-        const double pixels = double(width) * height;
+        const double pixels = double(width - left) * height;
         return { changed / pixels, sum / (pixels * 3) };
     }
 
@@ -525,6 +527,76 @@ struct App
                 Fail("Present while a key is held", hr);
         }
         PostMessageW(window, WM_KEYUP, vk, up);
+    }
+
+    void Render(double seconds, bool (*pump)())
+    {
+        const auto until = GetTickCount64() + ULONGLONG(seconds * 1000);
+        while (GetTickCount64() < until)
+        {
+            pump();
+            const HRESULT hr = Frame(nullptr);
+            if (FAILED(hr))
+                Fail("Present while driving the menu", hr);
+        }
+    }
+
+    // A real cursor move and click, as the menu polls both. Places are those of a 1280x720 window at the
+    // default menu scale, where the menu opens centred with its pages down the left.
+    void Click(LONG x, LONG y, bool (*pump)())
+    {
+        SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        POINT point { x, y };
+        ClientToScreen(window, &point);
+        SetCursorPos(point.x, point.y);
+        Render(0.3, pump);
+        INPUT click[2] {};
+        click[0].type = click[1].type = INPUT_MOUSE;
+        click[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+        click[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        SendInput(1, &click[0], sizeof(INPUT));
+        Render(0.2, pump);
+        SendInput(1, &click[1], sizeof(INPUT));
+        Render(0.5, pump);
+        // Off the window, as a hand leaves the mouse, so the menu does not find it over a control when it reopens.
+        SetCursorPos(0, 0);
+        SetWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+    }
+
+    // What the window shows, the menu over frame generation's output included, as <name>.bmp.
+    void Capture(const char* name)
+    {
+        RECT client {};
+        GetClientRect(window, &client);
+        HDC screen = GetDC(window);
+        HDC memory = CreateCompatibleDC(screen);
+        BITMAPINFO info {};
+        info.bmiHeader = { sizeof(BITMAPINFOHEADER), client.right, -client.bottom, 1, 32 };
+        void* bits = nullptr;
+        HBITMAP bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+        SelectObject(memory, bitmap);
+        PrintWindow(window, memory, PW_CLIENTONLY | PW_RENDERFULLCONTENT);
+        BITMAPFILEHEADER file { 0x4D42 };
+        file.bfOffBits = sizeof(file) + sizeof(BITMAPINFOHEADER);
+        std::ofstream out(Here() / (std::string(name) + ".bmp"), std::ios::binary);
+        out.write((const char*) &file, sizeof(file));
+        out.write((const char*) &info.bmiHeader, sizeof(BITMAPINFOHEADER));
+        out.write((const char*) bits, std::streamsize(client.right) * client.bottom * 4);
+        DeleteObject(bitmap);
+        DeleteDC(memory);
+        ReleaseDC(window, screen);
+    }
+
+    // Sets the Model scale slider on the NR page, where the menu opens, a fifth of the way along (about 0.6)
+    // and closes the menu.
+    void ChangeModelScale(bool (*pump)())
+    {
+        PressKey(VK_INSERT, true, pump);
+        Render(1.0, pump);
+        if (options.dump)
+            Capture("scale-menu");
+        Click(372 + 126 / 5, 395, pump);
+        PressKey(VK_INSERT, true, pump);
     }
 
     void DebugMessages(const char* phase)
@@ -631,22 +703,31 @@ static int Child(const Options& options)
     struct Step
     {
         const char* phase; // measured after the action, for `seconds`
-        int key;           // virtual key to post first, 0 for none, -1 to resize
+        int key;           // key to press first; 0 none, -1 resize, -2 Model scale from the menu
         double delay;      // seconds to wait after the action before measuring
         double seconds;
     };
     const Step steps[] = {
-        { "steady", 0, 0, 4 },           { "menu-open", VK_INSERT, 1, 4 }, { "menu-closed", VK_INSERT, 1, 3 },
-        { "fg-off", VK_END, 1.5, 3 },    { "fg-on", VK_END, 2.5, 4 },      { "nr-off", VK_NUMPAD5, 1.5, 3 },
-        { "nr-on", VK_NUMPAD5, 2.5, 4 }, { "resized", -1, 3, 4 },          { "menu-resized", VK_INSERT, 1, 3 },
+        { "steady", 0, 0, 4 },
+        { "menu-open", VK_INSERT, 1, 4 },
+        { "menu-closed", VK_INSERT, 1, 3 },
+        { "fg-off", VK_END, 1.5, 3 },
+        { "fg-on", VK_END, 2.5, 4 },
+        { "nr-off", VK_NUMPAD5, 1.5, 3 },
+        { "nr-on", VK_NUMPAD5, 2.5, 4 },
+        { "scale", -2, 2.5, 4 },
+        { "resized", -1, 3, 4 },
+        { "menu-resized", VK_INSERT, 1, 3 },
         { "end", VK_INSERT, 1, 2 },
     };
     for (const auto& step : steps)
     {
         if (step.key > 0)
             app.PressKey(step.key, step.key == VK_INSERT || step.key == VK_END, Pump);
-        else if (step.key < 0)
+        else if (step.key == -1)
             app.Resize(1600, 900);
+        else if (step.key == -2)
+            app.ChangeModelScale(Pump);
         auto begin = Clock::now();
         while (Seconds(begin) < step.delay)
         {
@@ -660,12 +741,12 @@ static int Child(const Options& options)
         const UINT64 frameStart = app.frame;
         begin = Clock::now();
         std::vector<App::ProbeResult> probes;
-        double nextProbe = step.seconds / 4;
+        double nextProbe = step.seconds / 8;
         while (Seconds(begin) < step.seconds)
         {
             Pump();
             App::ProbeResult probe;
-            const bool probeNow = Seconds(begin) >= nextProbe && probes.size() < 3;
+            const bool probeNow = Seconds(begin) >= nextProbe && probes.size() < 6;
             const HRESULT hr = app.Frame(probeNow ? &probe : nullptr);
             if (FAILED(hr))
                 Fail(step.phase, hr);
@@ -674,22 +755,25 @@ static int Child(const Options& options)
                 if (probes.empty() && app.options.dump)
                     app.Dump(step.phase);
                 probes.push_back(probe);
-                nextProbe += step.seconds / 4;
+                nextProbe += step.seconds / 8;
             }
         }
         const double elapsed = Seconds(begin);
         app.swapchain->GetLastPresentCount(&presentEnd);
-        // Probe frames wait for the GPU; count them out of the rate but keep them in the ratio.
+        // Probe frames wait for the GPU and count in the rate. least is the probe NR changed least: a frame
+        // that missed NR shows there.
         const UINT64 frames = app.frame - frameStart;
-        double changed = 0, mean = 0;
+        double changed = 0, least = 1, mean = 0;
         for (auto& p : probes)
         {
             changed = std::max(changed, p.changed);
+            least = std::min(least, p.changed);
             mean = std::max(mean, p.mean);
         }
-        Out("phase %s frames=%llu seconds=%.2f fps=%.1f presents=%u ratio=%.2f changed=%.4f mean=%.3f size=%ux%u",
+        Out("phase %s frames=%llu seconds=%.2f fps=%.1f presents=%u ratio=%.2f changed=%.4f least=%.4f mean=%.3f "
+            "size=%ux%u",
             step.phase, frames, elapsed, frames / elapsed, presentEnd - presentStart,
-            frames ? double(presentEnd - presentStart) / frames : 0.0, changed, mean, app.width, app.height);
+            frames ? double(presentEnd - presentStart) / frames : 0.0, changed, least, mean, app.width, app.height);
         app.DebugMessages(step.phase);
     }
     app.Idle();
@@ -759,7 +843,7 @@ static int Count(const std::string& text, const std::string& needle)
 
 struct PhaseResult
 {
-    double ratio = 0, changed = -1, fps = 0;
+    double ratio = 0, changed = -1, least = -1, fps = 0;
 };
 
 static std::map<std::string, PhaseResult> ParsePhases(const std::string& text)
@@ -770,8 +854,9 @@ static std::map<std::string, PhaseResult> ParsePhases(const std::string& text)
     {
         char name[64] {};
         PhaseResult r;
-        if (std::sscanf(line.c_str(), "phase %63s frames=%*u seconds=%*f fps=%lf presents=%*u ratio=%lf changed=%lf",
-                        name, &r.fps, &r.ratio, &r.changed) == 4)
+        if (std::sscanf(line.c_str(),
+                        "phase %63s frames=%*u seconds=%*f fps=%lf presents=%*u ratio=%lf changed=%lf least=%lf", name,
+                        &r.fps, &r.ratio, &r.changed, &r.least) == 5)
             phases[name] = r;
     }
     return phases;
@@ -838,6 +923,7 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
 
     const auto result = ReadAll(dir / L"dx12_smoke_result.txt");
     const auto log = ReadAll(dir / L"OptiScaler.log");
+    const auto runtimeLog = ReadAll(dir / L"amd_presr.log");
     const auto phases = ParsePhases(result);
     int failures = 0;
     auto expect = [&](bool ok, const char* what)
@@ -853,17 +939,31 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
            "menu opened twice");
     expect(Count(log, "OptiInput::ApplyMenuVisibilityChangeLocked menu visibility changed 1 -> 0") >= 2,
            "menu closed twice");
-    for (auto name : { "steady", "menu-open", "menu-closed", "fg-off", "fg-on", "nr-on", "resized", "menu-resized" })
+    // The runtime falls back for a frame on its own timeouts; a loaded machine can cause them, so they are counted.
+    std::printf("info: NR runtime timeouts %d, frames left without NR while the runtime was busy %d\n",
+                Count(runtimeLog, "AMD timeout"), Count(log, "runtime still busy, frame left without NR"));
+    // A Model scale change restarts the runtime's history for its settings.
+    int settingsResets = 0;
+    for (size_t at = runtimeLog.find("AMD history reset: frame="); at != std::string::npos;
+         at = runtimeLog.find("AMD history reset: frame=", at + 1))
     {
-        std::string what = std::string("NR changed the presented frame in ") + name;
-        expect(phase(name).changed > 0.3, what.c_str());
+        const auto line = runtimeLog.substr(at, runtimeLog.find("\n", at) - at);
+        settingsResets += std::atoi(line.c_str() + 25) > 30 && line.find("settings=1") != std::string::npos;
+    }
+    expect(settingsResets >= 1, "Model scale changed from the menu during the session");
+    for (auto name :
+         { "steady", "menu-open", "menu-closed", "fg-off", "fg-on", "nr-on", "scale", "resized", "menu-resized" })
+    {
+        std::string what = std::string("NR changed every probed frame in ") + name;
+        expect(phase(name).least > 0.3, what.c_str());
     }
     // The menu's "Off" notification covers well under 5% of the frame; NR changes most of it.
     expect(phase("nr-off").changed < 0.05, "NR off leaves the presented frame untouched");
     if (fg)
     {
         expect(Count(log, "XeFG swapchain created") >= 1, "XeFG swapchain created");
-        for (auto name : { "steady", "menu-open", "menu-closed", "fg-on", "nr-on", "resized", "menu-resized" })
+        for (auto name :
+             { "steady", "menu-open", "menu-closed", "fg-on", "nr-off", "nr-on", "scale", "resized", "menu-resized" })
         {
             std::string what = std::string("XeFG presents generated frames in ") + name + " (ratio >= 2.4)";
             expect(phase(name).ratio >= 2.4, what.c_str());
