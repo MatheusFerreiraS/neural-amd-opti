@@ -104,10 +104,41 @@ static int SettingsResets(const std::string& runtimeLog)
 // ---------------------------------------------------------------- child
 
 // Any crash, on any thread: the faulting stack, symbolized when a PDB sits beside the module.
+// Every thread's stack of this process, written by a helper process into <file> under <title>: this one may be
+// stopped holding any lock.
+static void StacksFromOutside(const wchar_t* file, const std::wstring& title)
+{
+    wchar_t self[MAX_PATH] {};
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    std::wstring command = L"\"" + std::wstring(self) + L"\" --stacks " + std::to_wstring(GetCurrentProcessId()) +
+                           L" " + file + L" " + title;
+    STARTUPINFOW startup { sizeof(startup) };
+    PROCESS_INFORMATION process {};
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &process))
+        return;
+    WaitForSingleObject(process.hProcess, 30000);
+    CloseHandle(process.hProcess);
+    CloseHandle(process.hThread);
+}
+
 static LONG WINAPI Crash(EXCEPTION_POINTERS* pointers)
 {
-    Out("child-crash code=0x%08X address=%p", (unsigned) pointers->ExceptionRecord->ExceptionCode,
-        pointers->ExceptionRecord->ExceptionAddress);
+    // One thread reports; another that crashes meanwhile waits for the process to end.
+    static std::atomic<bool> reporting = false;
+    if (reporting.exchange(true))
+        Sleep(INFINITE);
+    HMODULE faulting = nullptr;
+    wchar_t faultingName[MAX_PATH] = L"?";
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR) pointers->ExceptionRecord->ExceptionAddress, &faulting))
+        GetModuleFileNameW(faulting, faultingName, MAX_PATH);
+    Out("child-crash code=0x%08X address=%p in %ls+0x%llx thread=%lu",
+        (unsigned) pointers->ExceptionRecord->ExceptionCode, pointers->ExceptionRecord->ExceptionAddress,
+        fs::path(faultingName).filename().c_str(),
+        (unsigned long long) ((DWORD64) pointers->ExceptionRecord->ExceptionAddress - (DWORD64) faulting),
+        GetCurrentThreadId());
+    // Every thread at the moment of the crash, into crash-stacks.txt, before anything here can block.
+    StacksFromOutside(L"crash-stacks.txt", L"crash");
     const HANDLE process = GetCurrentProcess();
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
     SymInitializeW(process, Here().c_str(), TRUE);
@@ -847,19 +878,7 @@ static int Child(const Options& options)
                         continue;
                     sampled = number;
                     ++samples;
-                    wchar_t self[MAX_PATH] {};
-                    GetModuleFileNameW(nullptr, self, MAX_PATH);
-                    std::wstring command = L"\"" + std::wstring(self) + L"\" --stacks " +
-                                           std::to_wstring(GetCurrentProcessId()) + L" " + std::to_wstring(number);
-                    STARTUPINFOW startup { sizeof(startup) };
-                    PROCESS_INFORMATION process {};
-                    if (CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup,
-                                       &process))
-                    {
-                        WaitForSingleObject(process.hProcess, 30000);
-                        CloseHandle(process.hProcess);
-                        CloseHandle(process.hThread);
-                    }
+                    StacksFromOutside(L"stall-stacks.txt", L"stall-at-frame-" + std::to_wstring(number));
                     Out("stall frame=%llu ms=%llu stacks in stall-stacks.txt", number, GetTickCount64() - started);
                 }
             })
@@ -1357,14 +1376,16 @@ static int ClickHelper(LONG x, LONG y, DWORD holdMs)
 
 int wmain(int argc, wchar_t** argv)
 {
-    if (argc == 4 && std::wstring(argv[1]) == L"--stacks")
+    if (argc == 5 && std::wstring(argv[1]) == L"--stacks")
     {
         const DWORD pid = std::wcstoul(argv[2], nullptr, 10);
         HANDLE process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
         if (!process)
             return 1;
-        const std::string title = "stall at frame " + std::to_string(std::wcstoull(argv[3], nullptr, 10));
-        WriteStacks(process, pid, Here() / "stall-stacks.txt", title.c_str());
+        std::string title;
+        for (const wchar_t* c = argv[4]; *c; ++c)
+            title += char(*c);
+        WriteStacks(process, pid, Here() / argv[3], title.c_str());
         CloseHandle(process);
         return 0;
     }
