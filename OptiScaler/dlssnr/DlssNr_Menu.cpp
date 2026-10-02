@@ -251,6 +251,10 @@ void RenderMenu(Config* config, float menuResScale)
                                      "\nso this session runs no NR."
                                    : "The final image runs on the danielblnc runtime only. This session's runtime"
                                      "\nruns inside an upscaler call, so a game without one gets no NR.");
+        if (present && State::Instance().currentFeature != nullptr)
+            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "%s",
+                               "This game has an upscaler, and NR runs inside it. Final image still sets XeFG's"
+                               "\nmotion vector options for frame generation; turn it off for this game.");
 
         // With more than one runtime installed, choose the one the next launch uses. This session keeps the
         // one it started with: each installs its own D3D12 hooks as the device is created.

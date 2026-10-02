@@ -4,7 +4,7 @@
 //   dx12_final_image_smoke.exe <nr|fg> [--bgra] [--debug-layer] [--lock <dir>] [--timeout <seconds>]
 //                              [--log-level <OptiScaler LogLevel, 2 by default>] [--cpu-ms <game CPU ms per frame>]
 //                              [--dump] [--lifecycle] [--nr-off-start] [--bad-runtime] [--r10] [--no-probe]
-//                              [--set <Section/Key=Value>]
+//                              [--set <Section/Key=Value>] [--expect-2x]
 //
 // The parent writes OptiScaler.ini from OptiScaler.template.ini, takes the GPU lock, runs itself as a
 // child with a timeout and asserts on the child's results and on OptiScaler.log. The child renders a
@@ -18,6 +18,7 @@
 // --nr-off-start starts with NR off in the INI and turns it on with Numpad 5.
 // --bad-runtime puts another DLL in dlssnr_amd_pass1.dll's place for the run, so the runtime fails to load.
 // --r10 presents R10G10B10A2 frames, which final-image NR leaves alone and XeFG gets no guides for.
+// --expect-2x expects 2X where frame generation runs, for a provider that allows no MFG.
 #define NOMINMAX
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
@@ -192,6 +193,7 @@ struct Options
     bool badRuntime = false;  // another DLL as dlssnr_amd_pass1.dll: the runtime fails to load
     bool noProbe = false;     // no probe in the measured phases, so nothing but the game and OptiScaler use the frame
     bool stallStacks = false; // every thread's stack into stall-stacks.txt when a frame takes over 120 ms
+    bool expect2x = false;    // XeFG may give one generated frame only (UnlockMFG=false): 2X, not 3X
 };
 
 // The frame in progress and when it began, for the stall sampler.
@@ -1399,8 +1401,12 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
     {
         expect(Count(log, "XeFG swapchain created") >= 1, "XeFG swapchain created");
         for (auto name : generating)
-            expect(phase(name).ratio >= 2.4,
-                   (std::string("XeFG presents generated frames in ") + name + " (ratio >= 2.4)").c_str());
+            if (options.expect2x)
+                expect(phase(name).ratio > 1.7 && phase(name).ratio < 2.3,
+                       (std::string("XeFG presents one generated frame per frame in ") + name + " (2X)").c_str());
+            else
+                expect(phase(name).ratio >= 2.4,
+                       (std::string("XeFG presents generated frames in ") + name + " (ratio >= 2.4)").c_str());
         for (auto name : single)
             expect(phase(name).ratio > 0.9 && phase(name).ratio < 1.2,
                    (std::string("one present per game frame in ") + name).c_str());
@@ -1485,6 +1491,8 @@ int wmain(int argc, wchar_t** argv)
             options.noProbe = true;
         else if (arg == L"--stall-stacks")
             options.stallStacks = true;
+        else if (arg == L"--expect-2x")
+            options.expect2x = true;
         else if (arg == L"--cpu-ms" && i + 1 < argc)
             options.cpuMs = std::wcstod(argv[++i], nullptr);
         else if (arg == L"--model-scale" && i + 1 < argc)

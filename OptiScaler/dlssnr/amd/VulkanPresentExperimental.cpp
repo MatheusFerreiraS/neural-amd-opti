@@ -2,6 +2,7 @@
 #include "VulkanPresentExperimental.h"
 #include "PresentExperimental.h"
 #include "AmdBridge.h"
+#include "ChildFgSettings.h"
 #include "../backend/Selector.h"
 
 #include <Config.h>
@@ -147,7 +148,7 @@ struct FgPresenter
     ComPtr<ID3D12CommandQueue> queue;
     uint64_t serial = 0;
     uint32_t frameId = 0;
-    int interpolated = 0;
+    AmdPresentExperimental::ChildFgSettings settings;
     int maximum = 0;
     bool enabled = false;
     bool visible = false;
@@ -199,7 +200,8 @@ struct FgPresenter
         output.Destroy();
         window = nullptr;
         frameId = serial = 0;
-        interpolated = maximum = 0;
+        maximum = 0;
+        settings.Reset();
         enabled = false;
         visible = false;
         resetOnResume = true;
@@ -328,14 +330,8 @@ struct FgPresenter
                  ID3D12CommandQueue* queue)
     {
         if (!swap || !guides.motion || !guides.depth) return false;
-        const int requested = std::clamp(Config::Instance()->FGXeFGInterpolationCount.value_or(2), 1, maximum);
-        if (requested != interpolated)
-        {
-            if (XeFGProxy::SetNumInterpolatedFrames() &&
-                XeFGProxy::SetNumInterpolatedFrames()(context, requested) != XEFG_SWAPCHAIN_RESULT_SUCCESS)
-                return false;
-            interpolated = requested;
-        }
+        if (!settings.Apply(context, maximum, "Vulkan"))
+            return false;
         ComPtr<ID3D12Resource> back;
         if (FAILED(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&back))) ||
             FAILED(allocator->Reset()) || FAILED(command->Reset(allocator.Get(), nullptr)))
@@ -457,8 +453,9 @@ struct Bridge
     void Release()
     {
         fg.Release();
-        if (device && queue)
-            vkQueueWaitIdle(queue);
+        // The game may be submitting to its queue from another thread; our own fence needs no queue access.
+        if (device && fence && submitted)
+            vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
         if (shared12)
             AmdPresentExperimental::BeforeResize();
         shared12.Reset();
@@ -492,6 +489,30 @@ struct Bridge
         swapchain = VK_NULL_HANDLE; queue = VK_NULL_HANDLE; submitted = false;
         copyAllowed = false; stopped = false;
         fgFailed = false;
+    }
+
+    // The D3D12 and D3D11 objects depend on the GPU only, so a new VkDevice on the same GPU keeps them, and the
+    // final-image NR context made on them keeps working.
+    bool SameAdapter(VkPhysicalDevice next) const
+    {
+        LUID luid {};
+        if (d12)
+            luid = d12->GetAdapterLuid();
+        else
+        {
+            ComPtr<IDXGIDevice> dxgi;
+            ComPtr<IDXGIAdapter> adapter;
+            DXGI_ADAPTER_DESC description {};
+            if (!d11 || FAILED(d11.As(&dxgi)) || FAILED(dxgi->GetAdapter(&adapter)) ||
+                FAILED(adapter->GetDesc(&description)))
+                return false;
+            luid = description.AdapterLuid;
+        }
+        VkPhysicalDeviceIDProperties id { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES };
+        VkPhysicalDeviceProperties2 properties { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+        properties.pNext = &id;
+        vkGetPhysicalDeviceProperties2(next, &properties);
+        return id.deviceLUIDValid && std::memcmp(&luid, id.deviceLUID, sizeof(luid)) == 0;
     }
 
     bool InitD3D11()
@@ -782,6 +803,27 @@ struct Bridge
         vkCmdPipelineBarrier(command, sourceStage, targetStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
 
+    // The game's wait semaphores are spent once a submit has waited on them. Until the present gets ours, it
+    // waits on none.
+    static void Spent(VkPresentInfoKHR& present)
+    {
+        present.waitSemaphoreCount = 0;
+        present.pWaitSemaphores = nullptr;
+    }
+
+    // After a failed step the present goes out once our last submit has finished. Returns false only when the
+    // device is lost.
+    bool Settle()
+    {
+        if (!submitted)
+            return true;
+        const VkResult result = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+        submitted = result != VK_SUCCESS;
+        if (result != VK_SUCCESS)
+            LOG_ERROR("Vulkan final-image bridge: fence wait returned {}", (int) result);
+        return result != VK_ERROR_DEVICE_LOST;
+    }
+
     bool ProcessShared(VkPresentInfoKHR& present)
     {
         const uint32_t imageIndex = present.pImageIndices[0];
@@ -814,6 +856,7 @@ struct Bridge
         submit.commandBufferCount = 1; submit.pCommandBuffers = &command;
         if (vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS) return false;
         submitted = true;
+        Spent(present);
         if (vkWaitForFences(device, 1, &fence, VK_TRUE, 4'000'000'000ull) != VK_SUCCESS) return false;
         submitted = false;
         sharedInitialized = true;
@@ -981,6 +1024,7 @@ struct Bridge
         submit.commandBufferCount = 1; submit.pCommandBuffers = &command;
         if (vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS) return false;
         submitted = true;
+        Spent(present);
         if (vkWaitForFences(device, 1, &fence, VK_TRUE, 4'000'000'000ull) != VK_SUCCESS) return false;
         submitted = false;
 
@@ -1052,7 +1096,7 @@ void Created(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice devi
     std::lock_guard lock(mutex);
     const bool sameDevice = bridge.device == device;
     bridge.Release();
-    if (!sameDevice)
+    if (!sameDevice && !bridge.SameAdapter(physicalDevice))
     {
         bridge.queue12.Reset();
         bridge.d12.Reset();
@@ -1136,8 +1180,8 @@ bool Process(VkQueue queue, VkPresentInfoKHR& present)
     if (!bridge.Process(present))
     {
         bridge.stopped = true;
-        AmdPresentExperimental::Report("Vulkan NR: copy or synchronization failed; restart required");
-        return false;
+        AmdPresentExperimental::Report("Vulkan NR: copy or synchronization failed; NR is off until the game restarts");
+        return bridge.Settle();
     }
     nrTiming.Add(start, bridge.gpuInterop ? "shared D3D12 image" : "host readback");
     static std::once_flag copiedOnce;
@@ -1163,7 +1207,7 @@ bool PresentGenerated(VkPresentInfoKHR& present)
     }
     bridge.stopped = true;
     bridge.fg.Release();
-    AmdPresentExperimental::Report("Vulkan NR: copy or synchronization failed; restart required");
-    return false;
+    AmdPresentExperimental::Report("Vulkan NR: copy or synchronization failed; NR is off until the game restarts");
+    return bridge.Settle();
 }
 } // namespace AmdVkPresent

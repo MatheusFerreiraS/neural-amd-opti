@@ -2068,7 +2068,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                      "NR/SR remain available");
         }
         if (Config::Instance()->DlssNrPresent.value_or_default() &&
-            Config::Instance()->FGEnabled.value_or_default() &&
             Config::Instance()->FGOutput.value_or_default() == FGOutput::XeFG &&
             Config::Instance()->FGInput.value_or_default() == FGInput::NoFG)
         {

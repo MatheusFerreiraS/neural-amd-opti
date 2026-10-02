@@ -125,6 +125,10 @@ struct Route
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D12Resource> shared;
     GLuint memory = 0, texture = 0, fbo = 0;
+    // The back buffer with OptiScaler's menu and overlays on the NR output, for XeFG. Made when XeFG first runs.
+    ComPtr<ID3D12Resource> overlay;
+    GLuint overlayMemory = 0, overlayTexture = 0, overlayFbo = 0;
+    bool fgPending = false;
     GLuint resolveTexture = 0, resolveFbo = 0;
     GLint samples = 0;
     uint32_t width = 0, height = 0;
@@ -151,16 +155,20 @@ struct Route
     {
         if (sameContext)
         {
-            GLuint framebuffers[] { fbo, resolveFbo };
-            GLuint textures[] { texture, resolveTexture };
-            gl.deleteFramebuffers(2, framebuffers);
-            gl.deleteTextures(2, textures);
-            if (memory != 0)
-                gl.deleteMemoryObjects(1, &memory);
+            GLuint framebuffers[] { fbo, resolveFbo, overlayFbo };
+            GLuint textures[] { texture, resolveTexture, overlayTexture };
+            gl.deleteFramebuffers(3, framebuffers);
+            gl.deleteTextures(3, textures);
+            for (GLuint object : { memory, overlayMemory })
+                if (object != 0)
+                    gl.deleteMemoryObjects(1, &object);
             gl.Clean();
         }
 
         memory = texture = fbo = resolveTexture = resolveFbo = 0;
+        overlayMemory = overlayTexture = overlayFbo = 0;
+        overlay.Reset();
+        fgPending = false;
         width = height = 0;
     }
 
@@ -203,16 +211,10 @@ struct Route
         return true;
     }
 
-    bool Build(uint32_t w, uint32_t h)
+    // A D3D12 texture with its OpenGL view and a framebuffer on that view. Returns its size in bytes, 0 on failure.
+    uint64_t Cross(uint32_t w, uint32_t h, ComPtr<ID3D12Resource>& resource, GLuint& object, GLuint& view,
+                   GLuint& framebuffer)
     {
-        // The D3D12 route sizes its textures on the first frame it sees.
-        if (shared)
-            AmdPresentExperimental::BeforeResize();
-
-        fg.Release();
-        ReleaseGl(true);
-        shared.Reset();
-
         D3D12_HEAP_PROPERTIES heap {};
         heap.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC description {};
@@ -225,39 +227,61 @@ struct Route
 
         HANDLE handle = nullptr;
         if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_SHARED, &description,
-                                                   D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&shared))) ||
-            FAILED(device->CreateSharedHandle(shared.Get(), nullptr, GENERIC_ALL, nullptr, &handle)))
+                                                   D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&resource))) ||
+            FAILED(device->CreateSharedHandle(resource.Get(), nullptr, GENERIC_ALL, nullptr, &handle)))
         {
             LOG_ERROR("OpenGL final-image NR: shared D3D12 texture {}x{} failed", w, h);
-            return false;
+            return 0;
         }
 
         keptHandles.push_back(handle);
         const auto bytes = device->GetResourceAllocationInfo(0, 1, &description).SizeInBytes;
 
         gl.Clean();
-        gl.createMemoryObjects(1, &memory);
+        gl.createMemoryObjects(1, &object);
         const GLint dedicated = 1;
-        gl.memoryObjectParameteriv(memory, GL_DEDICATED_MEMORY_OBJECT_EXT_, &dedicated);
-        gl.importMemoryWin32Handle(memory, bytes, GL_HANDLE_TYPE_D3D12_RESOURCE_EXT_, handle);
-        if (memory == 0 || !gl.Clean())
+        gl.memoryObjectParameteriv(object, GL_DEDICATED_MEMORY_OBJECT_EXT_, &dedicated);
+        gl.importMemoryWin32Handle(object, bytes, GL_HANDLE_TYPE_D3D12_RESOURCE_EXT_, handle);
+        if (object == 0 || !gl.Clean())
         {
             LOG_ERROR("OpenGL final-image NR: importing the D3D12 texture was refused");
-            return false;
+            return 0;
         }
 
-        gl.genTextures(1, &texture);
-        gl.bindTexture(GL_TEXTURE_2D_, texture);
+        gl.genTextures(1, &view);
+        gl.bindTexture(GL_TEXTURE_2D_, view);
         gl.texParameteri(GL_TEXTURE_2D_, GL_TEXTURE_TILING_EXT_, static_cast<GLint>(GL_OPTIMAL_TILING_EXT_));
-        gl.texStorageMem2D(GL_TEXTURE_2D_, 1, GL_RGBA8_, static_cast<GLsizei>(w), static_cast<GLsizei>(h), memory, 0);
+        gl.texStorageMem2D(GL_TEXTURE_2D_, 1, GL_RGBA8_, static_cast<GLsizei>(w), static_cast<GLsizei>(h), object, 0);
         gl.bindTexture(GL_TEXTURE_2D_, 0);
-        gl.genFramebuffers(1, &fbo);
-        gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER_, fbo);
-        gl.framebufferTexture2D(GL_DRAW_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0_, GL_TEXTURE_2D_, texture, 0);
+        gl.genFramebuffers(1, &framebuffer);
+        gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER_, framebuffer);
+        gl.framebufferTexture2D(GL_DRAW_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0_, GL_TEXTURE_2D_, view, 0);
         const auto status = gl.checkFramebufferStatus(GL_DRAW_FRAMEBUFFER_);
+        gl.bindFramebuffer(GL_FRAMEBUFFER_, 0);
+        if (status != GL_FRAMEBUFFER_COMPLETE_ || !gl.Clean())
+        {
+            LOG_ERROR("OpenGL final-image NR: the imported texture cannot be rendered to ({:X})", status);
+            return 0;
+        }
+
+        return bytes;
+    }
+
+    bool Build(uint32_t w, uint32_t h)
+    {
+        // The D3D12 route sizes its textures on the first frame it sees.
+        if (shared)
+            AmdPresentExperimental::BeforeResize();
+
+        fg.Release();
+        ReleaseGl(true);
+        shared.Reset();
+
+        const auto bytes = Cross(w, h, shared, memory, texture, fbo);
+        if (bytes == 0)
+            return false;
 
         // A multisampled default framebuffer is resolved first: one blit cannot resolve and flip.
-        gl.bindFramebuffer(GL_FRAMEBUFFER_, 0);
         gl.getIntegerv(GL_SAMPLES_, &samples);
         if (samples > 1)
         {
@@ -271,23 +295,23 @@ struct Route
             gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER_, resolveFbo);
             gl.framebufferTexture2D(GL_DRAW_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0_, GL_TEXTURE_2D_, resolveTexture, 0);
             gl.bindFramebuffer(GL_FRAMEBUFFER_, 0);
-        }
-
-        if (status != GL_FRAMEBUFFER_COMPLETE_ || !gl.Clean())
-        {
-            LOG_ERROR("OpenGL final-image NR: the imported texture cannot be rendered to ({:X})", status);
-            return false;
+            if (!gl.Clean())
+            {
+                LOG_ERROR("OpenGL final-image NR: the resolve target for {} samples failed", samples);
+                return false;
+            }
         }
 
         width = w;
         height = h;
-        LOG_INFO("OpenGL final-image NR: back buffer {}x{} ({} samples) crosses as a D3D12 texture of {} bytes", w, h,
-                 samples, bytes);
+        LOG_INFO("OpenGL final-image NR: back buffer {}x{} ({} samples) crosses as a D3D12 texture of {} bytes; {} "
+                 "shared handles kept",
+                 w, h, samples, bytes, keptHandles.size());
         return true;
     }
 
     // Y is flipped both ways: OpenGL's origin is bottom left, the D3D12 route's top left.
-    bool BlitIn()
+    bool BlitIn(GLuint target)
     {
         const auto w = static_cast<GLint>(width), h = static_cast<GLint>(height);
         gl.bindFramebuffer(GL_READ_FRAMEBUFFER_, 0);
@@ -298,7 +322,7 @@ struct Route
             gl.bindFramebuffer(GL_READ_FRAMEBUFFER_, resolveFbo);
         }
 
-        gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER_, fbo);
+        gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER_, target);
         gl.blitFramebuffer(0, h, w, 0, 0, 0, w, h, GL_COLOR_BUFFER_BIT_, GL_NEAREST_);
         gl.bindFramebuffer(GL_FRAMEBUFFER_, 0);
 
@@ -329,7 +353,10 @@ bool Wanted()
 
     // Generated frames end with NR; the child window must not keep showing the last one.
     if (!wanted && route.fg.window && (route.fg.enabled || route.fg.visible))
+    {
         route.fg.Pause();
+        LOG_INFO("OpenGL XeFG paused while final-image NR is off");
+    }
 
     return wanted;
 }
@@ -382,7 +409,7 @@ void Process(HWND hwnd, uint32_t width, uint32_t height, uint32_t generation)
     }
 
     const auto start = std::chrono::steady_clock::now();
-    if (!r.BlitIn())
+    if (!r.BlitIn(r.fbo))
     {
         r.Stop("the blit out of the back buffer failed");
         return;
@@ -398,13 +425,12 @@ void Process(HWND hwnd, uint32_t width, uint32_t height, uint32_t generation)
         return;
     }
 
-    r.fg.Step(hwnd, r.device.Get(), r.queue.Get(), r.shared.Get(), r.guides, r.fgFailed);
-
     if (!r.BlitOut())
     {
         r.Stop("the blit back into the back buffer failed");
         return;
     }
+    r.fgPending = true;
 
     if (!r.loggedFirst)
     {
@@ -421,5 +447,32 @@ void Process(HWND hwnd, uint32_t width, uint32_t height, uint32_t generation)
         r.measured = 0;
         r.totalMicros = 0;
     }
+}
+
+void PresentGenerated(HWND hwnd)
+{
+    auto& r = route;
+    if (!r.fgPending || r.stopped)
+        return;
+    r.fgPending = false;
+
+    // The overlay crossing is made the first time XeFG wants a frame at this size.
+    const bool wantFg = Config::Instance()->FGEnabled.value_or_default() &&
+                        State::Instance().activeFgInput == FGInput::Upscaler &&
+                        State::Instance().activeFgOutput == FGOutput::XeFG;
+    if (wantFg && !r.fgFailed && !r.overlay &&
+        r.Cross(r.width, r.height, r.overlay, r.overlayMemory, r.overlayTexture, r.overlayFbo) == 0)
+    {
+        r.fgFailed = true;
+        LOG_ERROR("OpenGL XeFG: the overlay texture failed; NR will continue");
+    }
+    const bool overlaid = wantFg && !r.fgFailed;
+    if (overlaid && !r.BlitIn(r.overlayFbo))
+    {
+        r.Stop("the blit of the overlay failed");
+        return;
+    }
+    r.fg.Step(hwnd, r.device.Get(), r.queue.Get(), overlaid ? r.overlay.Get() : r.shared.Get(), r.shared.Get(),
+              r.guides, r.fgFailed);
 }
 } // namespace AmdGlPresent

@@ -943,9 +943,11 @@ int wmain(int argc, wchar_t** argv)
         FinalImageOn(render);
 
     Step("XeFG SDK reported no warning", Count("Vulkan XeFG SDK:", 0) == 0);
-    Step("no bridge failure in the log",
-         Count("restart required", 0) + Count("presentation failed", 0) + Count("initialization failed", 0) == 0 &&
-             !renderFailed);
+    Step("no bridge failure in the log", Count("restart required", 0) + Count("synchronization failed", 0) +
+                                                     Count("presentation failed", 0) +
+                                                     Count("initialization failed", 0) ==
+                                                 0 &&
+                                             !renderFailed);
 
     stopRender = true;
     render.join();

@@ -7,8 +7,8 @@ rem                                   <folder with libxess_fg.dll and libxell.dl
 rem Without scenario args it runs: nr, fg, fg --bgra, fg --cpu-ms 6 (a game's CPU time per frame),
 rem fg --debug-layer, nr --lifecycle, fg --lifecycle, fg --lifecycle --nr-off-start, nr and fg with
 rem --bad-runtime (another DLL in the runtime's place), fg --r10 (a 10-bit backbuffer, which final-image
-rem NR leaves alone), and fg --lifecycle as rdr.exe (Red Dead Redemption's quirk: a plain first
-rem swapchain, XeFG's on the next).
+rem NR leaves alone), fg with InterpolationCount=auto (3X), fg with UnlockMFG=false (2X), and
+rem fg --lifecycle as rdr.exe (Red Dead Redemption's quirk: a plain first swapchain, XeFG's on the next).
 rem With scenario args, set SMOKE_EXE=rdr.exe first to run them under that name.
 setlocal
 cd /d "%~dp0.."
@@ -47,6 +47,8 @@ call :run fg --lifecycle --nr-off-start
 call :run nr --bad-runtime
 call :run fg --bad-runtime
 call :run fg --r10
+call :run fg --set XeFG/InterpolationCount=auto
+call :run fg --set XeFG/UnlockMFG=false --expect-2x
 set "SMOKE_EXE=rdr.exe"
 call :run fg --lifecycle
 :done
@@ -58,6 +60,7 @@ echo === %SMOKE_EXE% %*
 if errorlevel 1 set "FAILED=1"
 set "NAME=%*"
 set "NAME=%NAME: =%"
+set "NAME=%NAME:/=_%"
 if /i "%SMOKE_EXE%"=="rdr.exe" set "NAME=rdr-%NAME%"
 for %%L in (OptiScaler.log amd_presr.log dx12_smoke_result.txt) do if exist "%SMOKE%\%%L" copy /y "%SMOKE%\%%L" "%SMOKE%\%NAME%-%%L" >nul
 exit /b 0

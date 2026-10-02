@@ -9,6 +9,7 @@
 
 #include <dlssnr/amd/AmdBridge.h>
 #include <dlssnr/amd/PresentExperimental.h>
+#include <dlssnr/backend/Selector.h>
 #include <menu/menu_overlay_base.h>
 #include <menu/menu_overlay_dx.h>
 #include <menu/menu_overlay_dx9.h>
@@ -27,7 +28,7 @@ bool NrWanted()
 {
     const auto config = Config::Instance();
     return AmdPresentExperimental::IsTarget() && config->DlssNrEnabled.value_or_default() &&
-           config->NrBackend.value_or_default() == "daniel";
+           DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
 }
 
 // Chosen at startup, as on D3D11: changing FGInput or FGOutput needs a restart. The menu can still turn final-image

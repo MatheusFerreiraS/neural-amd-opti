@@ -7,6 +7,7 @@
 
 #include <dlssnr/DlssNr.h>
 #include <dlssnr/amd/AmdBridge.h>
+#include <dlssnr/amd/ChildFgSettings.h>
 #include <dlssnr/backend/Selector.h>
 
 #include "input/input_system.h"
@@ -6088,11 +6089,47 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         bool enabled = config->FGEnabled.value_or_default();
         if (ImGui::Checkbox("Active##VulkanXeFG", &enabled))
             config->FGEnabled = enabled;
-        int count = config->FGXeFGInterpolationCount.value_or(2);
-        if (ImGui::SliderInt("Interpolated frames##VulkanXeFG", &count, 1, 4,
-                             "%d", ImGuiSliderFlags_AlwaysClamp))
-            config->FGXeFGInterpolationCount = count;
-        ImGui::TextDisabled("Output: %dx; limited by the XeFG provider", count + 1);
+
+        // The provider's maximum is known once the presenter runs; until then the list stops at 3X.
+        const int maximum = std::max(2, AmdPresentExperimental::childFgMaximum.load());
+        const int live = AmdPresentExperimental::childFgInterpolated.load();
+        const bool autoMode = !config->FGXeFGInterpolationCount.has_value();
+        const int chosen = config->FGXeFGInterpolationCount.value_or(2);
+        char label[32];
+        if (autoMode)
+            std::snprintf(label, sizeof(label), "Auto (%dX)", (live > 0 ? live : 2) + 1);
+        else
+            std::snprintf(label, sizeof(label), "%dX", chosen + 1);
+        ImGui::SameLine(0.0f, 16.0f);
+        ImGui::PushItemWidth(95.0f * menuResScale);
+        if (ImGui::BeginCombo("MFG##VulkanXeFG", label))
+        {
+            if (ImGui::Selectable("Auto", autoMode))
+                config->FGXeFGInterpolationCount = std::nullopt;
+            for (int count = 1; count <= maximum; count++)
+            {
+                char item[8];
+                std::snprintf(item, sizeof(item), "%dX", count + 1);
+                if (ImGui::Selectable(item, !autoMode && chosen == count))
+                    config->FGXeFGInterpolationCount = count;
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::PopItemWidth();
+        ShowHelpMarker("Frames shown per rendered frame\n\n"
+                       "Auto is 3X, or 2X when the XeFG provider allows no MFG.\n"
+                       "Above 4X the generated frames come faster than the display\n"
+                       "refreshes, so VSync or a frame rate cap is needed.");
+
+        bool debugView = config->FGXeFGDebugView.value_or_default();
+        if (ImGui::Checkbox("Debug View##VulkanXeFG", &debugView))
+            config->FGXeFGDebugView = debugView;
+        ShowHelpMarker("Enable XeFG Debug view");
+        ImGui::SameLine(0.0f, 16.0f);
+        ImGui::Checkbox("Only FG##VulkanXeFG", &state.fgOnlyGenerated);
+        ShowHelpMarker("Enable XeFG Debug Feature Only FG");
+        if (live > 0)
+            ImGui::TextDisabled("Output: %dX", live + 1);
     }
 
     // XeFG controls

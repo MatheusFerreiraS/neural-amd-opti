@@ -256,7 +256,8 @@ With the `[DlssNr]` settings above, the back buffer is copied into a D3D12 textu
 (`EXT_memory_object_win32`), processed by the same final-image route as D3D12, and
 copied back before the game's present. The settings in `[FrameGen]` above add XeFG:
 the generated frames are shown by a D3D12 swapchain in a child window over the game,
-which is hidden while the menu is open or the game is in the background. While the
+with the menu and the FPS overlay drawn over them; the child window is hidden while the
+game is in the background. While the
 window is being resized the game's image is shown as it is, and NR and XeFG start again
 once the size has held for 300 ms. The menu's V-Sync settings set the game's swap
 interval (`wglSwapIntervalEXT`). Only 64-bit games are covered; for 32-bit OpenGL games

@@ -208,7 +208,7 @@
       <EnableUAC>false</EnableUAC>
       <AdditionalDependencies>bcrypt.lib;winhttp.lib;WindowsApp.lib;Dbghelp.lib;dxgi.lib;d3d11.lib;d3d12.lib;vulkan-1.lib;dxguid.lib;freetype.lib;ffx_fsr2_api_x64d.lib;ffx_fsr2_api_dx11_x64d.lib;ffx_fsr2_api_dx12_x64d.lib;ffx_fsr2_api_vk_x64d.lib;ffx_fsr2_212_api_dx12_x64d.lib;ffx_fsr2_212_api_vk_x64d.lib;ffx_fsr2_212_api_x64d.lib;d3dcompiler.lib;d3dx11.lib;ffx_backend_dx11_x64d.lib;ffx_fsr3_x64d.lib;ffx_fsr3upscaler_x64d.lib;ffx_opticalflow_x64d.lib;ffx_frameinterpolation_x64d.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ModuleDefinitionFile>Source.def</ModuleDefinitionFile>
-      <DelayLoadDLLs>vulkan-1.dll;dxgi.dll;d3d12.dll;D3DCOMPILER_47.dll</DelayLoadDLLs>
+      <DelayLoadDLLs>vulkan-1.dll;dxgi.dll;d3d11.dll;d3d12.dll;D3DCOMPILER_47.dll</DelayLoadDLLs>
       <StackReserveSize>
       </StackReserveSize>
       <StackCommitSize>
@@ -245,7 +245,7 @@
       <EnableUAC>false</EnableUAC>
       <AdditionalDependencies>bcrypt.lib;winhttp.lib;WindowsApp.lib;Dbghelp.lib;dxgi.lib;d3d11.lib;d3d12.lib;vulkan-1.lib;dxguid.lib;freetype.lib;ffx_fsr2_api_x64.lib;ffx_fsr2_api_dx11_x64.lib;ffx_fsr2_api_dx12_x64.lib;ffx_fsr2_api_vk_x64.lib;ffx_fsr2_212_api_dx12_x64.lib;ffx_fsr2_212_api_vk_x64.lib;ffx_fsr2_212_api_x64.lib;d3dcompiler.lib;ffx_backend_dx11_x64.lib;ffx_fsr3_x64.lib;ffx_frameinterpolation_x64.lib;ffx_fsr3upscaler_x64.lib;ffx_opticalflow_x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ModuleDefinitionFile>Source.def</ModuleDefinitionFile>
-      <DelayLoadDLLs>vulkan-1.dll;dxgi.dll;d3d12.dll;D3DCOMPILER_47.dll</DelayLoadDLLs>
+      <DelayLoadDLLs>vulkan-1.dll;dxgi.dll;d3d11.dll;d3d12.dll;D3DCOMPILER_47.dll</DelayLoadDLLs>
       <AdditionalOptions>/ignore:4099</AdditionalOptions>
     </Link>
     <PostBuildEvent>
@@ -298,7 +298,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
       <EnableUAC>false</EnableUAC>
       <AdditionalDependencies>bcrypt.lib;winhttp.lib;WindowsApp.lib;Dbghelp.lib;dxgi.lib;d3d11.lib;d3d12.lib;vulkan-1.lib;dxguid.lib;freetype.lib;ffx_fsr2_api_x64.lib;ffx_fsr2_api_dx11_x64.lib;ffx_fsr2_api_dx12_x64.lib;ffx_fsr2_api_vk_x64.lib;ffx_fsr2_212_api_dx12_x64.lib;ffx_fsr2_212_api_vk_x64.lib;ffx_fsr2_212_api_x64.lib;d3dcompiler.lib;ffx_backend_dx11_x64.lib;ffx_fsr3_x64.lib;ffx_frameinterpolation_x64.lib;ffx_fsr3upscaler_x64.lib;ffx_opticalflow_x64.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ModuleDefinitionFile>Source.def</ModuleDefinitionFile>
-      <DelayLoadDLLs>vulkan-1.dll;dxgi.dll;d3d12.dll;D3DCOMPILER_47.dll</DelayLoadDLLs>
+      <DelayLoadDLLs>vulkan-1.dll;dxgi.dll;d3d11.dll;d3d12.dll;D3DCOMPILER_47.dll</DelayLoadDLLs>
       <AdditionalOptions>/ignore:4099</AdditionalOptions>
     </Link>
     <PostBuildEvent>
@@ -950,7 +950,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
   <ItemGroup Condition="'$(Platform)'=='x64'">
     <ClCompile Include="$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\api\internal\ffx_assert.cpp;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\api\internal\ffx_message.cpp;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\api\internal\ffx_object_management.cpp;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\backend\dx12\ffx_backends_dx12.cpp;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\backend\dx12\ffx_dx12.cpp;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\framegeneration\fsr3\internal\ffx_opticalflow.cpp;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\framegeneration\fsr3\internal\ffx_opticalflow_shaderblobs.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
-      <PreprocessorDefinitions>NOMINMAX;TIF=OptiFfxTIF;flushBarriers=OptiFfxFlushBarriers;getDX12ResourcePtr=OptiFfxGetDX12ResourcePtr;ffxGetCommandListDX12=OptiFfxGetCommandListDX12;ffxGetDeviceDX12=OptiFfxGetDeviceDX12;ffxGetResourceDX12=OptiFfxGetResourceDX12;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NOMINMAX;TIF=OptiFfxTIF;flushBarriers=OptiFfxFlushBarriers;getDX12ResourcePtr=OptiFfxGetDX12ResourcePtr;ffxGetCommandListDX12=OptiFfxGetCommandListDX12;ffxGetDeviceDX12=OptiFfxGetDeviceDX12;ffxGetResourceDX12=OptiFfxGetResourceDX12;ffxAssertReport=OptiFfxAssertReport;ffxAssertSetPrintingCallback=OptiFfxAssertSetPrintingCallback;ffxSafeReleasePipeline=OptiFfxSafeReleasePipeline;ffxSafeReleaseCopyResource=OptiFfxSafeReleaseCopyResource;ffxSafeReleaseResource=OptiFfxSafeReleaseResource;ffxOpticalflowContextCreate=OptiFfxOpticalflowContextCreate;ffxOpticalflowContextDestroy=OptiFfxOpticalflowContextDestroy;ffxOpticalflowContextDispatch=OptiFfxOpticalflowContextDispatch;ffxOpticalflowContextGetGpuMemoryUsage=OptiFfxOpticalflowContextGetGpuMemoryUsage;ffxOpticalflowGetGpuMemoryUsage=OptiFfxOpticalflowGetGpuMemoryUsage;ffxOpticalflowGetSharedResourceDescriptions=OptiFfxOpticalflowGetSharedResourceDescriptions;ffxOpticalflowResourceIsNull=OptiFfxOpticalflowResourceIsNull;opticalflowGetPermutationBlobByIndex=OptiFfxOpticalflowGetPermutationBlobByIndex;opticalflowIsWave64=OptiFfxOpticalflowIsWave64;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\api\include;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\api\internal;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\backend\dx12;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\framegeneration\fsr3\include;$(ProjectDir)..\external\FidelityFX-SDK-v2\Kits\FidelityFX\framegeneration\fsr3\internal;$(ProjectDir)..\external\FidelityFX-SDK\sdk\libs\pix;$(IntDir)ffx-of;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemGroup>

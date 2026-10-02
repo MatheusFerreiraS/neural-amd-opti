@@ -89,8 +89,39 @@ $expected = @(
 if ($mode -ne "menu") {
     $expected += "OpenGL final-image NR: back buffer 1280x720", "OpenGL final-image NR: first frame processed", "ms average over 120 presents"
 }
-if ($mode -eq "fg") { $expected += "OpenGL XeFG presenter created", "OpenGL XeFG paused while OptiScaler menu is open" }
+if ($mode -eq "fg") {
+    $expected += "OpenGL XeFG presenter created", "OpenGL XeFG: 2 generated frames per frame",
+        "OpenGL XeFG paused while frame generation is off", "OpenGL XeFG paused while final-image NR is off"
+}
 $failed = $code -ne 0
+if ($threaded -and -not ((Get-Content "$out\stdout.txt" -Raw) -match "window moved [1-9]")) {
+    Write-Host "MISSING: the window thread never moved the window"; $failed = $true
+}
+if ($mode -eq "fg") {
+    # XeFG's status line every 30 frames: "presented" counts the frames shown for one rendered frame.
+    $lines = Get-Content "$out\OptiScaler.log"
+    function Presented([int]$from, [int]$to) {
+        $most = 0
+        for ($i = [Math]::Max($from, 0); $i -lt [Math]::Min($to, $lines.Count); $i++) {
+            if ($lines[$i] -match 'OpenGL XeFG: frame \d+, presented (\d+)') { $most = [Math]::Max($most, [int]$Matches[1]) }
+        }
+        return $most
+    }
+    function LineOf([string]$text) { for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i].Contains($text)) { return $i } }; return -1 }
+    function LastLineOf([string]$text) { for ($i = $lines.Count - 1; $i -ge 0; $i--) { if ($lines[$i].Contains($text)) { return $i } }; return -1 }
+    $opened = LineOf "OpenGL menu: opened"
+    $closed = LineOf "OpenGL menu: closed"
+    $resumed = LastLineOf "XeFG paused while final-image NR is off"
+    $checks = @(
+        @{ Text = "XeFG presents 3 frames per rendered frame"; Ok = (Presented 0 $lines.Count) -ge 3 },
+        @{ Text = "XeFG keeps generating with the menu open"; Ok = $opened -ge 0 -and $closed -gt $opened -and (Presented $opened $closed) -ge 2 },
+        @{ Text = "XeFG generates again after the FG and NR keys"; Ok = $resumed -ge 0 -and (Presented $resumed $lines.Count) -ge 2 },
+        @{ Text = "XeFG does not pause for the menu"; Ok = -not ($log.Contains("paused while OptiScaler menu is open")) }
+    )
+    foreach ($check in $checks) {
+        if ($check.Ok) { Write-Host "ok: $($check.Text)" } else { Write-Host "MISSING: $($check.Text)"; $failed = $true }
+    }
+}
 if (-not (Get-Content "$out\stdout.txt" -Raw).Contains("swap interval after the presents: 0")) {
     Write-Host "MISSING: the game's swap interval of 1 was not forced to 0"; $failed = $true
 }

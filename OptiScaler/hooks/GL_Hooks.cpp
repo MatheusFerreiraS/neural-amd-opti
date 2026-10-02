@@ -183,6 +183,10 @@ static bool Present(HDC hdc)
     if (MenuOverlayGl::Frame() && _overlay.Enter(hdc))
         MenuOverlayGl::Draw(_overlay.generation);
 
+    // XeFG gets the back buffer with the menu on it, so the menu shows over the generated frames.
+    if (nr && _overlay.Enter(hdc))
+        AmdGlPresent::PresentGenerated(hwnd);
+
     _overlay.Leave();
     ApplyVsync(hdc);
     _inPresent = false;

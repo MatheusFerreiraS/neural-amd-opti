@@ -18,11 +18,19 @@
 #define ffxGetCommandListDX12 OptiFfxGetCommandListDX12
 #define ffxGetDeviceDX12 OptiFfxGetDeviceDX12
 #define ffxGetResourceDX12 OptiFfxGetResourceDX12
+#define ffxOpticalflowContextCreate OptiFfxOpticalflowContextCreate
+#define ffxOpticalflowContextDestroy OptiFfxOpticalflowContextDestroy
+#define ffxOpticalflowContextDispatch OptiFfxOpticalflowContextDispatch
+#define ffxOpticalflowGetSharedResourceDescriptions OptiFfxOpticalflowGetSharedResourceDescriptions
 #include "../../../external/FidelityFX-SDK-v2/Kits/FidelityFX/backend/dx12/ffx_dx12.h"
 #include "../../../external/FidelityFX-SDK-v2/Kits/FidelityFX/framegeneration/fsr3/include/ffx_opticalflow.h"
 #undef ffxGetCommandListDX12
 #undef ffxGetDeviceDX12
 #undef ffxGetResourceDX12
+#undef ffxOpticalflowContextCreate
+#undef ffxOpticalflowContextDestroy
+#undef ffxOpticalflowContextDispatch
+#undef ffxOpticalflowGetSharedResourceDescriptions
 namespace AmdPresentExperimental
 {
 using Microsoft::WRL::ComPtr;
@@ -30,7 +38,7 @@ inline bool IsTarget()
 {
     return Config::Instance()->DlssNrPresent.value_or_default();
 }
-inline std::string status = "Final-image NR: waiting for a D3D11, D3D12 or Vulkan frame";
+inline std::string status = "Final-image NR: waiting for a D3D9, D3D11, D3D12, Vulkan or OpenGL frame";
 inline std::mutex mutex;
 // The runtime loads once per process and stays on the device it was built on.
 inline bool runtimeLoaded = false;
@@ -103,14 +111,19 @@ struct Context
         CloseHandle(done);
         return signaled;
     }
+    // A removed device runs nothing more, so the buffer goes back to the game. After a timeout on a live device the
+    // GPU may still read it, so it is kept.
     void ReleaseBackBuffer()
     {
-        if (WaitForFrame())
+        const bool done = WaitForFrame();
+        const bool removed = !done && fence->GetCompletedValue() == UINT64_MAX;
+        if (done || removed)
             heldBack.Reset();
-        else
+        if (!done)
         {
             stopped = true;
-            status = "Final-image NR: GPU timeout; backbuffer retained until process exit";
+            status = removed ? "Final-image NR: the D3D12 device was removed; NR is off"
+                             : "Final-image NR: GPU timeout; backbuffer retained until process exit";
         }
     }
     void BeforeResize()
@@ -119,7 +132,7 @@ struct Context
         if (stopped)
             return;
         if (flowCreated)
-            ffxOpticalflowContextDestroy(&flowContext);
+            OptiFfxOpticalflowContextDestroy(&flowContext);
         flowCreated = false;
         flowFrames = 0;
         sceneReadbackPending = false;
@@ -210,13 +223,13 @@ struct Context
             flowScratch.resize(ffxGetScratchMemorySizeDX12(FFX_OPTICALFLOW_CONTEXT_COUNT));
             FfxOpticalflowContextDescription desc {};
             desc.resolution = { width, height };
-            if (ffxGetInterfaceDX12(&desc.backendInterface, OptiFfxGetDeviceDX12(device.Get()),
-                                    flowScratch.data(), flowScratch.size(), FFX_OPTICALFLOW_CONTEXT_COUNT) != FFX_OK ||
-                ffxOpticalflowContextCreate(&flowContext, &desc) != FFX_OK)
+            if (ffxGetInterfaceDX12(&desc.backendInterface, OptiFfxGetDeviceDX12(device.Get()), flowScratch.data(),
+                                    flowScratch.size(), FFX_OPTICALFLOW_CONTEXT_COUNT) != FFX_OK ||
+                OptiFfxOpticalflowContextCreate(&flowContext, &desc) != FFX_OK)
                 throw std::runtime_error("FidelityFX Optical Flow initialization failed");
             flowCreated = true;
             FfxOpticalflowSharedResourceDescriptions shared {};
-            if (ffxOpticalflowGetSharedResourceDescriptions(&flowContext, &shared) != FFX_OK)
+            if (OptiFfxOpticalflowGetSharedResourceDescriptions(&flowContext, &shared) != FFX_OK)
                 throw std::runtime_error("FidelityFX Optical Flow resources failed");
             auto v = shared.opticalFlowVector.resourceDescription;
             auto s = shared.opticalFlowSCD.resourceDescription;
@@ -337,7 +350,7 @@ struct Context
         dispatch.reset = flowFrames == 0;
         dispatch.backbufferTransferFunction = FFX_API_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
         dispatch.minMaxLuminance = { 0.f, 1.f };
-        if (ffxOpticalflowContextDispatch(&flowContext, &dispatch) != FFX_OK)
+        if (OptiFfxOpticalflowContextDispatch(&flowContext, &dispatch) != FFX_OK)
         {
             flowFailed = true;
             return false;
@@ -487,8 +500,6 @@ struct Context
             runtimeLoaded = true;
         }
         const bool record = neural && backend && !failed && !busy;
-        if (!pipelined)
-            heldBack = back;
         Check(allocator->Reset());
         Check(cmd->Reset(allocator.Get(), nullptr));
         Transition(cmd.Get(), back, backState, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -591,6 +602,9 @@ struct Context
         ID3D12CommandList* lists[] = { cmd.Get() };
         if (backend)
             backend->Submitting(queue.Get(), 1, lists);
+        // Held only once GPU work reads it: a failure before this point leaves the game's buffer alone.
+        if (!pipelined)
+            heldBack = back;
         queue->ExecuteCommandLists(1, lists);
         if (backend)
             backend->Submitted(queue.Get(), 1, lists);
@@ -1079,7 +1093,12 @@ struct Bridge11
                       AmdPreSr::Settings settings, bool captureDepth)
     {
         if (stopped || (engine && engine->stopped))
+        {
+            // D3D11 may still wait on the shared fence for NR work that stopped; the CPU releases it.
+            if (fence12 && fence12->GetCompletedValue() < fenceValue)
+                fence12->Signal(fenceValue);
             return;
+        }
         if (!game)
             Start(device);
         if (game.Get() != device)

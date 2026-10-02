@@ -3,7 +3,8 @@
 //
 // It presents through gdi32's SwapBuffers like most games, and calls wglSwapBuffers directly after
 // the menu key closes the menu, so the menu only closes when that call is hooked too. It posts the
-// menu key (Insert) to open and close the menu, and checks after every present that the game's context and GL state are
+// menu key (Insert) to open and close the menu, in nr mode then the frame generation key (End) and the NR key
+// (Numpad 5) twice each, and checks after every present that the game's context and GL state are
 // as it left them. What reached the screen is read back through DWM (PrintWindow with PW_RENDERFULLCONTENT): the open
 // menu has to leave pixels that are not the clear colour, and in nr mode a red block drawn at the top right has to come
 // back red and at the top right, which catches a flip or a red/blue swap in the crossing to D3D12.
@@ -286,6 +287,15 @@ static int Render(HWND hwnd, int frames, bool nr, bool threaded, ULONGLONG launc
             phase[1] = GetTickCount64();
             PostKey(hwnd, VK_INSERT);
         }
+        // After the menu: frame generation off and on (End), then NR off and on (Numpad 5).
+        const int keyFrames[] { closeAt + 45, closeAt + 85, closeAt + 125, closeAt + 165 };
+        for (int i = 0; i < 4; i++)
+            if (nr && frame == keyFrames[i])
+                PostKey(hwnd, i < 2 ? VK_END : VK_NUMPAD5);
+        // Without NR a frame takes well under a millisecond; paced like a game, the window thread gets to move
+        // the window and the closing menu key arrives while frames still come.
+        if (!nr)
+            Sleep(10);
     }
     const ULONGLONG ended = GetTickCount64();
 

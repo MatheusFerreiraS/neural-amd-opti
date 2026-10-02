@@ -1,11 +1,11 @@
 #pragma once
 
+#include "ChildFgSettings.h"
 #include "PresentExperimental.h"
 
 #include <Config.h>
 #include <Logger.h>
 #include <State.h>
-#include <menu/menu_common.h>
 #include <proxies/XeFG_Proxy.h>
 #include <proxies/XeFGPacing.h>
 #include <proxies/XeLL_Proxy.h>
@@ -52,9 +52,10 @@ struct FgPresenter
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> command;
     ComPtr<ID3D12Fence> fence;
+    ComPtr<ID3D12Resource> hudless;
     uint64_t serial = 0;
     uint32_t frameId = 0;
-    int interpolated = 0;
+    ChildFgSettings settings;
     int maximum = 0;
     bool enabled = false;
     bool visible = false;
@@ -99,12 +100,14 @@ struct FgPresenter
         if (xell)
             XeLLProxy::DestroyContext()(xell);
         xell = nullptr;
+        hudless.Reset();
         if (window && !DestroyWindow(window))
             PostMessageW(window, WM_CLOSE, 0, 0);
         window = nullptr;
         frameId = 0;
         serial = 0;
-        interpolated = maximum = 0;
+        maximum = 0;
+        settings.Reset();
         enabled = false;
         visible = false;
         resetOnResume = true;
@@ -248,6 +251,7 @@ struct FgPresenter
         description.Scaling = DXGI_SCALING_STRETCH;
         xefg_swapchain_d3d12_init_params_t parameters {};
         parameters.maxInterpolatedFrames = properties.maxSupportedInterpolations;
+        parameters.uiMode = XEFG_SWAPCHAIN_UI_MODE_BACKBUFFER_HUDLESS;
         ComPtr<IDXGIFactory2> factory;
         const auto factoryResult = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
         if (FAILED(factoryResult))
@@ -271,7 +275,26 @@ struct FgPresenter
                 return false;
             }
         }
-        if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) ||
+        // The back buffer carries OptiScaler's menu and overlays and the hudless copy only the game, so
+        // XeFG interpolates the game and lays the overlay unwarped over every generated frame.
+        if (XeFGProxy::SetUiCompositionState())
+        {
+            const auto composition =
+                XeFGProxy::SetUiCompositionState()(context, XEFG_SWAPCHAIN_UI_COMPOSITION_STATE_ENABLED);
+            if (composition != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+                LOG_WARN("{} XeFG: UI composition unavailable ({})", api, (int) composition);
+        }
+        D3D12_HEAP_PROPERTIES heap { D3D12_HEAP_TYPE_DEFAULT };
+        D3D12_RESOURCE_DESC hudlessDesc {};
+        hudlessDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        hudlessDesc.Width = width;
+        hudlessDesc.Height = height;
+        hudlessDesc.DepthOrArraySize = hudlessDesc.MipLevels = 1;
+        hudlessDesc.Format = format;
+        hudlessDesc.SampleDesc.Count = 1;
+        if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &hudlessDesc,
+                                                   D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&hudless))) ||
+            FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) ||
             FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
                                              IID_PPV_ARGS(&command))) ||
             FAILED(command->Close()) || FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
@@ -284,27 +307,28 @@ struct FgPresenter
         return true;
     }
 
-    bool Present(ID3D12Resource* colour, const AmdPresentExperimental::Guides& guides, ID3D12CommandQueue* queue)
+    // `overlaid` is the final image with OptiScaler's overlay drawn on it, `colour` the same image without.
+    bool Present(ID3D12Resource* overlaid, ID3D12Resource* colour, const AmdPresentExperimental::Guides& guides,
+                 ID3D12CommandQueue* queue)
     {
         if (!swap || !guides.motion || !guides.depth)
             return false;
-        const int requested = std::clamp(Config::Instance()->FGXeFGInterpolationCount.value_or(2), 1, maximum);
-        if (requested != interpolated)
-        {
-            if (XeFGProxy::SetNumInterpolatedFrames() &&
-                XeFGProxy::SetNumInterpolatedFrames()(context, requested) != XEFG_SWAPCHAIN_RESULT_SUCCESS)
-                return false;
-            interpolated = requested;
-        }
+        if (!settings.Apply(context, maximum, api))
+            return false;
         ComPtr<ID3D12Resource> back;
         if (FAILED(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&back))) ||
             FAILED(allocator->Reset()) || FAILED(command->Reset(allocator.Get(), nullptr)))
             return false;
         AmdPresentExperimental::Transition(command.Get(), back.Get(), D3D12_RESOURCE_STATE_PRESENT,
                                            D3D12_RESOURCE_STATE_COPY_DEST);
-        command->CopyResource(back.Get(), colour);
+        command->CopyResource(back.Get(), overlaid);
         AmdPresentExperimental::Transition(command.Get(), back.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                                            D3D12_RESOURCE_STATE_PRESENT);
+        AmdPresentExperimental::Transition(command.Get(), hudless.Get(), D3D12_RESOURCE_STATE_COMMON,
+                                           D3D12_RESOURCE_STATE_COPY_DEST);
+        command->CopyResource(hudless.Get(), colour);
+        AmdPresentExperimental::Transition(command.Get(), hudless.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                           D3D12_RESOURCE_STATE_COMMON);
         if (FAILED(command->Close()))
             return false;
         ID3D12CommandList* lists[] { command.Get() };
@@ -334,7 +358,7 @@ struct FgPresenter
             return XeFGProxy::D3D12TagFrameResource()(context, nullptr, id, &data) == XEFG_SWAPCHAIN_RESULT_SUCCESS;
         };
         if (!tag(XEFG_SWAPCHAIN_RES_MOTION_VECTOR, guides.motion.Get()) ||
-            !tag(XEFG_SWAPCHAIN_RES_DEPTH, guides.depth.Get()))
+            !tag(XEFG_SWAPCHAIN_RES_DEPTH, guides.depth.Get()) || !tag(XEFG_SWAPCHAIN_RES_HUDLESS_COLOR, hudless.Get()))
             return false;
         xefg_swapchain_frame_constant_data_t constants {};
         for (int i : { 0, 5, 10, 15 })
@@ -374,11 +398,11 @@ struct FgPresenter
         return true;
     }
 
-    // Shows generated frames in a D3D12 child window over the game's own window. Paused while the
-    // menu is open, so the menu drawn on the game's swapchain stays visible, and while the game is
-    // in the background. A failure stands frame generation down for the session; NR continues.
-    void Step(HWND hwnd, ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* colour,
-              const AmdPresentExperimental::Guides& guides, bool& failed)
+    // Shows generated frames in a D3D12 child window over the game's own window. `overlaid` carries the menu
+    // and overlays drawn over the NR output in `colour`, so they stay visible over the generated frames. Paused
+    // while the game is in the background. A failure stands frame generation down for the session; NR continues.
+    void Step(HWND hwnd, ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* overlaid,
+              ID3D12Resource* colour, const AmdPresentExperimental::Guides& guides, bool& failed)
     {
         // Destroying the game's window destroys the child with it, and a new game window gets a child of its own.
         if (window && (!IsWindow(window) || GetParent(window) != hwnd))
@@ -390,12 +414,10 @@ struct FgPresenter
         const bool wantFg = Config::Instance()->FGEnabled.value_or_default() &&
                             State::Instance().activeFgInput == FGInput::Upscaler &&
                             State::Instance().activeFgOutput == FGOutput::XeFG;
-        const bool menuOpen = MenuCommon::IsVisible();
         const HWND root = GetAncestor(hwnd, GA_ROOT);
         const HWND foreground = GetForegroundWindow();
         const bool background = root && IsWindowVisible(root) && foreground && GetAncestor(foreground, GA_ROOT) != root;
         const char* reason = !wantFg                           ? nullptr
-                             : menuOpen                        ? "the menu is open"
                              : background                      ? "the game window is in the background"
                              : failed                          ? "it failed earlier"
                              : !guides.motion || !guides.depth ? "the optical-flow guides are not ready"
@@ -406,20 +428,18 @@ struct FgPresenter
                 LOG_INFO("{} XeFG waiting: {}", api, reason);
             waiting = reason;
         }
-        if (!wantFg || menuOpen || background)
+        if (!wantFg || background)
         {
             if (window && (enabled || visible))
             {
                 Pause();
-                if (menuOpen)
-                    LOG_INFO("{} XeFG paused while OptiScaler menu is open", api);
-                else if (background)
-                    LOG_INFO("{} XeFG paused while game window is in background", api);
+                LOG_INFO("{} XeFG paused while {}", api,
+                         !wantFg ? "frame generation is off" : "game window is in background");
             }
             if (!wantFg)
                 failed = false;
         }
-        if (wantFg && !menuOpen && !background && !failed && guides.motion && guides.depth)
+        if (wantFg && !background && !failed && guides.motion && guides.depth)
         {
             const auto description = colour->GetDesc();
             if (!window && !Create(hwnd, device, queue, static_cast<uint32_t>(description.Width), description.Height,
@@ -429,7 +449,7 @@ struct FgPresenter
                 failed = true;
                 LOG_ERROR("{} XeFG: D3D12 presenter initialization failed", api);
             }
-            if (window && !Present(colour, guides, queue))
+            if (window && !Present(overlaid, colour, guides, queue))
             {
                 Release();
                 failed = true;

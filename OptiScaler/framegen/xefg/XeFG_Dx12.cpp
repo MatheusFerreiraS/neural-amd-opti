@@ -844,9 +844,11 @@ bool XeFG_Dx12::Dispatch()
                     LOG_WARN("Game requested interpolation count {} but max supported is {}, capping to max", gameCount,
                              _maxInterpolationCount);
             }
-            // A D3D9 game has no multiplier to follow, and XeFG paces one generated frame per frame badly on the
-            // D3D9 presenter (about 50 ms per rendered frame at 1920x1080, against 18 ms with two)
-            else if (state.swapchainInteropApi == SwapchainInteropApi::Dx9wDx12)
+            // A game without an upscaler (the final image) has no multiplier to follow, so auto is MFG with two
+            // generated frames, or 2X when the provider allows only one. XeFG also paces one generated frame per
+            // frame badly on the D3D9 presenter (about 50 ms per rendered frame at 1920x1080, against 18 ms with two)
+            else if (state.swapchainInteropApi == SwapchainInteropApi::Dx9wDx12 ||
+                     (Config::Instance()->DlssNrPresent.value_or_default() && state.currentFeature == nullptr))
             {
                 targetCount = std::min(2, _maxInterpolationCount);
             }
