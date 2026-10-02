@@ -45,6 +45,11 @@ $fgLog = @("OptiScaler working as d3d9.dll", "D3D9 device hooks installed", "D3D
            "Reset.*: 0, 1600x900", "XeFG presenter 1280x720 -> 1600x900: 0", "D3D9 bridge frame 8[4-9]\d: menu open")
 
 $cases = @(
+    # Final image off (the default): the D3D9 route only draws the menu, no D3D12 device.
+    @{ Name = "menu-only"; Args = @(); Fg = $false; Present = "false"; Frames = 260; Script = "170:menu,190:shot=menu-only,200:menu"
+       Log = @("D3D9 menu ready", "D3D9 bridge frame \d+: menu open", "D3D9 bridge frame \d+: menu closed",
+               "D3D9 bridge frame 1: D3D9 present, NR false")
+       NotLog = @("D3D9 bridge: D3D12 device") },
     @{ Name = "classic-nr"; Args = @(); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
     @{ Name = "ex-nr"; Args = @("--ex"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
     @{ Name = "chain-nr"; Args = @("--chain"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
@@ -94,7 +99,8 @@ foreach ($c in $cases) {
         $fgSection = "[FrameGen]`r`nEnabled=true`r`nFGInput=upscaler`r`nFGOutput=xefg`r`n"
     }
     Set-Content -Path (Join-Path $dir "OptiScaler.ini") -Encoding ascii -Value (
-        "[DlssNr]`r`nEnabled=true`r`nPresentWithoutUpscaler=true`r`nNrBackend=daniel`r`n" + $fgSection +
+        "[DlssNr]`r`nEnabled=true`r`nPresentWithoutUpscaler=$(if ($c.Present) { $c.Present } else { 'true' })`r`n" +
+        "NrBackend=daniel`r`n" + $fgSection +
         "[Log]`r`nLogToFile=true`r`nLogLevel=2`r`nSingleFile=true`r`n")
 
     $arguments = @($c.Args) + @("--frames", $c.Frames, "--shots", "`"$dir`"", "--script", "`"$($c.Script)`"")
@@ -122,6 +128,7 @@ foreach ($c in $cases) {
     if ($code -ne 0) { $problems += "exit code $code" }
     if ($stdout -notmatch "DONE 0 present failures") { $problems += "present failures" }
     foreach ($pattern in $c.Log) { if ($log -notmatch $pattern) { $problems += "log lacks: $pattern" } }
+    foreach ($pattern in $c.NotLog) { if ($log -match $pattern) { $problems += "log has: $pattern" } }
     foreach ($line in ($stdout -split "`r?`n" | Where-Object { $_ -match "^motion (\S+): ([0-9.]+)" })) {
         $null = $line -match "^motion (\S+): ([0-9.]+)"
         if ([double]$Matches[2] -lt 0.02) { $problems += "frozen on screen: $line" }
