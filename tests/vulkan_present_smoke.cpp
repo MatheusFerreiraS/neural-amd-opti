@@ -29,7 +29,9 @@ constexpr int kWidth = 1280, kHeight = 720;
 
 HWND game = nullptr, other = nullptr;
 DWORD guiThread = 0;
-std::atomic<int> mouseMoves { 0 }, keyDowns { 0 }, frames { 0 };
+std::atomic<int> mouseMoves { 0 }, keyDowns { 0 }, clicks { 0 }, frames { 0 };
+// Milliseconds of CPU work the render thread spends on each frame, to stand in for a heavy game.
+std::atomic<int> workMs { 0 };
 std::atomic<bool> stopRender { false }, freeze { false }, renderFailed { false };
 int failures = 0;
 
@@ -124,6 +126,15 @@ bool FramesAdvance()
 {
     const int before = frames;
     return WaitFor([&] { return frames > before + 10; }, 5000);
+}
+
+// Real presents of the test game per second over `ms`.
+double PresentsPerSecond(DWORD ms)
+{
+    const int before = frames;
+    const auto start = GetTickCount64();
+    Sleep(ms);
+    return (frames - before) * 1000.0 / double(GetTickCount64() - start);
 }
 
 bool Foreground(HWND window)
@@ -235,8 +246,8 @@ bool GameGetsInput(const char*& why)
     POINT saved {};
     GetCursorPos(&saved);
     const RECT rect = ClientOnScreen();
-    const int moves = mouseMoves, keys = keyDowns;
-    std::wstring path = L"move";
+    const int moves = mouseMoves, keys = keyDowns, clicked = clicks;
+    std::wstring path = L"click";
     for (int i = 1; i <= 8; ++i)
         path += L" " + std::to_wstring(rect.left + (rect.right - rect.left) * i / 10) + L" " +
                 std::to_wstring(rect.top + (rect.bottom - rect.top) * (i % 2 ? 1 : 2) / 3);
@@ -244,17 +255,23 @@ bool GameGetsInput(const char*& why)
     Key('K');
     const bool mouse = WaitFor([&] { return mouseMoves > moves; }, 2000);
     const bool keyboard = WaitFor([&] { return keyDowns > keys; }, 2000);
+    const bool click = WaitFor([&] { return clicks > clicked; }, 2000);
+    // A disabled child passes its clicks to the game window.
+    const bool disabled = !FgWindow() || !IsWindowEnabled(FgWindow());
     RunInjector(L"move " + std::to_wstring(saved.x) + L" " + std::to_wstring(saved.y));
-    why = !mouse ? "mouse moves did not reach the game window" : !keyboard ? "key did not reach the game window" : "";
-    return mouse && keyboard;
+    why = !mouse      ? "mouse moves did not reach the game window"
+          : !keyboard ? "key did not reach the game window"
+          : !click    ? "click did not reach the game window"
+          : !disabled ? "XeFG window is enabled"
+                      : "";
+    return mouse && keyboard && click && disabled;
 }
 
 // Left click at a point of the game's client area.
 bool Click(int x, int y)
 {
     const RECT rect = ClientOnScreen();
-    const bool sent =
-        RunInjector(L"click " + std::to_wstring(rect.left + x) + L" " + std::to_wstring(rect.top + y));
+    const bool sent = RunInjector(L"click " + std::to_wstring(rect.left + x) + L" " + std::to_wstring(rect.top + y));
     Sleep(600);
     return sent;
 }
@@ -367,6 +384,8 @@ LRESULT CALLBACK GameProc(HWND window, UINT message, WPARAM wparam, LPARAM lpara
 {
     if (message == WM_MOUSEMOVE)
         ++mouseMoves;
+    else if (message == WM_LBUTTONDOWN)
+        ++clicks;
     else if (message == WM_KEYDOWN && wparam == 'K')
         ++keyDowns;
     else if (message == WM_APP)
@@ -654,6 +673,8 @@ struct Renderer
         submit.pCommandBuffers = &command;
         submit.signalSemaphoreCount = 1;
         submit.pSignalSemaphores = &rendered[index];
+        if (workMs)
+            Sleep(workMs);
         VK_CHECK(vkQueueSubmit(queue, 1, &submit, fence));
         VkPresentInfoKHR present { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         present.waitSemaphoreCount = 1;
@@ -771,7 +792,9 @@ void FinalImageOn(std::thread& render)
         // on the left and the "Active" box of Frame Generation (Vulkan XeFG) in that section.
         const auto section = Capture();
         Click(338, 242);
-        Step("a click opens the menu's FG section over the XeFG output", Changed(section, Capture()) > 0.01);
+        const auto fgSection = Capture();
+        SaveCapture(fgSection, "capture-menu-fg.bmp");
+        Step("a click opens the menu's FG section over the XeFG output", Changed(section, fgSection) > 0.03);
         auto clickMark = Mark();
         Click(361, 325);
         const bool paused = WaitLog("Vulkan XeFG paused while frame generation is off", clickMark, 3000) &&
@@ -789,11 +812,23 @@ void FinalImageOn(std::thread& render)
     }
 
     {
+        // XeFG paces its generated frames inside its Present; the game's own present must not wait
+        // through that, so turning FG on may not lower the real frame rate. The render thread works
+        // 30 ms per frame here: with a light frame the 60 Hz test display caps what XeFG puts out (about
+        // 120 frames a second, so 40 real at 3x) and the comparison would measure the display.
+        workMs = 30;
+        Sleep(1500);
+        const double withFg = PresentsPerSecond(5000);
         auto mark = Mark();
         Key(VK_END);
         const bool paused = WaitLog("Vulkan XeFG paused while frame generation is off", mark, 3000);
         const bool off = paused && WaitFor([] { return !FgVisible(); }, 3000) && FramesAdvance();
         Step("FG key turns XeFG off and hides its window", off, paused ? "" : "no pause line");
+        const double withoutFg = PresentsPerSecond(5000);
+        workMs = 0;
+        char rates[96];
+        std::snprintf(rates, sizeof(rates), "%.1f real fps with XeFG, %.1f with NR only", withFg, withoutFg);
+        Step("XeFG keeps the game's real frame rate", off && withFg >= 0.9 * withoutFg, rates);
         mark = Mark();
         Key(VK_END);
         Step("FG key turns XeFG back on", off && WaitPresented(mark) && FgVisible(), off ? "" : "FG was never off");
@@ -853,8 +888,9 @@ void FinalImageOff()
     Sleep(2000);
     auto untouched = []
     {
-        return Count("first frame processed", 0) + Count("D3D12 shared GPU image", 0) + Count("Vulkan XeFG", 0) == 0 &&
-               !FgWindow();
+        const int work = Count("Vulkan final-image bridge: swapchain", 0) + Count("first frame processed", 0) +
+                         Count("D3D12 shared GPU image", 0) + Count("Vulkan XeFG", 0);
+        return work == 0 && !FgWindow();
     };
     Step("no NR or XeFG work with the final image off", untouched());
     const auto mark = Mark();
