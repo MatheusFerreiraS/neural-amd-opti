@@ -17,6 +17,7 @@
 #include <d3dcompiler.h>
 #include <dxgi1_6.h>
 #include <dbghelp.h>
+#include <tlhelp32.h>
 #include <wrl/client.h>
 #include <algorithm>
 #include <chrono>
@@ -890,6 +891,59 @@ static std::map<std::string, PhaseResult> ParsePhases(const std::string& text)
     return phases;
 }
 
+// Every thread's stack of a hung child, symbolized where a PDB sits beside the module, into hang-stacks.txt.
+static void WriteHangStacks(HANDLE process, DWORD pid, const fs::path& dir)
+{
+    std::ofstream out(dir / "hang-stacks.txt");
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+    SymInitializeW(process, dir.c_str(), TRUE);
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    THREADENTRY32 entry { sizeof(entry) };
+    for (BOOL more = Thread32First(snapshot, &entry); more; more = Thread32Next(snapshot, &entry))
+    {
+        if (entry.th32OwnerProcessID != pid)
+            continue;
+        HANDLE thread = OpenThread(THREAD_ALL_ACCESS, FALSE, entry.th32ThreadID);
+        if (!thread)
+            continue;
+        SuspendThread(thread);
+        CONTEXT context {};
+        context.ContextFlags = CONTEXT_FULL;
+        if (GetThreadContext(thread, &context))
+        {
+            out << "thread " << entry.th32ThreadID << "\n";
+            STACKFRAME64 frame {};
+            frame.AddrPC = { context.Rip, 0, AddrModeFlat };
+            frame.AddrFrame = { context.Rbp, 0, AddrModeFlat };
+            frame.AddrStack = { context.Rsp, 0, AddrModeFlat };
+            for (int i = 0; i < 40 && StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, thread, &frame, &context, nullptr,
+                                                  SymFunctionTableAccess64, SymGetModuleBase64, nullptr);
+                 ++i)
+            {
+                const DWORD64 pc = frame.AddrPC.Offset;
+                IMAGEHLP_MODULEW64 module { sizeof(module) };
+                const bool known = SymGetModuleInfoW64(process, pc, &module);
+                alignas(SYMBOL_INFO) char storage[sizeof(SYMBOL_INFO) + 256] {};
+                auto symbol = (SYMBOL_INFO*) storage;
+                symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+                symbol->MaxNameLen = 255;
+                DWORD64 displacement = 0;
+                IMAGEHLP_LINE64 line { sizeof(line) };
+                DWORD column = 0;
+                char text[1024];
+                std::snprintf(text, sizeof(text), "  %ls+0x%llx %s %s:%lu\n", known ? module.ModuleName : L"?",
+                              known ? pc - module.BaseOfImage : pc,
+                              SymFromAddr(process, pc, &displacement, symbol) ? symbol->Name : "?",
+                              SymGetLineFromAddr64(process, pc, &column, &line) ? line.FileName : "?", line.LineNumber);
+                out << text;
+            }
+        }
+        CloseHandle(thread);
+    }
+    CloseHandle(snapshot);
+    SymCleanup(process);
+}
+
 static int Parent(const Options& options, const std::wstring& lock, DWORD timeoutSeconds, const std::wstring& args)
 {
     const auto dir = Here();
@@ -936,6 +990,8 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
         }
         if (WaitForSingleObject(process.hProcess, timeoutSeconds * 1000) != WAIT_OBJECT_0)
         {
+            WriteHangStacks(process.hProcess, process.dwProcessId, dir);
+            std::printf("child hung: stacks in hang-stacks.txt\n");
             TerminateProcess(process.hProcess, 9);
             WaitForSingleObject(process.hProcess, 10000);
             std::printf("FAIL: child timed out after %lu s\n", timeoutSeconds);
