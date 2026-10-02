@@ -200,6 +200,10 @@ bool XeFG_Dx12::DestroySwapchainContext()
         else
         {
             State::Instance().currentFGSwapchain = nullptr;
+
+            // A new context starts at XeFG's maximum count, so Dispatch sets the configured one again
+            if (Config::Instance()->DlssNrPresent.value_or_default())
+                _framesToInterpolate = -1;
         }
     }
 
