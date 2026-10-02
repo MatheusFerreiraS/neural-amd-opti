@@ -647,8 +647,8 @@ static Stats Run(const char* name, double seconds, bool quiet = false)
     s.rtss = rtss;
     if (!quiet)
         std::printf("  [%-22s] frames %5u  avg %6.2f ms  p99 %6.2f ms  max %7.2f ms  app %6.1f fps  "
-                    "presents/frame %4.2f  rtss %6.1f fps\n",
-                    name, s.frames, s.average, s.p99, s.worst, s.appFps, s.presentsPerFrame, s.rtss);
+                    "presents/frame %4.2f  rtss %6.1f fps  NR %u\n",
+                    name, s.frames, s.average, s.p99, s.worst, s.appFps, s.presentsPerFrame, s.rtss, s.nr);
     return s;
 }
 static void Press(WORD vk)
