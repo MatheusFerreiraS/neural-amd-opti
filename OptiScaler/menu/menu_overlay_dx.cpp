@@ -689,13 +689,14 @@ void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
     AmdPresentExperimental::Guides guides;
     bool ready = false;
 
-    // With NR off XeFG still gets the optical-flow guides.
-    if (neural || (xefg && fgEnabled))
+    // With NR off XeFG still gets the optical-flow guides. They are made only while XeFG takes them.
+    const bool wantGuides = xefg && fgEnabled;
+    if (neural || wantGuides)
     {
         auto settings = DlssNr::AmdBridge::SettingsFromConfig(config, config.AmdNrScale.value_or_default());
         settings.spinDraw = 0;
-        ready = AmdPresentExperimental::Render(fgSwapChain, queue, Util::DllPath().parent_path(), settings, &guides,
-                                               neural);
+        ready = AmdPresentExperimental::Render(fgSwapChain, queue, Util::DllPath().parent_path(), settings,
+                                               wantGuides ? &guides : nullptr, neural);
     }
 
     if (!xefg)

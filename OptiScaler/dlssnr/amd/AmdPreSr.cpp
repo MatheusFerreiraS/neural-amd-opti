@@ -2220,6 +2220,7 @@ bool Backend::Ready()
     const auto completed = p->fence->GetCompletedValue();
     return !p->failed && !p->AnySlotBusy() && completed != UINT64_MAX && completed >= p->LatestCompletion();
 }
+bool Backend::Failed() const { return p->failed; }
 bool Backend::Shutdown()
 {
     std::lock_guard guard(p->lock);

@@ -59,6 +59,7 @@ struct Context
     ComPtr<ID3D12Resource> retired[2];
     UINT64 retiredUntil = 0;
     UINT busyFrames = 0;
+    bool failedReported = false;
     ComPtr<ID3D12DescriptorHeap> heap, clearCpu;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pipeline;
@@ -390,9 +391,11 @@ struct Context
         Transition(cmd.Get(), flowScd.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
         sceneReadbackPending = true;
     }
-    // With neural off only the optical-flow guides are made and the frame is left as it is.
+    // With neural off only the optical-flow guides are made and the frame is left as it is. Without guides a
+    // frame the runtime cannot take ends early.
     bool Frame(ID3D12Resource* back, D3D12_RESOURCE_STATES backState, const std::filesystem::path& directory,
-               AmdPreSr::Settings settings, ID3D12Resource* realDepth = nullptr, bool neural = true)
+               AmdPreSr::Settings settings, ID3D12Resource* realDepth = nullptr, bool neural = true,
+               bool guides = false)
     {
         if (stopped)
             return false;
@@ -409,10 +412,23 @@ struct Context
             retired[0].Reset();
             retired[1].Reset();
         }
-        // A busy runtime skips NR on this frame; the guides are still made.
-        const bool busy = neural && backend && !backend->Ready();
+        // A failed runtime stays failed and a busy one skips this frame: the frame goes without NR and only
+        // frame generation's guides are left to make.
+        const bool failed = neural && backend && backend->Failed();
+        const bool busy = neural && backend && !failed && !backend->Ready();
+        if (failed && !failedReported)
+        {
+            failedReported = true;
+            LOG_WARN("Final-image NR: runtime failed, NR off until the game restarts: {}", backend->Status());
+        }
         if (busy && (++busyFrames <= 3 || busyFrames % 300 == 0))
             LOG_INFO("Final-image NR: runtime still busy, frame left without NR ({})", busyFrames);
+        if ((failed || busy) && !guides)
+        {
+            stableLast = false;
+            status = backend->Status();
+            return false;
+        }
         auto desc = back->GetDesc();
         if (!input)
         {
@@ -448,7 +464,7 @@ struct Context
             backend = new AmdPreSr::Backend(device.Get(), queue.Get(), directory);
             runtimeLoaded = true;
         }
-        const bool record = neural && backend && !busy;
+        const bool record = neural && backend && !failed && !busy;
         heldBack = back;
         Check(allocator->Reset());
         Check(cmd->Reset(allocator.Get(), nullptr));
@@ -749,7 +765,7 @@ inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::fil
         }
         ComPtr<ID3D12Resource> b;
         Check(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&b)));
-        context->Frame(b.Get(), D3D12_RESOURCE_STATE_PRESENT, directory, s, nullptr, neural);
+        context->Frame(b.Get(), D3D12_RESOURCE_STATE_PRESENT, directory, s, nullptr, neural, guides != nullptr);
         if (guides && !context->stopped && context->lastFlowValid)
         {
             guides->motion = context->motion;
