@@ -5,8 +5,13 @@
 #   auto      PresentWithoutUpscaler=true, NrBackend unset and only the lmxxf runtime beside the game, which
 #             makes the session lmxxf: the final image stays off.
 #   daniel    PresentWithoutUpscaler=true with danielblnc: the runtime processes frames.
-#   stall     as daniel at 1080p with AmdStallStandDownMs=1: the stall watch stands the final image down.
-# The two danielblnc cases run on the GPU and take the shared GPU lock. Needs an x64 MSVC environment.
+#   stall     as daniel at 2160p with AmdStallStandDownMs=1: the stall watch stands the final image down.
+# With VULKAN_SDK set it also runs tests\vulkan_present_smoke.cpp (OptiScaler.dll beside it) in four cases:
+#   vk-off, vk-off-nomenu   PresentWithoutUpscaler=false, with OverlayMenu on and off: no final image, and with
+#                           the menu off no device hook, as in 0.4.9.
+#   vk-on, vk-on-nomenu     PresentWithoutUpscaler=true with danielblnc, with OverlayMenu on and off: the
+#                           runtime processes the swapchain image.
+# The danielblnc cases run on the GPU and take the shared GPU lock. Needs an x64 MSVC environment.
 param(
     [string]$OptiDll = 'exports\release-local\OptiScaler.dll',
     [string]$OutDir = 'exports\final-image-gate',
@@ -35,18 +40,19 @@ function Expect([bool]$ok, [string]$what) {
     if (-not $ok) { $failures.Add($what) }
 }
 
-function Run-Case([string]$name, [string]$dlssNr, [bool]$runtime, [bool]$gpu, [string]$size = '', [bool]$lmxxf = $false) {
+function Run-Case([string]$name, [string]$dlssNr, [bool]$runtime, [bool]$gpu, [string]$size = '', [bool]$lmxxf = $false,
+                  [string]$smoke = $exe, [string]$proxy = 'dxgi.dll', [string]$extra = '') {
     $dir = Join-Path $OutDir $name
     if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
     New-Item -ItemType Directory -Path $dir | Out-Null
-    Copy-Item $exe $dir
-    Copy-Item $OptiDll (Join-Path $dir 'dxgi.dll')
+    Copy-Item $smoke $dir
+    Copy-Item $OptiDll (Join-Path $dir $proxy)
     if ($runtime) {
         Copy-Item $RuntimeDll (Join-Path $dir 'dlssnr_amd_pass1.dll')
         Copy-Item $Weights (Join-Path $dir 'dlssnr_on_amd_weights.bin')
     }
     if ($lmxxf) { Copy-Item $LmxxfDll (Join-Path $dir 'LmxxfNrRuntime.dll') }
-    $ini = "[Log]`r`nLogToFile=true`r`nLogLevel=1`r`nLogToConsole=false`r`n[DlssNr]`r`nEnabled=true`r`n$dlssNr`r`n"
+    $ini = "[Log]`r`nLogToFile=true`r`nLogLevel=1`r`nLogToConsole=false`r`n$extra[DlssNr]`r`nEnabled=true`r`n$dlssNr`r`n"
     [IO.File]::WriteAllText((Join-Path $dir 'OptiScaler.ini'), $ini)
     $locked = $false
     if ($gpu) {
@@ -60,7 +66,7 @@ function Run-Case([string]$name, [string]$dlssNr, [bool]$runtime, [bool]$gpu, [s
         }
     }
     try {
-        $p = Start-Process -FilePath (Join-Path $dir 'final_image_gate_smoke.exe') -ArgumentList "$Frames $size".Trim() `
+        $p = Start-Process -FilePath (Join-Path $dir (Split-Path -Leaf $smoke)) -ArgumentList "$Frames $size".Trim() `
             -WorkingDirectory $dir -PassThru -RedirectStandardOutput (Join-Path $dir 'stdout.txt')
         $null = $p.Handle  # keeps the exit code readable after WaitForExit
         if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
@@ -104,11 +110,33 @@ Expect ($presr -match 'frame=[1-9]\d') 'daniel: the runtime kept recording frame
 Expect ($log -cnotmatch 'off until the game restarts') 'daniel: no stall stand-down at the default limit'
 
 Write-Host 'case stall'
-# The watch looks every 250 ms at the oldest unfinished job; at 1080p the queue spends most of each frame on
-# the runtime, so a 1 ms limit is met within the run.
-$d = Run-Case 'stall' "PresentWithoutUpscaler=true`r`nNrBackend=daniel`r`nAmdStallStandDownMs=1" $true $true '1920 1080'
+# The watch looks every 250 ms at the oldest unfinished job and times it in GetTickCount64 steps (about 16 ms).
+# At 2160p the first jobs run for tens of milliseconds, so a 1 ms limit is met in the first second.
+$d = Run-Case 'stall' "PresentWithoutUpscaler=true`r`nNrBackend=daniel`r`nAmdStallStandDownMs=1" $true $true '3840 2160'
 $log = Text (Join-Path $d 'OptiScaler.log')
 Expect ($log -cmatch 'Final-image NR: off until the game restarts') 'stall: a 1 ms limit stands the final image down'
+
+if ($env:VULKAN_SDK) {
+    $vk = Join-Path $OutDir 'vulkan_present_smoke.exe'
+    # The smoke's asserts make its calls, so it is built without NDEBUG.
+    & cl /nologo /std:c++20 /EHsc /Od /MD /utf-8 "/I$env:VULKAN_SDK\Include" tests\vulkan_present_smoke.cpp "/Fe$vk" `
+        "/Fo$OutDir\vulkan_present_smoke.obj" /link "$env:VULKAN_SDK\Lib\vulkan-1.lib" user32.lib | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Vulkan smoke build failed' }
+    $noMenu = "[Menu]`r`nOverlayMenu=false`r`n"
+    foreach ($menu in @('', $noMenu)) {
+        $suffix = if ($menu) { '-nomenu' } else { '' }
+        Write-Host "case vk-off$suffix"
+        $d = Run-Case "vk-off$suffix" "PresentWithoutUpscaler=false`r`nNrBackend=daniel" $true $false '' $false $vk 'OptiScaler.dll' $menu
+        $log = Text (Join-Path $d 'OptiScaler.log')
+        Expect ($log -notmatch 'final-image') "vk-off${suffix}: no final-image line in OptiScaler.log"
+        if ($menu) { Expect ($log -cnotmatch 'Hooking VkDevice') 'vk-off-nomenu: no device hook without the menu' }
+        Write-Host "case vk-on$suffix"
+        $d = Run-Case "vk-on$suffix" "PresentWithoutUpscaler=true`r`nNrBackend=daniel" $true $true '' $false $vk 'OptiScaler.dll' $menu
+        $log = Text (Join-Path $d 'OptiScaler.log')
+        Expect ($log -cmatch 'Vulkan final-image bridge: first frame processed') "vk-on${suffix}: the runtime processed the swapchain image"
+    }
+}
+else { Write-Host 'VULKAN_SDK not set: Vulkan cases skipped' }
 
 if ($failures.Count) { Write-Host "FAIL: $($failures.Count) check(s)"; exit 1 }
 Write-Host 'PASS: final-image gate smoke'
