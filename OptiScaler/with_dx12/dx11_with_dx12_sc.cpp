@@ -85,6 +85,30 @@ DXGI_FORMAT ResolveBufferFormat(IDXGISwapChain* swapchain, IDXGISwapChain1* swap
 
     return DXGI_FORMAT_UNKNOWN;
 }
+
+// XeFG's present thread holds the back buffer it is still presenting, and the XeFG resize hook drops every reference
+// above one: the resize waits until XeFG lets go.
+void WaitForFgBackBuffers(IDXGISwapChain* swapchain)
+{
+    for (int attempt = 0; attempt < 250; ++attempt)
+    {
+        bool busy = false;
+        for (UINT i = 0; i < 8 && !busy; ++i)
+        {
+            ID3D12Resource* buffer = nullptr;
+            if (FAILED(swapchain->GetBuffer(i, IID_PPV_ARGS(&buffer))))
+                break;
+            busy = buffer->Release() > 1;
+        }
+        if (!busy)
+        {
+            LOG_DEBUG("XeFG released its back buffers after about {} ms", attempt * 2);
+            return;
+        }
+        Sleep(2);
+    }
+    LOG_WARN("XeFG still holds a back buffer after 500 ms");
+}
 } // namespace
 
 Dx11wDx12SC::Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Device* pDevice, HWND hWnd, UINT flags)
@@ -492,11 +516,17 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
     if (!_WaitForCopyQueueIdle())
         LOG_WARN("continuing ResizeBuffers after copy fence wait failure");
 
-    // XeFG draws the menu on the swapchain it presents to from its own thread and refuses to resize while the menu
-    // holds its buffers: the menu stays released until both swapchains are resized.
-    MenuOverlayDx::HoldForResize(true);
-    MenuOverlayDx::CleanupRenderTarget(true, _handle);
+    // With final-image NR, XeFG draws the menu from its own thread and reads NR's motion and depth until its resize
+    // has drained it: only the back buffers are released first, and the menu stays off until both swapchains are
+    // resized.
+    const bool finalImage = AmdPresentExperimental::IsTarget();
+    const auto guides = finalImage ? AmdPresentExperimental::LastGuides() : AmdPresentExperimental::Guides {};
+    if (finalImage)
+        MenuOverlayDx::HoldForResize(true);
+    MenuOverlayDx::CleanupRenderTarget(!finalImage, _handle);
     _ReleaseInteropBackBuffers();
+    if (finalImage && _fgSwapChain != nullptr)
+        WaitForFgBackBuffers(_fgSwapChain);
 
     HRESULT realResult = _real != nullptr ? _real->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags)
                                           : DXGI_ERROR_DEVICE_REMOVED;
@@ -506,7 +536,11 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
         fgResult = _fgSwapChain->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
 
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers results: real {:X}, fg {:X}", (UINT) realResult, (UINT) fgResult);
-    MenuOverlayDx::HoldForResize(false);
+    if (finalImage)
+    {
+        MenuOverlayDx::CleanupRenderTarget(true, _handle);
+        MenuOverlayDx::HoldForResize(false);
+    }
 
     if (SUCCEEDED(realResult) && SUCCEEDED(fgResult))
     {
@@ -705,15 +739,24 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
     if (!_WaitForCopyQueueIdle())
         LOG_WARN("continuing ResizeBuffers1 after copy fence wait failure");
 
-    // XeFG draws the menu on the swapchain it presents to from its own thread and refuses to resize while the menu
-    // holds its buffers: the menu stays released until both swapchains are resized.
-    MenuOverlayDx::HoldForResize(true);
-    MenuOverlayDx::CleanupRenderTarget(true, _handle);
+    // With final-image NR, XeFG draws the menu from its own thread and reads NR's motion and depth until its resize
+    // has drained it: only the back buffers are released first, and the menu stays off until both swapchains are
+    // resized.
+    const bool finalImage = AmdPresentExperimental::IsTarget();
+    const auto guides = finalImage ? AmdPresentExperimental::LastGuides() : AmdPresentExperimental::Guides {};
+    if (finalImage)
+        MenuOverlayDx::HoldForResize(true);
+    MenuOverlayDx::CleanupRenderTarget(!finalImage, _handle);
     _ReleaseInteropBackBuffers();
+    if (finalImage && _fgSwapChain != nullptr)
+        WaitForFgBackBuffers(_fgSwapChain);
 
-    HRESULT realResult = _real3 != nullptr ? _real3->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags,
-                                                                    pCreationNodeMask, ppPresentQueue)
-                                           : ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
+    HRESULT realResult = DXGI_ERROR_DEVICE_REMOVED;
+    if (_real3 != nullptr)
+        realResult = _real3->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask,
+                                            ppPresentQueue);
+    else if (_real != nullptr)
+        realResult = _real->ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
 
     HRESULT fgResult = DXGI_ERROR_DEVICE_REMOVED;
     if (SUCCEEDED(realResult) && _fgSwapChain != nullptr)
@@ -723,7 +766,11 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
     }
 
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers1 results: real {:X}, fg {:X}", (UINT) realResult, (UINT) fgResult);
-    MenuOverlayDx::HoldForResize(false);
+    if (finalImage)
+    {
+        MenuOverlayDx::CleanupRenderTarget(true, _handle);
+        MenuOverlayDx::HoldForResize(false);
+    }
 
     if (SUCCEEDED(realResult) && SUCCEEDED(fgResult))
     {

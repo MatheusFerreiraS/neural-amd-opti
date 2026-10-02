@@ -40,7 +40,8 @@ static IUnknown* currentSCCommandQueue = nullptr;
 
 // status
 static bool _isInited = false;
-// XeFG draws the overlay from its own present thread while the game thread may release it for a resize.
+// With final-image NR, XeFG draws the overlay from its own present thread while the game thread may release it for a
+// resize.
 static std::recursive_mutex _overlayMutex;
 static std::atomic<bool> _heldForResize = false;
 static bool _d3d12Captured = false;
@@ -134,6 +135,23 @@ static void CleanupRenderTargetDx12(bool clearQueue)
 
     if (clearQueue)
     {
+        // With final-image NR the menu draws on XeFG's queue from XeFG's present thread: its last list may still run.
+        if (AmdPresentExperimental::IsTarget() && currentSCCommandQueue != nullptr && g_pd3dDeviceParam != nullptr)
+        {
+            ID3D12Fence* fence = nullptr;
+            HANDLE done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (done != nullptr &&
+                SUCCEEDED(g_pd3dDeviceParam->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))) &&
+                SUCCEEDED(((ID3D12CommandQueue*) currentSCCommandQueue)->Signal(fence, 1)) &&
+                SUCCEEDED(fence->SetEventOnCompletion(1, done)) && WaitForSingleObject(done, 2000) != WAIT_OBJECT_0)
+            {
+                LOG_WARN("menu queue did not go idle in 2 s");
+            }
+            SAFE_RELEASE(fence);
+            if (done != nullptr)
+                CloseHandle(done);
+        }
+
         if (MenuOverlayBase::IsInited() && g_pd3dDeviceParam != nullptr && g_pd3dSrvDescHeap != nullptr &&
             ImGui::GetIO().BackendRendererUserData)
         {
@@ -512,7 +530,8 @@ ID3D12GraphicsCommandList* MenuOverlayDx::MenuCommandList() { return g_pd3dComma
 void MenuOverlayDx::CleanupRenderTarget(bool clearQueue, HWND hWnd)
 {
     LOG_FUNC();
-    AmdPresentExperimental::BeforeResize();
+    if (clearQueue)
+        AmdPresentExperimental::BeforeResize();
 
     auto fg = State::Instance().currentFG;
     if (fg != nullptr && fg->FrameGenerationContext() != nullptr && fg->IsActive())
@@ -522,7 +541,9 @@ void MenuOverlayDx::CleanupRenderTarget(bool clearQueue, HWND hWnd)
         fg->Deactivate();
     }
 
-    std::lock_guard lock(_overlayMutex);
+    std::unique_lock lock(_overlayMutex, std::defer_lock);
+    if (AmdPresentExperimental::IsTarget())
+        lock.lock();
     if (_dx11Device)
         CleanupRenderTargetDx11(false);
     else
@@ -581,9 +602,13 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     if (State::Instance().menuOverlayIsVulkan)
         return;
 
-    std::lock_guard lock(_overlayMutex);
-    if (_heldForResize)
-        return;
+    std::unique_lock lock(_overlayMutex, std::defer_lock);
+    if (AmdPresentExperimental::IsTarget())
+    {
+        lock.lock();
+        if (_heldForResize)
+            return;
+    }
 
     LOG_DEBUG("");
 

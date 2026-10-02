@@ -1031,4 +1031,17 @@ inline void BeforeResize()
     if (bridge11)
         bridge11->BeforeResize();
 }
+// The motion and depth last handed to XeFG, which keeps plain pointers to them and may still read them on its own
+// queue: a resize of XeFG's swapchain holds them until it returns.
+inline Guides LastGuides()
+{
+    Lock g;
+    Guides guides;
+    if (context)
+    {
+        guides.motion = context->motion;
+        guides.depth = context->depth;
+    }
+    return guides;
+}
 } // namespace AmdPresentExperimental
