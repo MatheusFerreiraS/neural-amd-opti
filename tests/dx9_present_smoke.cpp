@@ -75,8 +75,7 @@ void ClientSize(int width, int height)
     if (!borderless)
         AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
 
-    SetWindowPos(window, HWND_TOPMOST, origin, origin, rect.right - rect.left, rect.bottom - rect.top,
-                 SWP_SHOWWINDOW);
+    SetWindowPos(window, HWND_TOPMOST, origin, origin, rect.right - rect.left, rect.bottom - rect.top, SWP_SHOWWINDOW);
 }
 
 Shot Capture()
@@ -257,8 +256,8 @@ int main(int argc, char** argv)
     windowClass.hCursor = LoadCursor(nullptr, IDC_ARROW);
     RegisterClassW(&windowClass);
     window = CreateWindowExW(WS_EX_TOPMOST, windowClass.lpszClassName, L"Opti D3D9 smoke",
-                             borderless ? WS_POPUP : WS_OVERLAPPEDWINDOW, 40, 40,
-                             width, height, nullptr, nullptr, windowClass.hInstance, nullptr);
+                             borderless ? WS_POPUP : WS_OVERLAPPEDWINDOW, 40, 40, width, height, nullptr, nullptr,
+                             windowClass.hInstance, nullptr);
     ClientSize(width, height);
     SetForegroundWindow(window);
     Pump();

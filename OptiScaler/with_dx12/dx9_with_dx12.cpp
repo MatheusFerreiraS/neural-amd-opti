@@ -559,9 +559,8 @@ struct Bridge
         start = Util::MillisecondsNow();
 
         AmdPresentExperimental::Guides guides;
-        const bool ready =
-            NrWanted() &&
-            AmdPresentExperimental::Render(swap.Get(), queue12, Util::DllPath().parent_path(), NrSettings(), &guides);
+        const bool ready = NrWanted() && AmdPresentExperimental::Render(
+                                             swap.Get(), queue12, Util::DllPath().parent_path(), NrSettings(), &guides);
         FeedFrameGeneration(device12, width, height, ready, guides);
         spentNeural += Util::MillisecondsNow() - start;
 
@@ -626,9 +625,8 @@ struct Bridge
         LOG_INFO("D3D9 bridge frame {}: {}, NR {} at scale {:.2f}, FG {}, XeFG last present {} frames; average ms "
                  "capture {:.2f}, NR {:.2f}, copy back {:.2f}, menu {:.2f}, present {:.2f}; {}",
                  frames, swap != nullptr ? "XeFG presenter" : "D3D9 present", NrWanted(), scale, generating,
-                 queried ? status.framesPresented : 0,
-                 spentCapture / timed, spentNeural / timed, spentBack / timed, spentMenu / timed, spentPresent / timed,
-                 AmdPresentExperimental::Status());
+                 queried ? status.framesPresented : 0, spentCapture / timed, spentNeural / timed, spentBack / timed,
+                 spentMenu / timed, spentPresent / timed, AmdPresentExperimental::Status());
         spentCapture = spentNeural = spentBack = spentMenu = spentPresent = 0;
         timed = 0;
     }
