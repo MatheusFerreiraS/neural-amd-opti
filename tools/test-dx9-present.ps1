@@ -88,6 +88,10 @@ $cases = @(
        Script = "100:mark=nr-moving,220:still,230:mark=nr-still,350:still,360:cpu=8,370:mark=nr-cpu8,490:nr," +
                 "500:mark=off-cpu8,620:cpu=0,630:mark=off-moving,750:still,760:mark=off-still"
        Log = @("D3D9 bridge frame \d+: D3D9 present, NR true") },
+    @{ Name = "timing-nr-ex"; Args = @("--ex", "--borderless", "--size", "1920x1080"); Fg = $false; Frames = 880
+       Script = "100:mark=nr-moving,220:still,230:mark=nr-still,350:still,360:cpu=8,370:mark=nr-cpu8,490:nr," +
+                "500:mark=off-cpu8,620:cpu=0,630:mark=off-moving,750:still,760:mark=off-still"
+       Log = @("D3D9 bridge frame \d+: D3D9 present, NR true", "shared with D3D12") },
     @{ Name = "timing-fg"; Args = @("--borderless", "--size", "1920x1080"); Fg = $true; Frames = 930
        Ini = "[XeFG]`r`nInterpolationCount=2`r`n"
        Script = "150:mark=fg-moving,270:still,280:mark=fg-still,400:still,410:cpu=8,420:mark=fg-cpu8,540:fg," +
