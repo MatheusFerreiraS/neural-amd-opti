@@ -558,11 +558,12 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 {
     // Through the D3D11 bridge, Dx11wDx12SC runs NR before XeFG; the swapchain XeFG presents to is not a second
     // target. On native D3D12 with a frame generation swapchain this is the swapchain frame generation presents
-    // its output to; FinalImageFrameGen has already run NR on the game's frame.
+    // its output to; FinalImageFrameGen has already run NR on the game's frame. D3D9 runs NR in its own bridge.
     const bool fgPresents = State::Instance().swapchainInteropApi == SwapchainInteropApi::None &&
                             State::Instance().currentFGSwapchain != nullptr;
     if (AmdPresentExperimental::IsTarget() && Config::Instance()->DlssNrEnabled.value_or_default() &&
         !State::Instance().currentFeature && !fgPresents &&
+        State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx9wDx12 &&
         !(State::Instance().activeFgOutput == FGOutput::XeFG && State::Instance().currentFGSwapchain == pSwapChain &&
           !FGHooks::IsDx12InteropPresentSC(pSwapChain)) &&
         !(State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&

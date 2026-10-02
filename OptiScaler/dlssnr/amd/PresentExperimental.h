@@ -1172,6 +1172,12 @@ inline bool RenderTexture11(ID3D11Texture2D* texture, ID3D11Device* device,
         return false;
     }
 }
+// Whether the last frame came out of the network, so a caller copying it elsewhere can skip unchanged frames.
+inline bool LastFrameModified()
+{
+    std::lock_guard g(mutex);
+    return context && !context->stopped && context->stableLast;
+}
 inline void BeforeResize()
 {
     Lock g;

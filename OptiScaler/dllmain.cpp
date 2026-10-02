@@ -10,6 +10,7 @@
 #include <misc/FirstLightPTUnlock.h>
 
 #include "proxies/Dxgi_Proxy.h"
+#include "proxies/D3D9_Proxy.h"
 #include "proxies/Kernel32_Proxy.h"
 #include "proxies/KernelBase_Proxy.h"
 #include "proxies/Ntdll_Proxy.h"
@@ -674,6 +675,59 @@ static void CheckWorkingMode()
             {
                 if (!_passThruMode)
                     LOG_ERROR("OptiScaler can't find original winhttp.dll!");
+            }
+
+            break;
+        }
+
+        // d3d9.dll: native D3D9 games, for the final-image NR, XeFG and the menu
+        if (lCaseFilename == "d3d9.dll")
+        {
+            do
+            {
+                auto pluginFilePath = pluginPath / L"d3d9.dll";
+                originalModule = NtdllProxy::LoadLibraryExW_Ldr(pluginFilePath.wstring().c_str(), NULL, 0);
+
+                if (originalModule != nullptr)
+                {
+                    if (!_passThruMode)
+                        LOG_INFO("OptiScaler working as d3d9.dll, original dll loaded from plugin folder");
+
+                    break;
+                }
+
+                originalModule = NtdllProxy::LoadLibraryExW_Ldr(L"d3d9-original.dll", NULL, 0);
+
+                if (originalModule != nullptr)
+                {
+                    if (!_passThruMode)
+                        LOG_INFO("OptiScaler working as d3d9.dll, d3d9-original.dll loaded");
+
+                    break;
+                }
+
+                originalModule = NtdllProxy::LoadLibraryExW_Ldr(L"d3d9.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+
+                if (originalModule != nullptr && !_passThruMode)
+                    LOG_INFO("OptiScaler working as d3d9.dll, system dll loaded");
+
+            } while (false);
+
+            if (originalModule != nullptr)
+            {
+                dllNames.push_back("d3d9.dll");
+                dllNames.push_back("d3d9");
+                dllNamesW.push_back(L"d3d9.dll");
+                dllNamesW.push_back(L"d3d9");
+
+                shared.LoadOriginalLibrary(originalModule);
+                D3D9Proxy::Init(originalModule, !_passThruMode);
+                modeFound = true;
+            }
+            else
+            {
+                if (!_passThruMode)
+                    LOG_ERROR("OptiScaler can't find original d3d9.dll!");
             }
 
             break;

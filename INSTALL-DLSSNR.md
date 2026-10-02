@@ -206,6 +206,40 @@ warmed up and the neural frame and guides are ready. It uses synthetic depth
 on the bridge, so disocclusions and the HUD may still show artifacts. XeFG
 requires its D3D12 proxy swapchain even though the game renders with D3D11.
 
+### 64-bit D3D9 games (experimental)
+
+Name the OptiScaler DLL `d3d9.dll` and put it beside the game's 64-bit
+executable, with the runtime files above. Do not also install OptiScaler as
+`dxgi.dll` in the same folder. If `TargetProcessName` is set, it must name the
+D3D9 executable. A `plugins\d3d9.dll` or `d3d9-original.dll` is loaded in place
+of the system D3D9 runtime, for chaining another D3D9 wrapper.
+
+The full OptiScaler menu (Insert) is drawn on the D3D9 device. With the
+final-image settings above, each frame crosses from D3D9 to D3D12 through system
+memory, because a classic D3D9 device cannot share a texture. NR runs there and
+the result is copied back before the D3D9 Present. On an RX 9070 XT the copies
+cost about 1.5 ms per frame at 1280x720 and 4.5 ms at 1920x1080, on top of the
+network. A D3D9Ex device shares the frame with D3D12 instead. Multisampled
+backbuffers are resolved on the way in and drawn over on the way back.
+
+With the XeFG settings from the D3D11 section, a D3D12 XeFG swapchain takes over
+the game window at the first frame and the D3D9 Present is skipped; the menu is
+then drawn by the D3D12 overlay. This needs a windowed or borderless D3D9 device,
+and a D3D9Ex device with `D3DSWAPEFFECT_FLIPEX` cannot have it, as its own
+swapchain already holds the window (NR and the menu still run there). In
+exclusive fullscreen D3D9 presents again, with NR and the menu. Back in a window,
+or when the game moves to another window, the XeFG swapchain is made again and
+frame generation resumes; the game stops for about 5 seconds while XeFG starts.
+Frame generation runs while NR runs, since its guides come from NR's optical
+flow. Turning NR off, unticking "Final image" or setting FG Output to None in
+the menu turns generation off, and the frames keep going out through the same
+swapchain: D3D9 cannot show a windowed frame in a window that swapchain has
+presented to. The End key toggles generation and Numpad 5 toggles NR. With
+`InterpolationCount` on auto (the INI default, or Auto in the menu's MFG list)
+this route generates two frames per frame: with one, XeFG paces it badly (about
+50 ms per rendered frame at 1920x1080, against 18 ms with two). 32-bit D3D9
+games are not handled by this DLL.
+
 The Optical Flow build needs an in-game visual and resize test before packaging for users.
 
 ## Optional DLSS Frame Generation

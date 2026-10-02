@@ -84,6 +84,7 @@ enum class SwapchainInteropApi : uint32_t
 {
     None,
     Dx11wDx12,
+    Dx9wDx12,
 };
 
 enum class ColorTransfer : uint32_t

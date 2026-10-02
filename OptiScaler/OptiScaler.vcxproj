@@ -491,6 +491,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="with_dx12\dx11_with_dx12.h" />
     <ClInclude Include="with_dx12\with_dx12.h" />
     <ClInclude Include="with_dx12\dx11_with_dx12_sc.h" />
+    <ClInclude Include="with_dx12\dx9_with_dx12.h" />
     <ClInclude Include="misc\HiddenWindow.h" />
     <ClInclude Include="wrapped\wrapped_factory.h" />
     <ClInclude Include="include\spdlog_sink\debug_sink.h" />
@@ -507,6 +508,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="hudfix\Hudfix_Dx11.h" />
     <ClInclude Include="hudfix\Hudfix_Dx12.h" />
     <ClInclude Include="include\imgui\imgui_impl_dx11.h" />
+    <ClInclude Include="include\imgui\imgui_impl_dx9.h" />
     <ClInclude Include="include\imgui\imgui_impl_dx12.h" />
     <ClInclude Include="include\imgui\imgui_impl_uwp.h" />
     <ClInclude Include="include\imgui\imgui_impl_vulkan.h" />
@@ -528,6 +530,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="misc\Quirks.h" />
     <ClInclude Include="OwnedMutex.h" />
     <ClInclude Include="proxies\D3D12_Proxy.h" />
+    <ClInclude Include="proxies\D3D9_Proxy.h" />
     <ClInclude Include="proxies\Dxgi_Proxy.h" />
     <ClInclude Include="proxies\IGDExt_Proxy.h" />
     <ClInclude Include="proxies\Kernel32_Proxy.h" />
@@ -612,6 +615,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="menu\menu_overlay_base.h" />
     <ClInclude Include="menu\menu_overlay_dx.h" />
     <ClInclude Include="menu\menu_overlay_vk.h" />
+    <ClInclude Include="menu\menu_overlay_dx9.h" />
     <ClInclude Include="wrapped\wrapped_swapchain.h" />
     <ClInclude Include="Logger.h" />
     <ClInclude Include="proxies\NVNGX_Proxy.h" />
@@ -757,6 +761,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="with_dx12\dx11_with_dx12.cpp" />
     <ClCompile Include="with_dx12\with_dx12.cpp" />
     <ClCompile Include="with_dx12\dx11_with_dx12_sc.cpp" />
+    <ClCompile Include="with_dx12\dx9_with_dx12.cpp" />
     <ClCompile Include="wrapped\wrapped_factory.cpp" />
     <ClCompile Include="inputs\FG\FSR3_Dx12_FG.cpp" />
     <ClCompile Include="inputs\FG\Streamline_Inputs_Dx12.cpp" />
@@ -765,6 +770,11 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="hudfix\Hudfix_Dx11.cpp" />
     <ClCompile Include="hudfix\Hudfix_Dx12.cpp" />
     <ClCompile Include="include\imgui\imgui_impl_dx11.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="include\imgui\imgui_impl_dx9.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
@@ -858,6 +868,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="menu\menu_overlay_base.cpp" />
     <ClCompile Include="menu\menu_overlay_dx.cpp" />
     <ClCompile Include="menu\menu_overlay_vk.cpp" />
+    <ClCompile Include="menu\menu_overlay_dx9.cpp" />
+    <ClCompile Include="proxies\D3D9_Proxy.cpp" />
     <ClCompile Include="wrapped\wrapped_swapchain.cpp" />
     <ClCompile Include="include\imgui\imgui.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>

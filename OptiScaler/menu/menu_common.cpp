@@ -2002,9 +2002,15 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                 case DX12:
                     if (state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12)
                         api = "D3D11 w/DX12";
+                    else if (state.swapchainInteropApi == SwapchainInteropApi::Dx9wDx12)
+                        api = "D3D9 w/DX12";
                     else
                         api = "D3D12";
 
+                    break;
+
+                case DX9:
+                    api = "D3D9";
                     break;
 
                 default:
@@ -5292,6 +5298,11 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     // FSR FG output requirements
     auto constexpr fsrfgOutputIndex = (uint32_t) FGOutput::FSRFG;
     outputOptions[fsrfgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan, "Unsupported API");
+
+    // D3D9 presents generated frames through its XeFG presenter only
+    const bool d3d9Route = state.swapchainApi == API::DX9 || state.swapchainInteropApi == SwapchainInteropApi::Dx9wDx12;
+    outputOptions[fsrfgOutputIndex].set_disabled(d3d9Route, "Unsupported API");
+    outputOptions[dlssgOutputIndex].set_disabled(d3d9Route, "Unsupported API");
 
     // XeFG output requirements
     auto constexpr xefgOutputIndex = (uint32_t) FGOutput::XeFG;
@@ -9060,7 +9071,7 @@ void MenuCommon::RenderApiAndTextureSettings(RenderMenuContext& ctx)
     auto& menuResScale = ctx.menuResScale;
 
     // DX11 & DX12 -----------------------------
-    if (state.swapchainApi != Vulkan)
+    if (state.swapchainApi != Vulkan && state.swapchainApi != DX9)
     {
         // V-SYNC -----------------------------
         ImGui::Spacing();
