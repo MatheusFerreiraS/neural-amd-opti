@@ -387,18 +387,25 @@ int main(int argc, char** argv)
             }
             else if (action.rfind("press=", 0) == 0 || action == "release")
             {
+                // Injected input: OptiScaler keeps the game from moving the cursor with SetCursorPos while its
+                // menu is open.
                 POINT point {};
+                INPUT input[2] {};
+                input[0].type = input[1].type = INPUT_MOUSE;
+                input[1].mi.dwFlags = action == "release" ? MOUSEEVENTF_LEFTUP : MOUSEEVENTF_LEFTDOWN;
 
                 if (std::sscanf(action.c_str(), "press=%ldx%ld", &point.x, &point.y) == 2)
                 {
                     ClientToScreen(window, &point);
-                    SetCursorPos(point.x, point.y);
+                    input[0].mi.dx = point.x * 65535 / (GetSystemMetrics(SM_CXSCREEN) - 1);
+                    input[0].mi.dy = point.y * 65535 / (GetSystemMetrics(SM_CYSCREEN) - 1);
+                    input[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+                    SendInput(2, input, sizeof(INPUT));
                 }
-
-                INPUT input {};
-                input.type = INPUT_MOUSE;
-                input.mi.dwFlags = action == "release" ? MOUSEEVENTF_LEFTUP : MOUSEEVENTF_LEFTDOWN;
-                SendInput(1, &input, sizeof(input));
+                else
+                {
+                    SendInput(1, &input[1], sizeof(INPUT));
+                }
             }
             else if (action.rfind("mark=", 0) == 0)
                 endPhase(action.substr(5));
