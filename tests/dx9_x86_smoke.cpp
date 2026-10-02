@@ -11,9 +11,11 @@
 //   --expect-fg          OptiScaler must report frame generation active at the end
 //   --menu-at F          press the menu key (Insert) at F, move the mouse over the window, press it again
 //   --key-at F VK        press and release a key (hex or decimal virtual key) at frame F
+//   --drag-at F X0 Y0 X1 Y1  drag with the left button from X0,Y0 to X1,Y1 (client pixels) from frame F on
 //   --reset-at F WxH     Reset the device to a new size at frame F
 //   --kill-host-at F     end the host process at frame F; the proxy must start another
 //   --screen             fail when the window's pixels on screen stop changing
+//   --shot-at F FILE     save what the window shows on screen at frame F as a BMP
 //   --work MS            spend MS milliseconds of CPU on each frame, as a game would
 //   --timeout S          give up after S seconds (default 120)
 #ifndef NOMINMAX
@@ -85,7 +87,7 @@ bool Key(HWND window, WORD vk, bool up)
     return SendInput(1, &input, sizeof(input)) == 1;
 }
 
-bool MoveMouse(HWND window, int x, int y)
+bool MoveMouse(HWND window, int x, int y, DWORD button = 0)
 {
     if (!Foreground(window))
         return false;
@@ -95,7 +97,20 @@ bool MoveMouse(HWND window, int x, int y)
     input.type = INPUT_MOUSE;
     input.mi.dx = static_cast<LONG>(point.x * 65535.0 / (GetSystemMetrics(SM_CXSCREEN) - 1));
     input.mi.dy = static_cast<LONG>(point.y * 65535.0 / (GetSystemMetrics(SM_CYSCREEN) - 1));
-    input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+    input.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | button;
+    return SendInput(1, &input, sizeof(input)) == 1;
+}
+
+// A move as a mouse makes it: relative, which raw input reports as it is.
+bool NudgeMouse(HWND window, int dx, int dy, DWORD button = 0)
+{
+    if (!Foreground(window))
+        return false;
+    INPUT input {};
+    input.type = INPUT_MOUSE;
+    input.mi.dx = dx;
+    input.mi.dy = dy;
+    input.mi.dwFlags = MOUSEEVENTF_MOVE | button;
     return SendInput(1, &input, sizeof(input)) == 1;
 }
 
@@ -110,6 +125,36 @@ COLORREF ScreenPixel(HWND window, int x, int y)
     const COLORREF colour = GetPixel(screen, point.x, point.y);
     ReleaseDC(nullptr, screen);
     return colour;
+}
+
+// The window's client area as the screen shows it, as a 24-bit BMP.
+bool Shot(HWND window, const char* path)
+{
+    RECT client {};
+    GetClientRect(window, &client);
+    POINT origin {};
+    ClientToScreen(window, &origin);
+    BITMAPINFOHEADER header { sizeof(header), client.right, client.bottom, 1, 24, BI_RGB };
+    void* bits = nullptr;
+    HDC screen = GetDC(nullptr), memory = CreateCompatibleDC(screen);
+    HBITMAP bitmap =
+        CreateDIBSection(screen, reinterpret_cast<BITMAPINFO*>(&header), DIB_RGB_COLORS, &bits, nullptr, 0);
+    const HGDIOBJ old = SelectObject(memory, bitmap);
+    BitBlt(memory, 0, 0, client.right, client.bottom, screen, origin.x, origin.y, SRCCOPY);
+    GdiFlush();
+    const DWORD bytes = ((client.right * 3 + 3) & ~3) * client.bottom;
+    BITMAPFILEHEADER file { 0x4D42, DWORD(sizeof(file) + sizeof(header) + bytes), 0, 0,
+                            DWORD(sizeof(file) + sizeof(header)) };
+    FILE* out = nullptr;
+    const bool saved = fopen_s(&out, path, "wb") == 0 && out && fwrite(&file, sizeof(file), 1, out) == 1 &&
+                       fwrite(&header, sizeof(header), 1, out) == 1 && fwrite(bits, bytes, 1, out) == 1;
+    if (out)
+        fclose(out);
+    SelectObject(memory, old);
+    DeleteObject(bitmap);
+    DeleteDC(memory);
+    ReleaseDC(nullptr, screen);
+    return saved;
 }
 
 DWORD HostProcess()
@@ -165,10 +210,16 @@ DWORD WINAPI Watchdog(LPVOID seconds)
 int main(int argc, char** argv)
 {
     bool ex = false, native = false, vsync = false, expectBridged = false, expectFg = false, screen = false;
-    int frames = 240, menuAt = -1, resetAt = -1, killAt = -1, timeout = 120;
+    int frames = 240, menuAt = -1, resetAt = -1, killAt = -1, timeout = 120, shotAt = -1;
+    const char* shotPath = nullptr;
     double work = 0;
     UINT width = 1280, height = 720, resetWidth = 0, resetHeight = 0;
     std::vector<std::pair<int, WORD>> keys;
+    struct Drag
+    {
+        int at, x0, y0, x1, y1;
+    };
+    std::vector<Drag> drags;
     for (int i = 1; i < argc; ++i)
     {
         const std::string a = argv[i];
@@ -197,6 +248,11 @@ int main(int argc, char** argv)
             menuAt = atoi(next());
         else if (a == "--kill-host-at")
             killAt = atoi(next());
+        else if (a == "--shot-at")
+        {
+            shotAt = atoi(next());
+            shotPath = next();
+        }
         else if (a == "--reset-at")
         {
             resetAt = atoi(next());
@@ -206,6 +262,16 @@ int main(int argc, char** argv)
         {
             const int at = atoi(next());
             keys.push_back({ at, static_cast<WORD>(strtoul(next(), nullptr, 0)) });
+        }
+        else if (a == "--drag-at")
+        {
+            Drag d {};
+            d.at = atoi(next());
+            d.x0 = atoi(next());
+            d.y0 = atoi(next());
+            d.x1 = atoi(next());
+            d.y1 = atoi(next());
+            drags.push_back(d);
         }
         else
             return Fail(("unknown option " + a).c_str());
@@ -330,6 +396,28 @@ int main(int argc, char** argv)
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        // A drag: the cursor to the start, a relative nudge there and back (a menu reading another
+        // process's window follows a mouse by its relative moves, from where the cursor was), button
+        // down, twelve relative steps, button up; one event a frame, as OptiScaler reads the mouse once a
+        // frame.
+        for (const auto& d : drags)
+        {
+            const int step = frame - d.at;
+            bool sent = true;
+            if (step == 0)
+                sent = MoveMouse(window, d.x0, d.y0);
+            else if (step == 2)
+                sent = NudgeMouse(window, 1, 0);
+            else if (step == 4)
+                sent = NudgeMouse(window, -1, 0, MOUSEEVENTF_LEFTDOWN);
+            else if (step > 7 && step <= 19)
+                sent = NudgeMouse(window, (d.x1 - d.x0) / 12, (d.y1 - d.y0) / 12);
+            else if (step == 22)
+                sent = NudgeMouse(window, 0, 0, MOUSEEVENTF_LEFTUP);
+            else
+                continue;
+            (sent ? keysSent : keysSkipped)++;
+        }
         for (const auto& [at, vk] : keys)
         {
             if (frame == at || frame == at + 6)
@@ -399,6 +487,11 @@ int main(int argc, char** argv)
         {
             printf("Present failed %08lX at frame %d\n", hr, frame);
             return Fail("Present");
+        }
+        if (frame == shotAt)
+        {
+            Sleep(50);
+            printf("shot %s: %s\n", shotPath, Shot(window, shotPath) ? "saved" : "failed");
         }
         // Right of centre: an on-screen display such as RivaTuner's draws over the left side.
         if (frame == frames - 40 || frame == frames - 10)

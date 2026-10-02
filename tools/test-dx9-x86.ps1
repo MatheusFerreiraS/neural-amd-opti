@@ -66,6 +66,14 @@ function Run-Once([string]$name, [string[]]$ini, [string[]]$arguments, [scriptbl
     }
     Get-Process OptiScalerDx9Host -ErrorAction SilentlyContinue | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
     $text = Get-Content $out -Raw
+    $bmp = Join-Path $stage "$name.bmp"
+    if (Test-Path $bmp) {
+        Add-Type -AssemblyName System.Drawing
+        $image = [Drawing.Image]::FromFile($bmp)
+        $image.Save((Join-Path $stage "$name.png"), [Drawing.Imaging.ImageFormat]::Png)
+        $image.Dispose()
+        Remove-Item $bmp
+    }
     Start-Sleep -Milliseconds 500
     Get-ChildItem $host64 -Filter *.log | ForEach-Object {
         Copy-Item $_.FullName (Join-Path $stage "$name.$($_.Name)") -Force -ErrorAction SilentlyContinue }
@@ -96,7 +104,7 @@ try {
     $screenArg = if ($screen) { @('--screen') } else { @() }
     if (-not $screen) { Write-Host 'Screen capture shows no change even for the native D3D9 path; screen checks are skipped.' }
 
-    Run-Case 'bridge' @() (@('--frames', '300', '--expect-bridged') + $screenArg) {
+    Run-Case 'bridge' @() (@('--frames', '300', '--expect-bridged', '--shot-at', '250', 'bridge.bmp') + $screenArg) {
         param($text)
         if ((Count 'OptiScaler.log' 'OptiScaler working as OptiScaler.dll') -eq 0) { 'OptiScaler.dll did not start in the host' }
         if ((Count 'dx9-host.log' 'presented') -eq 0) { 'the host logged no presented frame' }
@@ -135,7 +143,18 @@ try {
         if ((Count 'OptiScaler.log' 'setting DlssNrEnabled to false') -eq 0) { 'NR was not turned off' }
         if ((Count 'OptiScaler.log' 'setting FGEnabled to false') -eq 0) { 'frame generation was not turned off' }
     }
-    Run-Case 'menu' $nr @('--frames', '300', '--menu-at', '100') $null
+    # The archived bridge lost frame generation when the NR model scale changed: open the menu, drag the
+    # final-image Model scale slider (where the menu draws it at 1280x720; twice, as a scripted click is
+    # sometimes missed) and keep going with XeFG on.
+    Run-Case 'nr-scale-fg' $fg @('--frames', '900', '--expect-bridged', '--expect-fg', '--key-at', '300', '0x2D',
+        '--drag-at', '340', '470', '395', '420', '395', '--drag-at', '380', '470', '395', '420', '395', '--shot-at', '420',
+        'nr-scale-fg.bmp', '--key-at', '440', '0x2D') {
+        param($text)
+        $last = Select-String -Path (Join-Path $host64 'amd_presr.log') -Pattern 'Completed AMD pre-SR passes=\d+ at (\d+x\d+)' |
+            Select-Object -Last 1
+        if (-not $last -or $last.Matches[0].Groups[1].Value -eq '1280x720') { 'NR did not run at a new model scale' }
+    }
+    Run-Case 'menu' $nr @('--frames', '300', '--menu-at', '100', '--shot-at', '150', 'menu.bmp') $null
     Run-Case 'reset' $nr (@('--frames', '400', '--expect-bridged', '--reset-at', '200', '1600x900') + $screenArg) {
         param($text)
         if ($text -notmatch 'hostStarts=1 ') { 'the host was restarted for a resize without frame generation' }
@@ -144,7 +163,7 @@ try {
         param($text)
         if ((Count 'dx9-x86.log' 'host 2 connected') -eq 0) { 'no second host' }
     }
-    Run-Case 'restart' $fg @('--frames', '900', '--vsync', '--work', '10', '--kill-host-at', '200') {
+    Run-Case 'restart' $fg @('--frames', '900', '--vsync', '--work', '10', '--kill-host-at', '200', '--expect-fg') {
         param($text)
         if ((Count 'dx9-x86.log' 'host 2 connected') -eq 0) { 'no second host' }
     }
