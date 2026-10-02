@@ -780,6 +780,26 @@ struct Bridge11
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     bool stopped = false;
 
+    bool Wait11()
+    {
+        D3D11_QUERY_DESC desc {};
+        desc.Query = D3D11_QUERY_EVENT;
+        ComPtr<ID3D11Query> done;
+        if (FAILED(game->CreateQuery(&desc, &done)))
+            return false;
+        immediate->End(done.Get());
+        immediate->Flush();
+        const auto start = GetTickCount64();
+        for (;;)
+        {
+            const HRESULT hr = immediate->GetData(done.Get(), nullptr, 0, 0);
+            if (hr == S_OK)
+                return SUCCEEDED(game->GetDeviceRemovedReason());
+            if (hr != S_FALSE || GetTickCount64() - start > 2000 || FAILED(game->GetDeviceRemovedReason()))
+                return false;
+            Sleep(1);
+        }
+    }
     void ReleaseShared()
     {
         depthTarget.Reset();
@@ -817,15 +837,20 @@ struct Bridge11
         D3D12_COMMAND_QUEUE_DESC queueDesc {};
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         Check(work->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue)));
+        // Without D3D11.4 fences (an overlay's device wrapper, an old runtime) the CPU waits for each side instead.
         ComPtr<ID3D11Device5> device5;
-        Check(game.As(&device5));
-        Check(immediate.As(&immediate4));
-        Check(device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence11)));
         HANDLE shared = nullptr;
-        Check(fence11->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &shared));
-        const HRESULT opened = work->OpenSharedHandle(shared, IID_PPV_ARGS(&fence12));
-        CloseHandle(shared);
-        Check(opened);
+        if (FAILED(game.As(&device5)) || FAILED(immediate.As(&immediate4)) ||
+            FAILED(device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence11))) ||
+            FAILED(fence11->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &shared)) ||
+            FAILED(work->OpenSharedHandle(shared, IID_PPV_ARGS(&fence12))))
+        {
+            LOG_WARN("Final-image NR: no shared D3D11 fence, waiting on the CPU");
+            fence11.Reset();
+            fence12.Reset();
+        }
+        if (shared)
+            CloseHandle(shared);
         engine = new Context(work.Get(), queue.Get());
     }
     void EnsureShared(UINT w, UINT h, DXGI_FORMAT f)
@@ -965,6 +990,19 @@ struct Bridge11
             return;
         const bool realDepth = captureDepth && CaptureDepth(desc.Width, desc.Height);
         immediate->CopyResource(shared11.Get(), back);
+        if (!fence11)
+        {
+            if (!Wait11())
+                throw std::runtime_error("Final-image NR: D3D11 input copy timed out");
+            const bool modified = engine->Frame(shared12.Get(), D3D12_RESOURCE_STATE_COMMON, directory, settings,
+                                                realDepth ? sharedDepth12.Get() : nullptr);
+            if (!engine->WaitForFrame())
+                throw std::runtime_error("Final-image NR: GPU timeout; stopped");
+            if (modified)
+                immediate->CopyResource(back, shared11.Get());
+            immediate->Flush();
+            return;
+        }
         Check(immediate4->Signal(fence11.Get(), ++fenceValue));
         immediate->Flush();
         Check(queue->Wait(fence12.Get(), fenceValue));
