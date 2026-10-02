@@ -91,16 +91,76 @@ struct OverlayContext
 
 static OverlayContext _overlay;
 static thread_local bool _inPresent = false;
+static std::atomic<HWND> _gameWindow = nullptr;
 
-static void Present(HDC hdc)
+// The menu, NR, XeFG and the forced swap interval follow one window: the first that presents, until it
+// is destroyed or hidden. Presents to other windows of the game (a second view, a debug window) pass
+// through untouched.
+static bool IsGameWindow(HWND hwnd)
+{
+    HWND bound = _gameWindow.load();
+    if (bound == hwnd)
+        return true;
+
+    if (bound != nullptr && IsWindow(bound) && IsWindowVisible(bound))
+        return false;
+
+    if (!_gameWindow.compare_exchange_strong(bound, hwnd))
+        return false;
+
+    LOG_INFO("OpenGL: OptiScaler follows the presents to window {:X}; other windows pass through", (size_t) hwnd);
+    return true;
+}
+
+// The menu's V-Sync settings, as on DXGI: off is interval 0, on is the chosen interval, at least 1.
+// The swap interval belongs to the game's context, which is current here. The game's own interval is
+// kept from the first time it is forced and given back once the setting is reset.
+static void ApplyVsync(HDC hdc)
+{
+    auto config = Config::Instance();
+    static int gameInterval = -1;
+    if ((!config->ForceVsync.has_value() && gameInterval < 0) || o_wglGetCurrentDC() != hdc)
+        return;
+
+    static auto setInterval = (PFN_wglSwapIntervalEXT) GLHooks::GetProc("wglSwapIntervalEXT");
+    static auto getInterval = (PFN_wglGetSwapIntervalEXT) GLHooks::GetProc("wglGetSwapIntervalEXT");
+    if (setInterval == nullptr || getInterval == nullptr)
+        return;
+
+    if (!config->ForceVsync.has_value())
+    {
+        if (setInterval(gameInterval))
+            LOG_INFO("OpenGL: swap interval back to the game's {}", gameInterval);
+        gameInterval = -1;
+        return;
+    }
+
+    if (gameInterval < 0)
+        gameInterval = getInterval();
+
+    const int interval =
+        config->ForceVsync.value() ? std::max(1, static_cast<int>(config->VsyncInterval.value_or_default())) : 0;
+    static int logged = -1;
+    if (getInterval() != interval && setInterval(interval) && logged != interval)
+    {
+        logged = interval;
+        LOG_INFO("OpenGL: swap interval set to {}", interval);
+    }
+}
+
+// True for a present to the game's window, the one OptiScaler follows.
+static bool Present(HDC hdc)
 {
     if (_inPresent)
-        return;
+        return false;
 
     HWND hwnd = WindowFromDC(hdc);
+    if (hwnd == nullptr || !IsGameWindow(hwnd))
+        return false;
+
     RECT rect {};
-    if (hwnd == nullptr || IsIconic(hwnd) || !GetClientRect(hwnd, &rect) || rect.right <= 0 || rect.bottom <= 0)
-        return;
+    if (IsIconic(hwnd) || !GetClientRect(hwnd, &rect) || rect.right <= 0 || rect.bottom <= 0)
+        return true;
 
     _inPresent = true;
     State::Instance().swapchainApi = OpenGL;
@@ -124,30 +184,9 @@ static void Present(HDC hdc)
         MenuOverlayGl::Draw(_overlay.generation);
 
     _overlay.Leave();
+    ApplyVsync(hdc);
     _inPresent = false;
-}
-
-// The menu's V-Sync settings, as on DXGI: off is interval 0, on is the chosen interval, at least 1.
-// The swap interval belongs to the game's context, which is current here.
-static void ApplyVsync(HDC hdc)
-{
-    auto config = Config::Instance();
-    if (!config->ForceVsync.has_value() || o_wglGetCurrentDC() != hdc)
-        return;
-
-    static auto setInterval = (PFN_wglSwapIntervalEXT) GLHooks::GetProc("wglSwapIntervalEXT");
-    static auto getInterval = (PFN_wglGetSwapIntervalEXT) GLHooks::GetProc("wglGetSwapIntervalEXT");
-    if (setInterval == nullptr || getInterval == nullptr)
-        return;
-
-    const int interval =
-        config->ForceVsync.value() ? std::max(1, static_cast<int>(config->VsyncInterval.value_or_default())) : 0;
-    static int logged = -1;
-    if (getInterval() != interval && setInterval(interval) && logged != interval)
-    {
-        logged = interval;
-        LOG_INFO("OpenGL: swap interval set to {}", interval);
-    }
+    return true;
 }
 
 static void AfterPresent()
@@ -159,25 +198,19 @@ static void AfterPresent()
 VALIDATE_HOOK(hkwglSwapBuffers, PFN_wglSwapBuffers)
 static BOOL WINAPI hkwglSwapBuffers(HDC hdc)
 {
-    Present(hdc);
-    ApplyVsync(hdc);
+    const bool game = Present(hdc);
     auto result = o_wglSwapBuffers(hdc);
-    AfterPresent();
+    if (game)
+        AfterPresent();
     return result;
 }
 
 VALIDATE_HOOK(hkwglSwapLayerBuffers, PFN_wglSwapLayerBuffers)
 static BOOL WINAPI hkwglSwapLayerBuffers(HDC hdc, UINT planes)
 {
-    if (planes & WGL_SWAP_MAIN_PLANE)
-    {
-        Present(hdc);
-        ApplyVsync(hdc);
-    }
-
+    const bool game = (planes & WGL_SWAP_MAIN_PLANE) && Present(hdc);
     auto result = o_wglSwapLayerBuffers(hdc, planes);
-
-    if (planes & WGL_SWAP_MAIN_PLANE)
+    if (game)
         AfterPresent();
 
     return result;

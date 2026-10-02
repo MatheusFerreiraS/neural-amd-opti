@@ -5,7 +5,7 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 $mode = if ($args.Count -gt 0) { $args[0] } else { "recreate" }
 $runtime = if ($args.Count -gt 1) { $args[1] } else { "" }
 $fg = $args.Count -gt 2 -and $args[2] -eq "fg"
-if ($mode -notin @("recreate", "resize")) { throw "mode must be recreate or resize" }
+if ($mode -notin @("recreate", "resize", "two", "twosame")) { throw "mode must be recreate, resize, two or twosame" }
 if (-not (Test-Path (Join-Path $runtime "dlssnr_amd_pass1.dll"))) {
     throw "a runtime folder with dlssnr_amd_pass1.dll and dlssnr_on_amd_weights.bin is needed"
 }
@@ -77,7 +77,21 @@ function Expect([string]$line, [int]$least = 1, [int]$most = [int]::MaxValue) {
 }
 Expect "OptiScaler working as opengl32.dll"
 Expect "OpenGL final-image NR: first frame processed"
-if ($mode -eq "recreate") {
+if ($mode -like "two*") {
+    # The second window passes through: one window followed, one menu setup, one crossing, one presenter.
+    Expect "OpenGL: OptiScaler follows the presents to window" 1 1
+    Expect "OpenGL menu: ImGui renderer ready" 1 1
+    Expect "OpenGL menu: opened" 1 1
+    Expect "OpenGL menu: closed" 1 1
+    Expect "crosses as a D3D12 texture" 1 1
+    Expect "OpenGL final-image NR: back buffer 1280x720" 1 1
+    if ($fg) {
+        Expect "OpenGL XeFG presenter created at 1280x720" 1 1
+        Expect "OpenGL XeFG: the game window changed" 0 0
+        Expect "generated 1, result 0"
+    }
+}
+elseif ($mode -eq "recreate") {
     Expect "OpenGL final-image NR: back buffer 1280x720" 1 1
     if ($fg) {
         Expect "OpenGL XeFG: the game window changed" 1 1

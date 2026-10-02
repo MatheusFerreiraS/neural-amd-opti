@@ -6,8 +6,12 @@
 //             a normal frame time.
 //   resize:   the client size changes every 8 frames through 150 sizes, as a drag of the window
 //             border does, then holds the last size. The process may not keep a handle per size.
+//   two:      one context presents to the game's window and to a second 640x360 window every frame,
+//             as an emulator with a second screen does; twosame makes both 1280x720. Insert is posted
+//             to the game's window to open the menu and again to close it. The frame time has to stay
+//             normal; the runner checks that the menu, NR and XeFG stay on the game's window.
 //
-//   gl_window_smoke.exe recreate|resize
+//   gl_window_smoke.exe recreate|resize|two|twosame
 // Prints the process handle count and frame times. Exit 0 on success, 1 on a failed check, 3 when the
 // watchdog fires.
 
@@ -85,11 +89,11 @@ static void ClientSize(int width, int height, RECT& outer)
 }
 
 // A game is the foreground window, and frame generation pauses when it is not.
-static HWND NewWindow()
+static HWND NewWindow(int width = 1280, int height = 720, int x = 40)
 {
     RECT outer;
-    ClientSize(1280, 720, outer);
-    HWND hwnd = CreateWindowW(L"OptiGlWindowSmoke", L"Opti OpenGL window smoke", WS_OVERLAPPEDWINDOW, 40, 40,
+    ClientSize(width, height, outer);
+    HWND hwnd = CreateWindowW(L"OptiGlWindowSmoke", L"Opti OpenGL window smoke", WS_OVERLAPPEDWINDOW, x, 40,
                               outer.right - outer.left, outer.bottom - outer.top, nullptr, nullptr,
                               GetModuleHandleW(nullptr), nullptr);
     if (!hwnd)
@@ -118,12 +122,51 @@ static void Rect(float x0, float y0, float x1, float y1)
 // Taken just before the resizes start, after NR and XeFG have set up.
 static DWORD handlesBefore = 0;
 
+static void Draw(HWND hwnd, int frame)
+{
+    RECT client {};
+    GetClientRect(hwnd, &client);
+    glViewport(0, 0, client.right, client.bottom);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0, client.right, 0, client.bottom, -1, 1);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glColor3f(1.0f, 0.0f, 0.0f);
+    Rect(client.right - 300.0f, client.bottom - 200.0f, client.right - 40.0f, client.bottom - 40.0f);
+    for (int i = 0; i < 8; i++)
+    {
+        const float x = float((frame * 4 + i * 150) % 1200);
+        glColor3f(0.1f + 0.1f * i, 0.8f - 0.08f * i, 0.3f + 0.06f * i);
+        Rect(x, 260.0f + i * 25, x + 90, 300.0f + i * 25);
+    }
+}
+
+// Presents to one window, then checks what a game relies on after its SwapBuffers.
+static int Present(HDC hdc, HGLRC context)
+{
+    if (!SwapBuffers(hdc))
+        return Fail("SwapBuffers");
+    if (wglGetCurrentContext() != context || wglGetCurrentDC() != hdc)
+        return Fail("the game's context is not current after the present");
+    if (glGetError() != GL_NO_ERROR)
+        return Fail("GL error in the game's context");
+    return 0;
+}
+
+static void PostInsert(HWND hwnd)
+{
+    PostMessageW(hwnd, WM_KEYDOWN, VK_INSERT, 0x00520001);
+    PostMessageW(hwnd, WM_KEYUP, VK_INSERT, 0xC0520001);
+}
+
 // Presents at least the given frames on a fresh context; resize changes the client size every 8
 // frames for 150 sizes and then holds the last size for 2 s, longer than OptiScaler waits for a size
-// to settle. tail is the average frame time in ms over the last 120 frames.
-static int Run(HWND hwnd, int frames, bool resize, double& tail)
+// to settle. A second window, when given, is presented right after the first with the same context.
+// tail is the average frame time in ms over the last 120 frames.
+static int Run(HWND hwnd, int frames, bool resize, double& tail, HWND second = nullptr)
 {
     HDC hdc = GetDC(hwnd);
+    HDC secondDc = second ? GetDC(second) : nullptr;
     PIXELFORMATDESCRIPTOR pfd { sizeof(pfd), 1 };
     pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
     pfd.iPixelType = PFD_TYPE_RGBA;
@@ -131,7 +174,7 @@ static int Run(HWND hwnd, int frames, bool resize, double& tail)
     pfd.cAlphaBits = 8;
     pfd.cDepthBits = 24;
     const int format = ChoosePixelFormat(hdc, &pfd);
-    if (format == 0 || !SetPixelFormat(hdc, format, &pfd))
+    if (format == 0 || !SetPixelFormat(hdc, format, &pfd) || (secondDc && !SetPixelFormat(secondDc, format, &pfd)))
         return Fail("pixel format");
     HGLRC context = wglCreateContext(hdc);
     if (!context || !wglMakeCurrent(hdc, context))
@@ -157,27 +200,21 @@ static int Run(HWND hwnd, int frames, bool resize, double& tail)
             resized = GetTickCount64();
         }
 
-        RECT client {};
-        GetClientRect(hwnd, &client);
-        glViewport(0, 0, client.right, client.bottom);
-        glMatrixMode(GL_PROJECTION);
-        glLoadIdentity();
-        glOrtho(0, client.right, 0, client.bottom, -1, 1);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glColor3f(1.0f, 0.0f, 0.0f);
-        Rect(client.right - 300.0f, client.bottom - 200.0f, client.right - 40.0f, client.bottom - 40.0f);
-        for (int i = 0; i < 8; i++)
+        if (second && (frame == 200 || frame == 260))
+            PostInsert(hwnd);
+
+        Draw(hwnd, frame);
+        if (const int result = Present(hdc, context))
+            return result;
+        if (second)
         {
-            const float x = float((frame * 4 + i * 150) % 1200);
-            glColor3f(0.1f + 0.1f * i, 0.8f - 0.08f * i, 0.3f + 0.06f * i);
-            Rect(x, 260.0f + i * 25, x + 90, 300.0f + i * 25);
+            if (!wglMakeCurrent(secondDc, context))
+                return Fail("wglMakeCurrent on the second window");
+            Draw(second, frame);
+            if (const int result = Present(secondDc, context))
+                return result;
+            wglMakeCurrent(hdc, context);
         }
-        if (!SwapBuffers(hdc))
-            return Fail("SwapBuffers");
-        if (wglGetCurrentContext() != context || wglGetCurrentDC() != hdc)
-            return Fail("the game's context is not current after the present");
-        if (glGetError() != GL_NO_ERROR)
-            return Fail("GL error in the game's context");
         QueryPerformanceCounter(&stamps[frame % 121]);
     }
     const auto last = stamps[(frame - 1) % 121].QuadPart, first = stamps[frame % 121].QuadPart;
@@ -186,6 +223,8 @@ static int Run(HWND hwnd, int frames, bool resize, double& tail)
     wglMakeCurrent(nullptr, nullptr);
     wglDeleteContext(context);
     ReleaseDC(hwnd, hdc);
+    if (second)
+        ReleaseDC(second, secondDc);
     return 0;
 }
 
@@ -193,8 +232,10 @@ int main(int argc, char** argv)
 {
     const bool recreate = argc > 1 && std::strcmp(argv[1], "recreate") == 0;
     const bool resize = argc > 1 && std::strcmp(argv[1], "resize") == 0;
-    if (!recreate && !resize)
-        return Fail("mode must be recreate or resize");
+    const bool twosame = argc > 1 && std::strcmp(argv[1], "twosame") == 0;
+    const bool two = twosame || (argc > 1 && std::strcmp(argv[1], "two") == 0);
+    if (!recreate && !resize && !two)
+        return Fail("mode must be recreate, resize, two or twosame");
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CreateThread(nullptr, 0, Watchdog, nullptr, 0, nullptr);
     AddVectoredExceptionHandler(1, ReportFault);
@@ -208,11 +249,22 @@ int main(int argc, char** argv)
     if (!RegisterClassW(&type))
         return Fail("RegisterClass");
 
+    // The second window opens first, so the game's window ends in the foreground.
+    HWND second = two ? NewWindow(twosame ? 1280 : 640, twosame ? 720 : 360, 1360) : nullptr;
     HWND hwnd = NewWindow();
-    if (!hwnd)
+    if (!hwnd || (two && !second))
         return Fail("CreateWindow");
     double tail = 0;
-    if (recreate)
+    if (two)
+    {
+        if (const int result = Run(hwnd, 600, false, tail, second))
+            return result;
+        std::printf("two windows: %.2f ms per frame over the last 120 frames\n", tail);
+        DestroyWindow(second);
+        if (tail > 50.0)
+            return Fail("presenting to a second window slows the game down");
+    }
+    else if (recreate)
     {
         if (const int result = Run(hwnd, 600, false, tail))
             return result;

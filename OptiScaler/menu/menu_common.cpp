@@ -9140,8 +9140,9 @@ void MenuCommon::RenderApiAndTextureSettings(RenderMenuContext& ctx)
             }
             ImGui::PopItemWidth();
 
-            ShowHelpMarker("Controls the DXGI Present sync interval, which determines how\n"
-                           "the swap chain waits for vertical refresh.\n\n"
+            ShowHelpMarker("Controls the DXGI Present sync interval (the swap interval on\n"
+                           "OpenGL), which determines how the swap chain waits for vertical\n"
+                           "refresh.\n\n"
                            "0  = Present immediately, no VSync wait.\n"
                            "1  = Sync to every refresh, normal VSync.\n"
                            "2+ = Present every N refreshes, reducing effective frame rate.\n\n"
