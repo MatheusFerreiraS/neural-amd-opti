@@ -69,9 +69,9 @@ struct FgWindow
         thread = std::thread(
             [created, parent, width, height]
             {
-                HWND window = CreateWindowExW(WS_EX_NOPARENTNOTIFY, L"OptiScalerVulkanXeFG", L"",
-                                              WS_CHILD | WS_VISIBLE | WS_DISABLED, 0, 0, width, height, parent, nullptr,
-                                              GetModuleHandleW(nullptr), nullptr);
+                HWND window =
+                    CreateWindowExW(WS_EX_NOPARENTNOTIFY, L"OptiScalerVulkanXeFG", L"", WS_CHILD | WS_DISABLED, 0, 0,
+                                    width, height, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
                 if (!window)
                     LOG_ERROR("Vulkan XeFG: child window failed ({})", GetLastError());
                 created->set_value(window);
@@ -198,7 +198,6 @@ struct FgPresenter
             return false;
         this->queue = queue;
         window = output.window;
-        visible = true;
         const auto created = XeFGProxy::D3D12CreateContext()(device, &context);
         if (created != XEFG_SWAPCHAIN_RESULT_SUCCESS)
         {
@@ -874,8 +873,11 @@ struct Bridge
     bool PresentGenerated(VkPresentInfoKHR& present)
     {
         fgPending = false;
+        // A frame marked before a present that failed further down is not this one; it is skipped.
         const uint32_t imageIndex = present.pImageIndices[0];
-        if (imageIndex != fgImage || !Begin())
+        if (imageIndex != fgImage)
+            return true;
+        if (!Begin())
             return false;
         auto image = images[imageIndex];
         ImageBarrier(command, image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0,
@@ -1001,8 +1003,26 @@ struct Bridge
     }
 };
 
+// Logs the average time of one per-present step every 120 presents.
+struct Timing
+{
+    uint64_t micros = 0;
+    unsigned count = 0;
+
+    void Add(std::chrono::steady_clock::time_point start, const char* step)
+    {
+        micros += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+        if (++count < 120)
+            return;
+        LOG_INFO("Vulkan final-image bridge: {} average {:.1f} ms over 120 presents", step, micros / 120000.0);
+        micros = count = 0;
+    }
+};
+
 std::mutex mutex;
 Bridge bridge;
+Timing nrTiming, fgTiming;
 }
 
 void Created(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, HWND hwnd,
@@ -1054,6 +1074,7 @@ bool Process(VkQueue queue, VkPresentInfoKHR& present)
         config->NrBackend.value_or_default() != "daniel" || present.swapchainCount != 1 ||
         State::Instance().swapchainApi != API::Vulkan)
     {
+        bridge.fgPending = false;
         // XeFG shows the last frame it was given until it is paused.
         if (fgLive)
         {
@@ -1091,17 +1112,7 @@ bool Process(VkQueue queue, VkPresentInfoKHR& present)
         AmdPresentExperimental::Report("Vulkan NR: copy or synchronization failed; restart required");
         return false;
     }
-    static uint64_t totalMicros = 0;
-    static unsigned measured = 0;
-    totalMicros += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now() - start).count());
-    if (++measured == 120)
-    {
-        LOG_INFO("Vulkan final-image bridge: {} average {:.1f} ms over 120 presents",
-                 bridge.gpuInterop ? "shared D3D12 image" : "host readback", totalMicros / 120000.0);
-        measured = 0;
-        totalMicros = 0;
-    }
+    nrTiming.Add(start, bridge.gpuInterop ? "shared D3D12 image" : "host readback");
     static std::once_flag copiedOnce;
     std::call_once(copiedOnce, [&] {
         LOG_INFO("Vulkan final-image bridge: first frame processed using {}",
@@ -1117,8 +1128,12 @@ bool PresentGenerated(VkPresentInfoKHR& present)
     std::lock_guard lock(mutex);
     if (!bridge.fgPending || bridge.swapchain != present.pSwapchains[0])
         return true;
+    const auto start = std::chrono::steady_clock::now();
     if (bridge.PresentGenerated(present))
+    {
+        fgTiming.Add(start, "XeFG copy and present");
         return true;
+    }
     bridge.stopped = true;
     bridge.fg.Release();
     AmdPresentExperimental::Report("Vulkan NR: copy or synchronization failed; restart required");
