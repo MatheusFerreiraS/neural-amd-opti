@@ -117,4 +117,5 @@ with a runtime and XeFG, and runs `tests\dx9_x86_smoke.cpp` through every case u
 native D3D9, the bridge on D3D9 and D3D9Ex, the memory transport, NR with its toggle key, NR with
 XeFG with the frame generation key and a device Reset to a new size, NR and frame generation both
 turned off, the menu with mouse input held from the game, a Reset without frame generation, the host
-ended mid-run with and without frame generation, and frame times at 1920x1080.
+ended mid-run with and without frame generation, the final-image Model scale dragged in the menu with
+XeFG on, and frame times at 1920x1080.
