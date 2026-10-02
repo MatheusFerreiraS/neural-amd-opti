@@ -144,6 +144,7 @@ class Backend
     // Must run immediately AFTER real queue submission, including non-upscale lists.
     void Submitted(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
     bool Ready();
+    bool Failed() const;      // stopped for the process: load, device or runtime failure, or shutdown
     bool Shutdown();          // call before loader-lock teardown, after all submissions
     void InvalidateHistory(); // applied at the next safe recording boundary
     std::string Status() const;

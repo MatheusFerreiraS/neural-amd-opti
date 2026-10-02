@@ -399,7 +399,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
         settings.spinDraw = 0;
         AmdPresentExperimental::Guides guides;
         const bool ready = AmdPresentExperimental::Render(_fgSwapChain, _dx12CommandQueue,
-                                                          Util::DllPath().parent_path(), settings, &guides, neural);
+                                                          Util::DllPath().parent_path(), settings, &guides, neural, true);
         static unsigned unavailableFrames = 0;
         if (ready)
             unavailableFrames = 0;

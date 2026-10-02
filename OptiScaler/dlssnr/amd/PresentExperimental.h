@@ -32,6 +32,8 @@ inline bool IsTarget()
 }
 inline std::string status = "Final-image NR: waiting for a D3D11, D3D12 or Vulkan frame";
 inline std::mutex mutex;
+// The runtime loads once per process and stays on the device it was built on.
+inline bool runtimeLoaded = false;
 inline void Check(HRESULT h)
 {
     if (FAILED(h))
@@ -53,7 +55,15 @@ struct Context
     ComPtr<ID3D12GraphicsCommandList> cmd;
     ComPtr<ID3D12Fence> fence;
     UINT64 serial = 0;
-    ComPtr<ID3D12Resource> input, motion, depth, output;
+    ComPtr<ID3D12Resource> input, motion, depth, output, heldBack;
+    // Guides frame generation may still hold from before a resize, kept until two frames after it.
+    ComPtr<ID3D12Resource> retired[2];
+    UINT64 retiredUntil = 0;
+    UINT busyFrames = 0;
+    bool failedReported = false, formatReported = false;
+    // The D3D11 routes let the GPU run a frame's NR while the game prepares the next one; the runtime then skips a
+    // frame it has no free slot for. Otherwise every frame waits for its NR before Present.
+    bool pipelined = false;
     ComPtr<ID3D12DescriptorHeap> heap, clearCpu;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pipeline;
@@ -73,7 +83,7 @@ struct Context
     AmdPreSr::Backend* backend = nullptr;
     std::unique_ptr<AmdPreSr::ResidualStabilizer> stabilizer;
     bool stableLast = false;
-    bool lastFlowValid = false, lastReset = false;
+    bool lastFlowValid = false, lastReset = false, lastNeural = true;
     ULONGLONG lastModifiedTick = 0;
     UINT width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
@@ -93,13 +103,19 @@ struct Context
         CloseHandle(done);
         return signaled;
     }
-    void BeforeResize()
+    void ReleaseBackBuffer()
     {
-        if (!WaitForFrame())
+        if (WaitForFrame())
+            heldBack.Reset();
+        else
         {
             stopped = true;
-            status = "Final-image NR: GPU timeout; stopped";
+            status = "Final-image NR: GPU timeout; backbuffer retained until process exit";
         }
+    }
+    void BeforeResize()
+    {
+        ReleaseBackBuffer();
         if (stopped)
             return;
         if (flowCreated)
@@ -113,8 +129,12 @@ struct Context
         flowScdReadback.Reset();
         input.Reset();
         output.Reset();
-        motion.Reset();
-        depth.Reset();
+        if (motion)
+        {
+            retired[0] = std::move(motion);
+            retired[1] = std::move(depth);
+            retiredUntil = serial + 2;
+        }
         width = height = 0;
         format = DXGI_FORMAT_UNKNOWN;
         if (backend)
@@ -307,12 +327,13 @@ struct Context
         dispatch.commandList = OptiFfxGetCommandListDX12(cmd.Get());
         dispatch.color = OptiFfxGetResourceDX12(flowInput.Get(), ffxGetResourceDescriptionDX12(flowInput.Get()),
                                                 L"OptiScaler flow input", FFX_API_RESOURCE_STATE_COMPUTE_READ);
-        dispatch.opticalFlowVector = OptiFfxGetResourceDX12(flowSparse.Get(),
-            ffxGetResourceDescriptionDX12(flowSparse.Get(), FFX_API_RESOURCE_USAGE_UAV),
-            L"OptiScaler flow vectors", FFX_API_RESOURCE_STATE_COMPUTE_READ);
-        dispatch.opticalFlowSCD = OptiFfxGetResourceDX12(flowScd.Get(),
-            ffxGetResourceDescriptionDX12(flowScd.Get(), FFX_API_RESOURCE_USAGE_UAV),
-            L"OptiScaler scene change", FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        // Optical Flow returns its outputs in the state given here, where they rest between frames.
+        dispatch.opticalFlowVector = OptiFfxGetResourceDX12(
+            flowSparse.Get(), ffxGetResourceDescriptionDX12(flowSparse.Get(), FFX_API_RESOURCE_USAGE_UAV),
+            L"OptiScaler flow vectors", FFX_API_RESOURCE_STATE_COMMON);
+        dispatch.opticalFlowSCD = OptiFfxGetResourceDX12(
+            flowScd.Get(), ffxGetResourceDescriptionDX12(flowScd.Get(), FFX_API_RESOURCE_USAGE_UAV),
+            L"OptiScaler scene change", FFX_API_RESOURCE_STATE_COMMON);
         dispatch.reset = flowFrames == 0;
         dispatch.backbufferTransferFunction = FFX_API_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
         dispatch.minMaxLuminance = { 0.f, 1.f };
@@ -322,7 +343,7 @@ struct Context
             return false;
         }
         const bool valid = flowFrames++ >= 6;
-        Transition(cmd.Get(), flowSparse.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        Transition(cmd.Get(), flowSparse.Get(), D3D12_RESOURCE_STATE_COMMON,
                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         if (valid)
         {
@@ -358,13 +379,8 @@ struct Context
     void QueueSceneCut()
     {
         if (!flowCreated || flowFailed || flowFrames <= 6)
-        {
-            if (flowCreated && !flowFailed)
-                Transition(cmd.Get(), flowScd.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                           D3D12_RESOURCE_STATE_COMMON);
             return;
-        }
-        Transition(cmd.Get(), flowScd.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        Transition(cmd.Get(), flowScd.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
         D3D12_TEXTURE_COPY_LOCATION src {};
         src.pResource = flowScd.Get();
         src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -379,8 +395,11 @@ struct Context
         Transition(cmd.Get(), flowScd.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
         sceneReadbackPending = true;
     }
+    // With neural off only the optical-flow guides are made and the frame is left as it is. Without guides a
+    // frame the runtime cannot take ends early.
     bool Frame(ID3D12Resource* back, D3D12_RESOURCE_STATES backState, const std::filesystem::path& directory,
-               AmdPreSr::Settings settings, ID3D12Resource* realDepth = nullptr, bool neural = true)
+               AmdPreSr::Settings settings, ID3D12Resource* realDepth = nullptr, bool neural = true,
+               bool guides = false)
     {
         if (stopped)
             return false;
@@ -404,13 +423,39 @@ struct Context
             status = "Final-image NR: GPU timeout; stopped";
             return false;
         }
-        // The runtime keeps its own slots and skips a frame when they are all busy, as with an upscaler; waiting for
-        // it to drain here would drop XeFG's guides for the frame as well.
+        heldBack.Reset();
+        if (serial >= retiredUntil)
+        {
+            retired[0].Reset();
+            retired[1].Reset();
+        }
+        // A failed runtime stays failed and a busy one skips this frame: the frame goes without NR and only
+        // frame generation's guides are left to make. A pipelined frame leaves busy slots to the runtime, as with
+        // an upscaler.
+        const bool failed = neural && backend && backend->Failed();
+        const bool busy = neural && backend && !failed && !pipelined && !backend->Ready();
+        if (failed && !failedReported)
+        {
+            failedReported = true;
+            LOG_WARN("Final-image NR: runtime failed, NR off until the game restarts: {}", backend->Status());
+        }
+        if (busy && (++busyFrames <= 3 || busyFrames % 300 == 0))
+            LOG_INFO("Final-image NR: runtime still busy, frame left without NR ({})", busyFrames);
+        if ((failed || busy) && !guides)
+        {
+            stableLast = false;
+            status = backend->Status();
+            return false;
+        }
         auto desc = back->GetDesc();
         if (!input)
         {
             if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM && desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM)
             {
+                if (!formatReported)
+                    LOG_WARN("Final-image NR: backbuffer format {} is not RGBA8 or BGRA8; no NR and no XeFG guides",
+                             (UINT) desc.Format);
+                formatReported = true;
                 status = "Final-image NR: unsupported backbuffer format";
                 return false;
             }
@@ -436,6 +481,14 @@ struct Context
             status = "Final-image NR: output size changed; waiting for swapchain reset";
             return false;
         }
+        if (neural && !backend && !runtimeLoaded)
+        {
+            backend = new AmdPreSr::Backend(device.Get(), queue.Get(), directory);
+            runtimeLoaded = true;
+        }
+        const bool record = neural && backend && !failed && !busy;
+        if (!pipelined)
+            heldBack = back;
         Check(allocator->Reset());
         Check(cmd->Reset(allocator.Get(), nullptr));
         Transition(cmd.Get(), back, backState, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -479,29 +532,30 @@ struct Context
         const bool flowValid = RecordFlow(realDepth != nullptr);
         const bool sceneCut = ReadSceneCut();
         QueueSceneCut();
-        // Without NR the flow still feeds XeFG; NR starts again without history.
-        if ((sceneCut || (flowValid && flowFrames == 7) || !neural) && backend)
+        // History that missed frames (scene cut, flow just valid, NR back on) starts over.
+        if (backend && (sceneCut || (flowValid && flowFrames == 7) || (neural && !lastNeural)))
+        {
             backend->InvalidateHistory();
-        if (sceneCut || (flowValid && flowFrames == 7))
             stabilizer->Invalidate();
-        if (neural && !backend)
-            backend = new AmdPreSr::Backend(device.Get(), queue.Get(), directory);
+        }
+        lastNeural = neural;
         AmdPreSr::Frame f {};
         f.colour = input.Get();
         f.motion = motion.Get();
         f.depth = depth.Get();
         f.width = width;
         f.height = height;
-        f.reset = sceneCut || !backend || backend->RecordedFrames() == 0;
+        f.reset = sceneCut || (backend && backend->RecordedFrames() == 0);
         lastFlowValid = flowValid;
-        lastReset = f.reset;
+        // Frame generation resets on scene cuts only: a runtime that never records a frame must not reset it.
+        lastReset = sceneCut;
         settings.passes = std::clamp(settings.passes, 1u, 3u);
         settings.modelScale = std::clamp(settings.modelScale, 0.5f, 1.f);
         settings.fixedSeed = true;
         // No RenoDX composition here, so Effect strength stays the runtime's own strength.
         settings.strength = std::clamp(Config::Instance()->AmdEffectStrength.value_or_default(), 0.f, 2.f);
-        const auto before = neural ? backend->RecordedFrames() : 0;
-        auto result = neural ? backend->Record(cmd.Get(), f, settings) : nullptr;
+        const auto before = record ? backend->RecordedFrames() : 0;
+        auto result = record ? backend->Record(cmd.Get(), f, settings) : nullptr;
         const bool modified = result && backend->RecordedFrames() != before;
         if (modified)
         {
@@ -541,13 +595,19 @@ struct Context
         if (backend)
             backend->Submitted(queue.Get(), 1, lists);
         Check(queue->Signal(fence.Get(), ++serial));
-        status = std::string(neural ? "Final-image NR (" : "Final-image NR off, guides for XeFG (") +
-                 (flowValid    ? "FidelityFX Optical Flow"
-                  : flowFailed ? "synthetic guides; Optical Flow unavailable"
-                               : "Optical Flow warming up") +
-                 (realDepth ? ", real depth" : ", synthetic depth") + (sceneCut ? ", scene reset" : "") +
-                 (neural ? ", stabilized): " + backend->Status() : std::string(")"));
-        return modified;
+        if (!pipelined)
+            ReleaseBackBuffer();
+        if (!stopped)
+            status = std::string("Final-image NR (") +
+                     (flowValid    ? "FidelityFX Optical Flow"
+                      : flowFailed ? "synthetic guides; Optical Flow unavailable"
+                                   : "Optical Flow warming up") +
+                     (realDepth ? ", real depth" : ", synthetic depth") + (sceneCut ? ", scene reset" : "") +
+                     ", stabilized): " +
+                     (!neural   ? std::string("NR off, guides only")
+                      : backend ? backend->Status()
+                                : std::string("NR runs on the game's other D3D12 device; restart the game for NR"));
+        return modified && !stopped;
     }
     ComPtr<ID3D12DescriptorHeap> composeHeap;
     void ComposeBgra(ID3D12Resource* back, D3D12_RESOURCE_STATES backState)
@@ -655,6 +715,39 @@ struct Context
     }
 };
 inline Context* context = nullptr;
+// One per D3D12 device the game presented from, kept for the process like the runtime.
+inline std::vector<Context*> contexts;
+// A game can present from another queue or device than before, as Red Dead Redemption does when its frame
+// generation swapchain replaces the first one. Every frame waits for its own work, so after that wait the
+// context moves to the new queue; the runtime orders its own work across the move.
+inline bool Follow(ID3D12Device* device, ID3D12CommandQueue* queue)
+{
+    static UINT moves = 0;
+    if (context && context->device.Get() != device)
+    {
+        context->BeforeResize();
+        context = nullptr;
+        for (auto c : contexts)
+            if (c->device.Get() == device)
+                context = c;
+        if (++moves <= 3 || moves % 300 == 0)
+            LOG_INFO("Final-image NR: the game presents from another D3D12 device ({})", moves);
+    }
+    if (!context)
+        context = contexts.emplace_back(new Context(device, queue));
+    if (context->queue.Get() == queue)
+        return true;
+    if (!context->WaitForFrame())
+    {
+        context->stopped = true;
+        status = "Final-image NR: GPU timeout; stopped";
+        return false;
+    }
+    context->queue = queue;
+    if (++moves <= 3 || moves % 300 == 0)
+        LOG_INFO("Final-image NR: the game presents from another D3D12 queue ({})", moves);
+    return true;
+}
 struct Guides
 {
     ComPtr<ID3D12Resource> motion, depth;
@@ -685,7 +778,7 @@ inline void Report(std::string message)
     status = std::move(message);
 }
 inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::filesystem::path& directory,
-                   AmdPreSr::Settings s, Guides* guides = nullptr, bool neural = true)
+                   AmdPreSr::Settings s, Guides* guides = nullptr, bool neural = true, bool pipelined = false)
 {
     Lock g;
     if (!queue)
@@ -695,29 +788,19 @@ inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::fil
         ComPtr<IDXGISwapChain3> swap;
         Check(sc->QueryInterface(IID_PPV_ARGS(&swap)));
         ComPtr<ID3D12Device> d;
-        Check(swap->GetDevice(IID_PPV_ARGS(&d)));
-        if (!context)
-            context = new Context(d.Get(), queue);
-        if (context->device.Get() != d.Get())
-        {
-            status = "Final-image NR: device changed; restart required";
+        Check(queue->GetDevice(IID_PPV_ARGS(&d)));
+        if (!Follow(d.Get(), queue))
             return false;
-        }
-        // A game that recreates its swapchain gets a new bridge queue on the same device: NR moves to it once its
-        // work on the old one is done (the runtime orders its own submissions across the change).
-        if (context->queue.Get() != queue)
+        // Without the runtime on this device only frame generation's guides are left to make.
+        if (!guides && !context->backend && runtimeLoaded)
         {
-            if (!context->WaitForFrame())
-            {
-                context->stopped = true;
-                status = "Final-image NR: GPU timeout; stopped";
-                return false;
-            }
-            context->queue = queue;
+            status = "Final-image NR: NR runs on the game's other D3D12 device; restart the game for NR";
+            return false;
         }
         ComPtr<ID3D12Resource> b;
         Check(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&b)));
-        context->Frame(b.Get(), D3D12_RESOURCE_STATE_PRESENT, directory, s, nullptr, neural);
+        context->pipelined = pipelined;
+        context->Frame(b.Get(), D3D12_RESOURCE_STATE_PRESENT, directory, s, nullptr, neural, guides != nullptr);
         if (guides && !context->stopped && context->lastFlowValid)
         {
             guides->motion = context->motion;
@@ -879,6 +962,7 @@ struct Bridge11
         if (shared)
             CloseHandle(shared);
         engine = new Context(work.Get(), queue.Get());
+        engine->pipelined = true;
     }
     void EnsureShared(UINT w, UINT h, DXGI_FORMAT f)
     {

@@ -557,12 +557,13 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                             const DXGI_PRESENT_PARAMETERS* pPresentParameters, IUnknown* pDevice, HWND hWnd, bool isUWP)
 {
     // Through the D3D11 bridge, Dx11wDx12SC runs NR before XeFG; the swapchain XeFG presents to is not a second
-    // target.
-    if (AmdPresentExperimental::IsTarget() &&
-        Config::Instance()->DlssNrEnabled.value_or_default() &&
-        !State::Instance().currentFeature &&
-        !(State::Instance().activeFgOutput == FGOutput::XeFG &&
-          State::Instance().currentFGSwapchain == pSwapChain &&
+    // target. On native D3D12 with a frame generation swapchain this is the swapchain frame generation presents
+    // its output to; FinalImageFrameGen has already run NR on the game's frame.
+    const bool fgPresents = State::Instance().swapchainInteropApi == SwapchainInteropApi::None &&
+                            State::Instance().currentFGSwapchain != nullptr;
+    if (AmdPresentExperimental::IsTarget() && Config::Instance()->DlssNrEnabled.value_or_default() &&
+        !State::Instance().currentFeature && !fgPresents &&
+        !(State::Instance().activeFgOutput == FGOutput::XeFG && State::Instance().currentFGSwapchain == pSwapChain &&
           !FGHooks::IsDx12InteropPresentSC(pSwapChain)) &&
         !(State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
           !FGHooks::IsDx12InteropPresentSC(pSwapChain)) &&
@@ -702,6 +703,102 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     if (device12 != nullptr)
         device12->Release();
+}
+
+void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
+{
+    auto& state = State::Instance();
+    const auto& config = *Config::Instance();
+    auto fg = state.currentFG;
+
+    // The game's queue: XeFG runs its interpolation there too, so NR, the guides and XeFG are ordered
+    // by the queue itself.
+    if (!AmdPresentExperimental::IsTarget() || state.swapchainInteropApi != SwapchainInteropApi::None ||
+        state.currentFeature || fg == nullptr || fg->GetCommandQueue() == nullptr ||
+        DlssNr::Backend::ActiveKindFromConfig() != DlssNr::Backend::Kind::Daniel)
+        return;
+
+    auto queue = fg->GetCommandQueue();
+    DXGI_SWAP_CHAIN_DESC desc {};
+    fgSwapChain->GetDesc(&desc);
+    // No NR while the window is minimized, as without frame generation; XeFG keeps its guides.
+    const bool neural = config.DlssNrEnabled.value_or_default() && !(desc.OutputWindow && IsIconic(desc.OutputWindow));
+    const bool fgEnabled = config.FGEnabled.value_or_default();
+    const bool xefg = state.activeFgOutput == FGOutput::XeFG && state.activeFgInput == FGInput::Upscaler;
+    AmdPresentExperimental::Guides guides;
+    bool ready = false;
+
+    // With NR off XeFG still gets the optical-flow guides. They are made only while XeFG takes them.
+    const bool wantGuides = xefg && fgEnabled;
+    if (neural || wantGuides)
+    {
+        auto settings = DlssNr::AmdBridge::SettingsFromConfig(config, config.AmdNrScale.value_or_default());
+        settings.spinDraw = 0;
+        ready = AmdPresentExperimental::Render(fgSwapChain, queue, Util::DllPath().parent_path(), settings,
+                                               wantGuides ? &guides : nullptr, neural);
+    }
+
+    if (!xefg)
+        return;
+
+    static bool wasReady = true;
+    if (fgEnabled && wasReady && !ready)
+        LOG_WARN("XeFG final-image guides unavailable: {}", AmdPresentExperimental::Status());
+    wasReady = ready || !fgEnabled;
+
+    Microsoft::WRL::ComPtr<ID3D12Device> device;
+    if (FAILED(queue->GetDevice(IID_PPV_ARGS(&device))))
+        return;
+
+    // Frames without guides are not frame generation frames.
+    if (fgEnabled && ready)
+        fg->StartNewFrame();
+
+    if (!ready && fg->IsActive())
+        fg->Deactivate();
+
+    FG_Constants constants {};
+    constants.flags |= FG_Flags::DisplayResolutionMVs;
+    constants.displayWidth = ready ? guides.width : desc.BufferDesc.Width;
+    constants.displayHeight = ready ? guides.height : desc.BufferDesc.Height;
+
+    if (ready || fg->FrameGenerationContext() == nullptr || !fgEnabled)
+        fg->EvaluateState(device.Get(), constants);
+
+    if (!ready || !fg->IsActive() || fg->IsPaused())
+        return;
+
+    // Optical flow has no camera: an identity view, a nominal projection and pixel motion at output size.
+    fg->SetCameraValues(0.1f, 1000.0f, 1.5707963f, float(guides.width) / float(guides.height));
+    fg->SetMVScale(1.0f, 1.0f);
+    fg->SetJitter(0.0f, 0.0f);
+    fg->SetReset(guides.reset);
+    fg->SetInterpolationRect(guides.width, guides.height);
+
+    Dx12Resource resource {};
+    resource.width = guides.width;
+    resource.height = guides.height;
+    resource.state = D3D12_RESOURCE_STATE_COMMON;
+    resource.validity = FG_ResourceValidity::UntilPresent;
+    resource.type = FG_ResourceType::Velocity;
+    resource.resource = guides.motion.Get();
+    const bool motionTagged = fg->SetResource(&resource);
+    resource.type = FG_ResourceType::Depth;
+    resource.resource = guides.depth.Get();
+    const bool depthTagged = fg->SetResource(&resource);
+
+    static bool reported = false;
+    if (!motionTagged || !depthTagged)
+    {
+        LOG_WARN("Final-image NR: XeFG rejected motion or depth guides");
+        fg->Deactivate();
+    }
+    else if (!reported)
+    {
+        reported = true;
+        LOG_INFO("Final-image NR: XeFG takes optical-flow motion and depth at {}x{} on the game's queue", guides.width,
+                 guides.height);
+    }
 }
 
 void MenuOverlayDx::ApplyThemeStyle() { MenuOverlayBase::ApplyThemeStyle(); }
