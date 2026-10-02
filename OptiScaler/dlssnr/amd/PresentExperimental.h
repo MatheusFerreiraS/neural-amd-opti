@@ -388,11 +388,9 @@ struct Context
         Transition(cmd.Get(), flowScd.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
         sceneReadbackPending = true;
     }
-    // With neural off only the optical-flow guides are made and the frame is left as it is. Without wait
-    // the frame is not waited for here; only a swapchain buffer allows that, as the swapchain keeps it and
-    // ResizeBuffers waits for its queue.
+    // With neural off only the optical-flow guides are made and the frame is left as it is.
     bool Frame(ID3D12Resource* back, D3D12_RESOURCE_STATES backState, const std::filesystem::path& directory,
-               AmdPreSr::Settings settings, ID3D12Resource* realDepth = nullptr, bool neural = true, bool wait = true)
+               AmdPreSr::Settings settings, ID3D12Resource* realDepth = nullptr, bool neural = true)
     {
         if (stopped)
             return false;
@@ -553,10 +551,7 @@ struct Context
         if (backend)
             backend->Submitted(queue.Get(), 1, lists);
         Check(queue->Signal(fence.Get(), ++serial));
-        if (wait)
-            ReleaseBackBuffer();
-        else
-            heldBack.Reset();
+        ReleaseBackBuffer();
         if (!stopped)
             status = std::string("Final-image NR (") +
                      (flowValid    ? "FidelityFX Optical Flow"
@@ -689,7 +684,7 @@ inline void Report(std::string message)
     status = std::move(message);
 }
 inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::filesystem::path& directory,
-                   AmdPreSr::Settings s, Guides* guides = nullptr, bool neural = true, bool wait = true)
+                   AmdPreSr::Settings s, Guides* guides = nullptr, bool neural = true)
 {
     std::lock_guard g(mutex);
     if (!queue)
@@ -709,7 +704,7 @@ inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::fil
         }
         ComPtr<ID3D12Resource> b;
         Check(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&b)));
-        context->Frame(b.Get(), D3D12_RESOURCE_STATE_PRESENT, directory, s, nullptr, neural, wait);
+        context->Frame(b.Get(), D3D12_RESOURCE_STATE_PRESENT, directory, s, nullptr, neural);
         if (guides && !context->stopped && context->lastFlowValid)
         {
             guides->motion = context->motion;

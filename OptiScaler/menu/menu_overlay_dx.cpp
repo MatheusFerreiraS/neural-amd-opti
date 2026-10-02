@@ -547,9 +547,7 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             auto settings = DlssNr::AmdBridge::SettingsFromConfig(
                 *Config::Instance(), Config::Instance()->AmdNrScale.value_or_default());
             settings.spinDraw = 0;
-            // Without frame generation the frame is not waited for: the game's next frame overlaps NR.
-            AmdPresentExperimental::Render(pSwapChain, queue.Get(), Util::DllPath().parent_path(), settings, nullptr,
-                                           true, false);
+            AmdPresentExperimental::Render(pSwapChain, queue.Get(), Util::DllPath().parent_path(), settings);
         }
         else
         {
@@ -688,14 +686,13 @@ void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
     AmdPresentExperimental::Guides guides;
     bool ready = false;
 
-    // With NR off XeFG still gets the optical-flow guides. While XeFG generates frames the CPU waits for
-    // each one: its pacing stalls when the game runs ahead of the GPU.
+    // With NR off XeFG still gets the optical-flow guides.
     if (neural || (xefg && fgEnabled))
     {
         auto settings = DlssNr::AmdBridge::SettingsFromConfig(config, config.AmdNrScale.value_or_default());
         settings.spinDraw = 0;
         ready = AmdPresentExperimental::Render(fgSwapChain, queue, Util::DllPath().parent_path(), settings, &guides,
-                                               neural, xefg && fgEnabled);
+                                               neural);
     }
 
     if (!xefg)
