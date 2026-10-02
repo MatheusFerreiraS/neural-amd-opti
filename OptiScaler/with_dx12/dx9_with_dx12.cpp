@@ -144,7 +144,7 @@ struct Bridge
     UINT pitch = 0;
 
     ComPtr<IDXGISwapChain4> swap;
-    UINT swapWidth = 0, swapHeight = 0, swapFlags = 0;
+    UINT swapWidth = 0, swapHeight = 0;
     bool presenterFailed = false;
     bool fullscreenSaid = false;
     bool tearing = false;
@@ -565,7 +565,6 @@ struct Bridge
         factory->MakeWindowAssociation(window, DXGI_MWA_NO_WINDOW_CHANGES);
         swapWidth = width;
         swapHeight = height;
-        swapFlags = desc.Flags;
         State::Instance().swapchainInteropApi = SwapchainInteropApi::Dx9wDx12;
         LOG_INFO("D3D9 bridge: XeFG presenter {:X} on window {:X}, {}x{}, tearing {}", (size_t) swap.Get(),
                  (size_t) window, width, height, tearing);
@@ -578,7 +577,10 @@ struct Bridge
         {
             MenuOverlayDx::CleanupRenderTarget(true, window);
             Wait();
-            const HRESULT resized = swap->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, swapFlags);
+            // XeFG adds flags of its own to the swapchain; keep them.
+            DXGI_SWAP_CHAIN_DESC1 current {};
+            swap->GetDesc1(&current);
+            const HRESULT resized = swap->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, current.Flags);
             LOG_INFO("D3D9 bridge: XeFG presenter {}x{} -> {}x{}: {:X}", swapWidth, swapHeight, width, height,
                      (UINT) resized);
 
