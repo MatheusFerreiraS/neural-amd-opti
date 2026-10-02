@@ -24,7 +24,7 @@ foreach ($file in @($opti, (Join-Path $Runtime "dlssnr_amd_pass1.dll"), (Join-Pa
 # Menu (Insert), NR (Numpad 5) and FG (End) keys, a Reset and screen samples. mark= starts a timed phase.
 $nrScript = "90:mark=nr-on,150:motion=nr-on,170:menu,190:shot=menu-open,200:menu,215:shot=menu-closed," +
             "230:nr,240:mark=nr-off,300:motion=nr-off,310:nr,320:mark=nr-on-again,380:reset=1600x900," +
-            "390:mark=after-reset,450:motion=after-reset,460:shot=after-reset"
+            "390:mark=after-reset,400:menu,415:shot=menu-after-reset,425:menu,450:motion=after-reset,460:shot=after-reset"
 # With FG, the open menu's model scale slider (at 380,395 in the 1280x720 window) is dragged to the left end, then
 # the menu's Frame Generation section (its sidebar button at 337,241) is opened: neither may stop generation.
 $fgScript = "150:mark=fg-on,200:motion=fg-on,220:menu,232:shot=fg-menu-open,235:press=380x395,241:release," +
@@ -37,7 +37,7 @@ $fgScript = "150:mark=fg-on,200:motion=fg-on,220:menu,232:shot=fg-menu-open,235:
 $nrLog = @("OptiScaler working as d3d9.dll", "D3D9 device hooks installed", "D3D9 bridge: D3D12 device",
            "D3D9 menu ready", "D3D9 bridge frame \d+: menu open", "D3D9 bridge frame \d+: menu closed",
            "D3D9 bridge frame \d+: D3D9 present, NR true", "Final-image NR \(FidelityFX Optical Flow",
-           "Reset.*: 0, 1600x900", "D3D9 bridge: 1600x900")
+           "Reset.*: 0, 1600x900", "D3D9 bridge: 1600x900", "D3D9 bridge frame 4\d\d: menu open")
 $fgLog = @("OptiScaler working as d3d9.dll", "D3D9 device hooks installed", "D3D9 bridge: XeFG presenter",
            "D3D9 bridge frame \d+: menu open", "D3D9 bridge frame \d+: menu closed",
            "D3D9 bridge frame \d+: NR scale 1.00 -> 0.[5-9]",
