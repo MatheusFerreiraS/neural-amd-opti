@@ -73,7 +73,8 @@ void FeedFrameGeneration(ID3D12Device* device, UINT width, UINT height, bool rea
 
     const bool enabled = Config::Instance()->FGEnabled.value_or_default();
 
-    if (enabled)
+    // A frame is only counted when it carries guides; counting the others makes XeFG warn about every skipped one.
+    if (enabled && ready)
         fg->StartNewFrame();
 
     if (!ready && fg->IsActive())
