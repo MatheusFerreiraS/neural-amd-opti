@@ -1472,10 +1472,11 @@ void MenuCommon::UpdateMenuInputMode(RenderMenuContext& ctx)
     }
 }
 
-// XeFG on the Vulkan final image: the FG key and the menu section that switch it.
-static bool VulkanFinalImageFG(State& state, Config* config)
+// XeFG on the Vulkan or OpenGL final image, in a D3D12 child window: the FG key and the menu section that switch it.
+static bool ChildWindowFinalImageFG(State& state, Config* config)
 {
-    return state.swapchainApi == API::Vulkan && config->DlssNrPresent.value_or_default() &&
+    return (state.swapchainApi == API::Vulkan || state.swapchainApi == API::OpenGL) &&
+           config->DlssNrPresent.value_or_default() &&
            config->DlssNrEnabled.value_or_default() &&
            DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel &&
            state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::XeFG;
@@ -1495,7 +1496,7 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
 
             if (state.activeFgInput != FGInput::NoFG && state.activeFgOutput != FGOutput::NoFG &&
                 (state.currentFGSwapchain != nullptr || state.activeFgInput == FGInput::NvngxFG ||
-                 VulkanFinalImageFG(state, config)))
+                 ChildWindowFinalImageFG(state, config)))
             {
                 config->FGEnabled = !config->FGEnabled.value_or_default();
                 LOG_DEBUG("FG toggle key pressed, setting FGEnabled to {}", config->FGEnabled.value_or_default());
@@ -1993,6 +1994,10 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                 {
                 case Vulkan:
                     api = "VLK";
+                    break;
+
+                case OpenGL:
+                    api = "OGL";
                     break;
 
                 case DX11:
@@ -5216,11 +5221,13 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // OptiFG requirements
     auto constexpr optiFgIndex = (uint32_t) FGInput::Upscaler;
-    const bool vulkanFinalImageFg = state.swapchainApi == API::Vulkan &&
-        config->DlssNrPresent.value_or_default() && config->DlssNrEnabled.value_or_default() &&
-        DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
-    inputOptions[optiFgIndex].set_disabled(state.swapchainApi == API::Vulkan && !vulkanFinalImageFg,
-                                           "Vulkan XeFG requires final-image NR on the danielblnc runtime");
+    // Vulkan and OpenGL games get XeFG only through final-image NR, in a D3D12 child window.
+    const bool childWindowFgApi = state.swapchainApi == API::Vulkan || state.swapchainApi == API::OpenGL;
+    const bool childWindowFinalImageFg = childWindowFgApi && config->DlssNrPresent.value_or_default() &&
+                                         config->DlssNrEnabled.value_or_default() &&
+                                         DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
+    inputOptions[optiFgIndex].set_disabled(childWindowFgApi && !childWindowFinalImageFg,
+                                           "XeFG on Vulkan and OpenGL requires final-image NR on the danielblnc runtime");
     inputOptions[optiFgIndex].set_disabled(config->DlssNrPresent.value_or_default() &&
                                                config->FGOutput.value_or_default() != FGOutput::XeFG,
                                            "Final-image NR has no upscaler motion/depth inputs for OptiFG");
@@ -5284,7 +5291,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
             "No real DLSSG, unsupported hardware\nOnly Nvngx FG replacements available";
     }
 
-    outputOptions[dlssgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan, "Unsupported API");
+    outputOptions[dlssgOutputIndex].set_disabled(childWindowFgApi, "Unsupported API");
     outputOptions[dlssgOutputIndex].set_disabled(!supportsDlssg && !hasDlssgReplacement,
                                                  "Unsupported hardware and no replacements");
 
@@ -5297,7 +5304,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // FSR FG output requirements
     auto constexpr fsrfgOutputIndex = (uint32_t) FGOutput::FSRFG;
-    outputOptions[fsrfgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan, "Unsupported API");
+    outputOptions[fsrfgOutputIndex].set_disabled(childWindowFgApi, "Unsupported API");
 
     // D3D9 presents generated frames through its XeFG presenter only
     const bool d3d9Route = state.swapchainApi == API::DX9 || state.swapchainInteropApi == SwapchainInteropApi::Dx9wDx12;
@@ -5306,8 +5313,8 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // XeFG output requirements
     auto constexpr xefgOutputIndex = (uint32_t) FGOutput::XeFG;
-    outputOptions[xefgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan && !vulkanFinalImageFg,
-                                                 "Vulkan XeFG requires final-image NR on the danielblnc runtime");
+    outputOptions[xefgOutputIndex].set_disabled(childWindowFgApi && !childWindowFinalImageFg,
+                                                "XeFG requires final-image NR on the danielblnc runtime on Vulkan and OpenGL");
     // Unsupported FG input selected
     const auto currentInputIndex = (uint32_t) state.activeFgInput;
     if (config->FGInput != FGInput::NoFG && inputOptions.size() > currentInputIndex &&
@@ -6073,9 +6080,10 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         }
     }
 
-    if (VulkanFinalImageFG(state, config))
+    if (ChildWindowFinalImageFG(state, config))
     {
-        ImGui::SeparatorText("Frame Generation (Vulkan XeFG)");
+        ImGui::SeparatorText(state.swapchainApi == API::OpenGL ? "Frame Generation (OpenGL XeFG)"
+                                                               : "Frame Generation (Vulkan XeFG)");
         bool enabled = config->FGEnabled.value_or_default();
         if (ImGui::Checkbox("Active##VulkanXeFG", &enabled))
             config->FGEnabled = enabled;
@@ -9149,8 +9157,9 @@ void MenuCommon::RenderApiAndTextureSettings(RenderMenuContext& ctx)
             }
             ImGui::PopItemWidth();
 
-            ShowHelpMarker("Controls the DXGI Present sync interval, which determines how\n"
-                           "the swap chain waits for vertical refresh.\n\n"
+            ShowHelpMarker("Controls the DXGI Present sync interval (the swap interval on\n"
+                           "OpenGL), which determines how the swap chain waits for vertical\n"
+                           "refresh.\n\n"
                            "0  = Present immediately, no VSync wait.\n"
                            "1  = Sync to every refresh, normal VSync.\n"
                            "2+ = Present every N refreshes, reducing effective frame rate.\n\n"

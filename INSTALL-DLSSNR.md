@@ -156,9 +156,10 @@ NrBackend=daniel
 The **Neural** tab has the same final-image switch and shows its status. It starts
 off by default. The final image includes the game's HUD. FidelityFX Optical Flow
 estimates motion directly from successive frames, without installing ReShade.
-The current route requires an unmultisampled RGBA8 or BGRA8 backbuffer; OpenGL,
-DXVK D3D11 and HDR swapchains are not supported. Native Vulkan final-image NR
-uses a Vulkan-to-D3D12 shared image when supported, with host readback as fallback.
+The current route requires an unmultisampled RGBA8 or BGRA8 backbuffer; DXVK
+D3D11 and HDR swapchains are not supported, and OpenGL has its own route (below).
+Native Vulkan final-image NR uses a Vulkan-to-D3D12 shared image when supported, with host
+readback as fallback.
 The swapchain must support transfer source and destination usage, and Vulkan needs
 `PresentWithoutUpscaler=true` before the game creates its swapchain: restart the game after
 turning it on. On native Vulkan, XeFG/MFG presents through a D3D12 swapchain in a child window over the
@@ -241,6 +242,25 @@ this route generates two frames per frame: with one, XeFG paces it badly (about
 games are not handled by this DLL.
 
 The Optical Flow build needs an in-game visual and resize test before packaging for users.
+
+### OpenGL games (experimental)
+
+OpenGL games are reached by installing OptiScaler as `opengl32.dll` in the game's
+folder (the folder of the executable that creates the OpenGL context). OptiScaler
+loads the system `opengl32.dll`, or `opengl32-original.dll` or `plugins\opengl32.dll`
+when present, and hooks its `wglSwapBuffers`. The full menu opens with the usual key
+and is drawn through ImGui's OpenGL 3 renderer in a context of OptiScaler's own on the
+game's window, so the game's OpenGL state is never touched.
+
+With the `[DlssNr]` settings above, the back buffer is copied into a D3D12 texture
+(`EXT_memory_object_win32`), processed by the same final-image route as D3D12, and
+copied back before the game's present. The settings in `[FrameGen]` above add XeFG:
+the generated frames are shown by a D3D12 swapchain in a child window over the game,
+which is hidden while the menu is open or the game is in the background. While the
+window is being resized the game's image is shown as it is, and NR and XeFG start again
+once the size has held for 300 ms. The menu's V-Sync settings set the game's swap
+interval (`wglSwapIntervalEXT`). Only 64-bit games are covered; for 32-bit OpenGL games
+use the ReShade add-on.
 
 ## Optional DLSS Frame Generation
 

@@ -315,6 +315,9 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="dlssnr\amd\AmdBridge.cpp" />
     <ClCompile Include="dlssnr\amd\VulkanPresentExperimental.cpp" />
     <ClInclude Include="dlssnr\amd\VulkanPresentExperimental.h" />
+    <ClInclude Include="dlssnr\amd\FgChildPresenter.h" />
+    <ClCompile Include="dlssnr\amd\GLPresentExperimental.cpp" />
+    <ClInclude Include="dlssnr\amd\GLPresentExperimental.h" />
     <ClCompile Include="dlssnr\backend\Selector.cpp" />
     <ClCompile Include="dlssnr\backend\DanielBackend.cpp" />
     <ClCompile Include="dlssnr\backend\LmxxfBackend.cpp" />
@@ -349,6 +352,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="exports\dbghelp.h" />
     <ClInclude Include="exports\dxgi.h" />
     <ClInclude Include="exports\exports.h" />
+    <ClInclude Include="exports\opengl32.h" />
     <ClInclude Include="exports\shared.h" />
     <ClInclude Include="exports\version.h" />
     <ClInclude Include="exports\winhttp.h" />
@@ -510,6 +514,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="include\imgui\imgui_impl_dx11.h" />
     <ClInclude Include="include\imgui\imgui_impl_dx9.h" />
     <ClInclude Include="include\imgui\imgui_impl_dx12.h" />
+    <ClInclude Include="include\imgui\imgui_impl_opengl3.h" />
+    <ClInclude Include="include\imgui\imgui_impl_opengl3_loader.h" />
     <ClInclude Include="include\imgui\imgui_impl_uwp.h" />
     <ClInclude Include="include\imgui\imgui_impl_vulkan.h" />
     <ClInclude Include="include\imgui\imgui_impl_win32.h" />
@@ -589,6 +595,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="proxies\FfxApi_Proxy.h" />
     <ClInclude Include="hooks\D3D11_Hooks.h" />
     <ClInclude Include="hooks\Vulkan_Hooks.h" />
+    <ClInclude Include="hooks\GL_Hooks.h" />
     <ClInclude Include="nvapi\NvApiHooks.h" />
     <ClInclude Include="nvapi\NvApiTypes.h" />
     <ClInclude Include="nvapi\external\nvapi.h" />
@@ -616,6 +623,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="menu\menu_overlay_dx.h" />
     <ClInclude Include="menu\menu_overlay_vk.h" />
     <ClInclude Include="menu\menu_overlay_dx9.h" />
+    <ClInclude Include="menu\menu_overlay_gl.h" />
     <ClInclude Include="wrapped\wrapped_swapchain.h" />
     <ClInclude Include="Logger.h" />
     <ClInclude Include="proxies\NVNGX_Proxy.h" />
@@ -784,6 +792,11 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="include\imgui\imgui_impl_opengl3.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="include\imgui\imgui_impl_uwp.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='ReleaseDebug|x64'">NotUsing</PrecompiledHeader>
@@ -861,6 +874,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="inputs\FSR3_Dx12.cpp" />
     <ClCompile Include="hooks\D3D11_Hooks.cpp" />
     <ClCompile Include="hooks\Vulkan_Hooks.cpp" />
+    <ClCompile Include="hooks\GL_Hooks.cpp" />
     <ClCompile Include="menu\menu_common.cpp" />
     <ClCompile Include="menu\menu_dx_base.cpp" />
     <ClCompile Include="menu\menu_dx11.cpp" />
@@ -870,6 +884,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="menu\menu_overlay_vk.cpp" />
     <ClCompile Include="menu\menu_overlay_dx9.cpp" />
     <ClCompile Include="proxies\D3D9_Proxy.cpp" />
+    <ClCompile Include="menu\menu_overlay_gl.cpp" />
     <ClCompile Include="wrapped\wrapped_swapchain.cpp" />
     <ClCompile Include="include\imgui\imgui.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
