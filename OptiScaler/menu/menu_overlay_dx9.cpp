@@ -9,6 +9,7 @@
 
 // The ImGui backend holds its own reference to this device.
 static IDirect3DDevice9* _device = nullptr;
+static IDirect3DDevice9* _failedDevice = nullptr;
 
 bool MenuOverlayDx9::IsInited() { return _device != nullptr; }
 
@@ -41,6 +42,9 @@ void MenuOverlayDx9::Present(IDirect3DDevice9* device, IDirect3DSurface9* backBu
         return;
     }
 
+    if (device == _failedDevice)
+        return;
+
     if (_device != device || MenuOverlayBase::Handle() != hWnd)
     {
         Shutdown();
@@ -55,6 +59,7 @@ void MenuOverlayDx9::Present(IDirect3DDevice9* device, IDirect3DSurface9* backBu
         {
             LOG_ERROR("D3D9 menu: ImGui initialization failed");
             MenuOverlayBase::Shutdown();
+            _failedDevice = device;
             return;
         }
 
