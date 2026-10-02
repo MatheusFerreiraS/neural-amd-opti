@@ -5,7 +5,8 @@
 //   dx9_present_smoke.exe [--ex] [--chain] [--msaa] [--vsync] [--borderless] [--size WxH] [--frames N] [--shots folder]
 //                         [--script "frame:action,..."]
 // Actions: menu (Insert), nr (Numpad 5), fg (End), still (stops or restarts the scrolling), press=XxY (moves the
-// cursor there and holds the left button), release, minimize, restore, reset=WxH, shot=name, motion=name, mark=name.
+// cursor there and holds the left button), release, minimize, restore, window2 (presents into a new window from then
+// on, as a game that recreates its window), reset=WxH, shot=name, motion=name, mark=name.
 #define NOMINMAX
 #include <windows.h>
 #include <d3d9.h>
@@ -36,6 +37,7 @@ struct Shot
 };
 
 HWND window = nullptr;
+HWND presentTo = nullptr;
 bool quit = false;
 bool borderless = false;
 
@@ -362,6 +364,16 @@ int main(int argc, char** argv)
                 PostKey(VK_END);
             else if (action == "still")
                 still = !still;
+            else if (action == "window2")
+            {
+                presentTo = CreateWindowExW(WS_EX_TOPMOST, L"OptiDx9Smoke", L"Opti D3D9 smoke 2",
+                                            borderless ? WS_POPUP : WS_OVERLAPPEDWINDOW, 40, 40, width, height, nullptr,
+                                            nullptr, GetModuleHandleW(nullptr), nullptr);
+                ShowWindow(window, SW_HIDE);
+                window = presentTo;
+                ClientSize(width, height);
+                SetForegroundWindow(window);
+            }
             else if (action == "minimize" || action == "restore")
             {
                 ShowWindow(window, action == "minimize" ? SW_MINIMIZE : SW_RESTORE);
@@ -428,13 +440,13 @@ int main(int argc, char** argv)
         {
             IDirect3DSwapChain9* chain = nullptr;
             device->GetSwapChain(0, &chain);
-            result = chain->Present(nullptr, nullptr, nullptr, nullptr, 0);
+            result = chain->Present(nullptr, nullptr, presentTo, nullptr, 0);
             chain->Release();
         }
         else
         {
-            result = ex ? deviceEx->PresentEx(nullptr, nullptr, nullptr, nullptr, 0)
-                        : device->Present(nullptr, nullptr, nullptr, nullptr);
+            result = ex ? deviceEx->PresentEx(nullptr, nullptr, presentTo, nullptr, 0)
+                        : device->Present(nullptr, nullptr, presentTo, nullptr);
         }
 
         if (FAILED(result) && ++failures < 5)

@@ -62,6 +62,13 @@ $cases = @(
     @{ Name = "classic-fg"; Args = @(); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
     @{ Name = "ex-fg"; Args = @("--ex"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
     @{ Name = "msaa-fg"; Args = @("--msaa"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
+    # The game moves to a new window: after two quiet seconds on the old one the bridge follows it.
+    @{ Name = "window-nr"; Args = @(); Fg = $false; Frames = 520
+       Script = "150:window2,420:menu,435:shot=window2-menu,445:menu,480:motion=window2"
+       Log = @("(?s)following device \w+, window \w+.*following device \w+, window \w+.*D3D9 menu ready.*menu open") },
+    @{ Name = "window-fg"; Args = @(); Fg = $true; Frames = 520
+       Script = "150:window2,420:menu,435:shot=window2-menu,445:menu,480:motion=window2"
+       Log = @("(?s)XeFG presenter \w+ on window.*releasing the XeFG presenter.*XeFG presenter \w+ on window.*frame generation on.*menu open") },
     # Thousands of generated frames in a row (the 32-bit bridge lost its D3D12 device after about 2000), with two
     # generated frames per rendered frame.
     @{ Name = "soak-fg"; Args = @(); Fg = $true; Frames = 6000; Ini = "[XeFG]`r`nInterpolationCount=2`r`n"
