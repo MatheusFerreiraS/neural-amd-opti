@@ -3,13 +3,18 @@
 //
 //   dx12_final_image_smoke.exe <nr|fg> [--bgra] [--debug-layer] [--lock <dir>] [--timeout <seconds>]
 //                              [--log-level <OptiScaler LogLevel, 2 by default>] [--cpu-ms <game CPU ms per frame>]
-//                              [--dump]
+//                              [--dump] [--lifecycle] [--nr-off-start] [--no-probe] [--set <Section/Key=Value>]
 //
 // The parent writes OptiScaler.ini from OptiScaler.template.ini, takes the GPU lock, runs itself as a
 // child with a timeout and asserts on the child's results and on OptiScaler.log. The child renders a
 // moving scene, posts the menu (Insert), frame generation (End) and Neural Rendering (Numpad 5) keys,
 // resizes the swapchain and reads back the frame it presented to see whether NR changed it.
 // "nr" runs NR alone; "fg" runs NR with XeFG multi frame generation (OptiFG input).
+// --lifecycle creates the swapchain again on a new queue and on the same one, opens the menu's Frame Gen
+// page (with "fg" it turns FG off and on there), minimizes and restores the window, and with "nr" moves every
+// object to WARP and back. Named rdr.exe, the test gets Red Dead Redemption's quirk: a plain first swapchain,
+// XeFG's on the next.
+// --nr-off-start starts with NR off in the INI and turns it on with Numpad 5.
 #define NOMINMAX
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
@@ -29,6 +34,8 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <thread>
+#include <atomic>
 
 using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
@@ -139,12 +146,21 @@ struct Options
 {
     std::string scenario;
     std::wstring logLevel = L"2";
-    std::wstring modelScale = L"auto"; // AmdModelScale at start
-    double cpuMs = 0;                  // simulated game CPU time per frame, before recording
-    bool dump = false;                 // writes each phase's first probe frame as <phase>.bmp
+    std::wstring modelScale = L"auto";  // AmdModelScale at start
+    std::vector<std::wstring> settings; // extra INI values, Section/Key=Value
+    double cpuMs = 0;                   // simulated game CPU time per frame, before recording
+    bool dump = false;                  // writes each phase's first probe frame as <phase>.bmp
     bool bgra = false;
     bool debugLayer = false;
+    bool lifecycle = false;   // swapchain on a new queue and again, the FG page, minimize, restore (nr: WARP device)
+    bool nrOffStart = false;  // NR disabled in the INI and turned on with Numpad 5 later
+    bool noProbe = false;     // no probe in the measured phases, so nothing but the game and OptiScaler use the frame
+    bool stallStacks = false; // every thread's stack into stall-stacks.txt when a frame takes over 120 ms
 };
+
+// The frame in progress and when it began, for the stall sampler.
+static std::atomic<ULONGLONG> frameStarted = 0;
+static std::atomic<UINT64> frameNumber = 0;
 
 struct App
 {
@@ -152,6 +168,7 @@ struct App
     HWND window = nullptr;
     PFN_D3D12_CREATE_DEVICE createDevice = nullptr;
     PFN_D3D12_SERIALIZE_ROOT_SIGNATURE serializeRoot = nullptr;
+    ComPtr<IDXGIFactory6> factory;
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<IDXGISwapChain3> swapchain;
@@ -187,7 +204,9 @@ struct App
         Wait(fenceValue);
     }
 
-    void CreateDevice()
+    // Every object on the hardware adapter, or on WARP; called again it builds them anew, as a game that
+    // recreates its device.
+    void CreateDevice(bool warp = false)
     {
         // Through the proxy: the module named dxgi.dll in this folder is OptiScaler.
         HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
@@ -207,7 +226,7 @@ struct App
         auto createFactory = (HRESULT(WINAPI*)(UINT, REFIID, void**)) GetProcAddress(dxgi, "CreateDXGIFactory2");
         if (!createDevice || !serializeRoot || !getDebug || !createFactory)
             Fail("missing D3D12/DXGI entry points");
-        if (options.debugLayer)
+        if (options.debugLayer && !device)
         {
             ComPtr<ID3D12Debug> debug;
             if (FAILED(getDebug(IID_PPV_ARGS(&debug))))
@@ -215,15 +234,20 @@ struct App
             debug->EnableDebugLayer();
             Out("debug-layer on");
         }
-        ComPtr<IDXGIFactory6> factory;
         Check(createFactory(0, IID_PPV_ARGS(&factory)), "CreateDXGIFactory2");
         ComPtr<IDXGIAdapter1> adapter;
-        Check(factory->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter)),
-              "EnumAdapterByGpuPreference");
+        if (warp)
+            Check(factory->EnumWarpAdapter(IID_PPV_ARGS(&adapter)), "EnumWarpAdapter");
+        else
+            Check(factory->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter)),
+                  "EnumAdapterByGpuPreference");
         DXGI_ADAPTER_DESC1 adapterDesc {};
         adapter->GetDesc1(&adapterDesc);
         Out("adapter %ls", adapterDesc.Description);
-        Check(createDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&device)), "D3D12CreateDevice");
+        ComPtr<ID3D12Device> created;
+        Check(createDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&created)), "D3D12CreateDevice");
+        Out("objects device=%p", created.Get());
+        device = created;
         if (options.debugLayer && SUCCEEDED(device.As(&info)))
         {
             info->SetMessageCountLimit(4096);
@@ -259,7 +283,11 @@ struct App
         factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
 
         Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)), "CreateFence");
-        fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        fenceValue = 0;
+        for (auto& value : allocatorFence)
+            value = 0;
+        if (!fenceEvent)
+            fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         for (auto& allocator : allocators)
             Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)),
                   "CreateCommandAllocator");
@@ -404,6 +432,15 @@ struct App
     // Renders one frame; with probe set, reads back what was presented and the reference.
     HRESULT Frame(ProbeResult* probe)
     {
+        frameStarted = GetTickCount64();
+        frameNumber = frame;
+        const HRESULT presented = RenderFrame(probe);
+        frameStarted = 0;
+        return presented;
+    }
+
+    HRESULT RenderFrame(ProbeResult* probe)
+    {
         if (options.cpuMs > 0)
         {
             LARGE_INTEGER now, end, rate;
@@ -542,6 +579,45 @@ struct App
             value = 0;
     }
 
+    // Releases the swapchain and creates another on the same window, on a new queue or the same one, as games
+    // do on a settings change. Red Dead Redemption's frame generation swapchain is such a second one.
+    void Recreate(bool newQueue)
+    {
+        Idle();
+        swapchain.Reset();
+        if (newQueue)
+        {
+            D3D12_COMMAND_QUEUE_DESC queueDesc {};
+            queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+            queue.Reset();
+            Check(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue)), "CreateCommandQueue again");
+            Out("objects queue=%p", queue.Get());
+        }
+        DXGI_SWAP_CHAIN_DESC1 desc {};
+        desc.Width = width;
+        desc.Height = height;
+        desc.Format = format;
+        desc.SampleDesc.Count = 1;
+        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        desc.BufferCount = bufferCount;
+        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        desc.Flags = swapFlags;
+        ComPtr<IDXGISwapChain1> swap1;
+        Check(factory->CreateSwapChainForHwnd(queue.Get(), window, &desc, nullptr, nullptr, &swap1),
+              "CreateSwapChainForHwnd again");
+        Check(swap1.As(&swapchain), "IDXGISwapChain3 again");
+        LogBuffers();
+        for (auto& value : allocatorFence)
+            value = 0;
+    }
+
+    void RecreateDevice(bool warp)
+    {
+        Idle();
+        swapchain.Reset();
+        CreateDevice(warp);
+    }
+
     // Holds the key for about as long as a person does, rendering meanwhile.
     void PressKey(UINT vk, bool extended, bool (*pump)())
     {
@@ -574,48 +650,99 @@ struct App
 
     // A real cursor move and click, as the menu polls both. Places are those of a 1280x720 window at the
     // default menu scale, where the menu opens centred with its pages down the left.
-    void Click(LONG x, LONG y, bool (*pump)())
+    // A real cursor move and click, made by a helper process: while the menu is open OptiScaler keeps the game's
+    // own SetCursorPos and SendInput calls from moving the cursor, as it should. A button acts on release, so the
+    // press is held past the menu's longest stall with XeFG (about 210 ms).
+    void Click(LONG x, LONG y, bool (*pump)(), double hold = 0.2)
     {
         SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
         POINT point { x, y };
         ClientToScreen(window, &point);
-        SetCursorPos(point.x, point.y);
-        Render(0.3, pump);
-        INPUT click[2] {};
-        click[0].type = click[1].type = INPUT_MOUSE;
-        click[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-        click[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
-        SendInput(1, &click[0], sizeof(INPUT));
-        Render(0.2, pump);
-        SendInput(1, &click[1], sizeof(INPUT));
+        wchar_t self[MAX_PATH] {};
+        GetModuleFileNameW(nullptr, self, MAX_PATH);
+        std::wstring command = L"\"" + std::wstring(self) + L"\" --click " + std::to_wstring(point.x) + L" " +
+                               std::to_wstring(point.y) + L" " + std::to_wstring(DWORD(hold * 1000));
+        STARTUPINFOW startup { sizeof(startup) };
+        PROCESS_INFORMATION process {};
+        if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup, &process))
+            Fail("click helper did not start");
+        while (WaitForSingleObject(process.hProcess, 0) == WAIT_TIMEOUT)
+        {
+            pump();
+            const HRESULT hr = Frame(nullptr);
+            if (FAILED(hr))
+                Fail("Present while clicking", hr);
+        }
+        CloseHandle(process.hProcess);
+        CloseHandle(process.hThread);
         Render(0.5, pump);
-        // Off the window, as a hand leaves the mouse, so the menu does not find it over a control when it reopens.
-        SetCursorPos(0, 0);
         SetWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
     }
 
-    // What the window shows, the menu over frame generation's output included, as <name>.bmp.
-    void Capture(const char* name)
+    // What the window shows on screen, the menu over frame generation's output included, as <name>.bmp with
+    // --dump. The window is held in front while it renders a few frames, then its area is read from the screen.
+    std::vector<uint32_t> Capture(const char* name, bool (*pump)())
     {
+        SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        Render(0.3, pump);
         RECT client {};
         GetClientRect(window, &client);
-        HDC screen = GetDC(window);
+        POINT origin {};
+        ClientToScreen(window, &origin);
+        HDC screen = GetDC(nullptr);
         HDC memory = CreateCompatibleDC(screen);
         BITMAPINFO info {};
         info.bmiHeader = { sizeof(BITMAPINFOHEADER), client.right, -client.bottom, 1, 32 };
         void* bits = nullptr;
         HBITMAP bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-        SelectObject(memory, bitmap);
-        PrintWindow(window, memory, PW_CLIENTONLY | PW_RENDERFULLCONTENT);
-        BITMAPFILEHEADER file { 0x4D42 };
-        file.bfOffBits = sizeof(file) + sizeof(BITMAPINFOHEADER);
-        std::ofstream out(Here() / (std::string(name) + ".bmp"), std::ios::binary);
-        out.write((const char*) &file, sizeof(file));
-        out.write((const char*) &info.bmiHeader, sizeof(BITMAPINFOHEADER));
-        out.write((const char*) bits, std::streamsize(client.right) * client.bottom * 4);
+        auto previous = SelectObject(memory, bitmap);
+        BitBlt(memory, 0, 0, client.right, client.bottom, screen, origin.x, origin.y, SRCCOPY | CAPTUREBLT);
+        GdiFlush();
+        SetWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        std::vector<uint32_t> pixels((const uint32_t*) bits, (const uint32_t*) bits + client.right * client.bottom);
+        if (options.dump)
+        {
+            BITMAPFILEHEADER file { 0x4D42 };
+            file.bfOffBits = sizeof(file) + sizeof(BITMAPINFOHEADER);
+            std::ofstream out(Here() / (std::string(name) + ".bmp"), std::ios::binary);
+            out.write((const char*) &file, sizeof(file));
+            out.write((const char*) &info.bmiHeader, sizeof(BITMAPINFOHEADER));
+            out.write((const char*) bits, std::streamsize(client.right) * client.bottom * 4);
+        }
+        SelectObject(memory, previous);
         DeleteObject(bitmap);
         DeleteDC(memory);
-        ReleaseDC(window, screen);
+        ReleaseDC(nullptr, screen);
+        return pixels;
+    }
+
+    // Opens the menu, then its Frame Gen page from the side bar, and leaves it open. The page's content area
+    // is compared before and after the click to tell that the page changed; a missed click is tried again.
+    void OpenFgPage(bool (*pump)())
+    {
+        PressKey(VK_INSERT, true, pump);
+        Render(1.0, pump);
+        const auto before = Capture("menu-nr-page", pump);
+        double switched = 0;
+        for (int attempt = 0; attempt < 3 && switched < 0.1; ++attempt)
+        {
+            Click(337, 242, pump, 0.6);
+            const auto after = Capture("menu-fg-page", pump);
+            size_t differ = 0, total = 0;
+            for (LONG y = 290; y < 510 && before.size() == after.size() && after.size() >= size_t(width) * 510; ++y)
+                for (LONG x = 360; x < 940; ++x, ++total)
+                    differ += before[y * width + x] != after[y * width + x];
+            switched = total ? double(differ) / total : 0.0;
+            Out("fg-page attempt %d switched=%.3f", attempt + 1, switched);
+        }
+        Out("fg-page switched=%.3f", switched);
+    }
+
+    // Back to the NR page, where the menu opens next time, and the menu closed.
+    void CloseFgPage(bool (*pump)())
+    {
+        Click(337, 201, pump, 0.6);
+        PressKey(VK_INSERT, true, pump);
     }
 
     // Sets the Model scale slider on the NR page, where the menu opens, a fifth of the way along (about 0.6)
@@ -629,7 +756,7 @@ struct App
             PressKey(VK_INSERT, true, pump);
             Render(1.0, pump);
             if (options.dump)
-                Capture("scale-menu");
+                Capture("scale-menu", pump);
             Click(372 + 126 / 5, 395, pump);
             PressKey(VK_INSERT, true, pump);
             Render(0.5, pump);
@@ -705,16 +832,49 @@ static int Child(const Options& options)
     ShowWindow(app.window, SW_SHOW);
     SetForegroundWindow(app.window);
     app.CreateDevice();
+    // A helper process writes the stacks: this one may be stalled holding any lock.
+    if (options.stallStacks)
+        std::thread(
+            []
+            {
+                UINT64 sampled = UINT64_MAX;
+                for (int samples = 0; samples < 6;)
+                {
+                    Sleep(10);
+                    const ULONGLONG started = frameStarted;
+                    const UINT64 number = frameNumber;
+                    if (!started || GetTickCount64() - started < 120 || sampled == number)
+                        continue;
+                    sampled = number;
+                    ++samples;
+                    wchar_t self[MAX_PATH] {};
+                    GetModuleFileNameW(nullptr, self, MAX_PATH);
+                    std::wstring command = L"\"" + std::wstring(self) + L"\" --stacks " +
+                                           std::to_wstring(GetCurrentProcessId()) + L" " + std::to_wstring(number);
+                    STARTUPINFOW startup { sizeof(startup) };
+                    PROCESS_INFORMATION process {};
+                    if (CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &startup,
+                                       &process))
+                    {
+                        WaitForSingleObject(process.hProcess, 30000);
+                        CloseHandle(process.hProcess);
+                        CloseHandle(process.hThread);
+                    }
+                    Out("stall frame=%llu ms=%llu stacks in stall-stacks.txt", number, GetTickCount64() - started);
+                }
+            })
+            .detach();
 
     using Clock = std::chrono::steady_clock;
     const auto Seconds = [](Clock::time_point since)
     { return std::chrono::duration<double>(Clock::now() - since).count(); };
 
-    // Warm-up: the runtime loads, optical flow settles, XeFG starts. Ends when a probe sees NR.
+    // Warm-up: the runtime loads, optical flow settles, XeFG starts. Ends when a probe sees NR, or after a few
+    // seconds when NR starts off.
     auto start = Clock::now();
     auto lastProbe = start;
     bool warm = false;
-    while (Seconds(start) < 60 && !warm)
+    while (Seconds(start) < (options.nrOffStart ? 6 : 60) && !warm)
     {
         if (!Pump())
             break;
@@ -740,34 +900,84 @@ static int Child(const Options& options)
     }
     app.DebugMessages("warmup");
 
+    enum Action
+    {
+        None,
+        Resize = -1,
+        ModelScale = -2,
+        NewQueue = -3,  // swapchain again on a new queue
+        SameQueue = -4, // swapchain again on the same queue
+        FgPage = -5,    // menu open on the Frame Gen page
+        FgPageOut = -6, // back to the NR page, menu closed
+        Minimize = -7,
+        Restore = -8,
+        Warp = -9,      // every object again on WARP
+        Hardware = -10, // every object again on the hardware adapter
+        FgActive = -11, // the XeFG "Active" box on the Frame Gen page
+    };
     struct Step
     {
         const char* phase; // measured after the action, for `seconds`
-        int key;           // key to press first; 0 none, -1 resize, -2 Model scale from the menu
+        int key;           // key to press first, or an Action
         double delay;      // seconds to wait after the action before measuring
         double seconds;
     };
-    const Step steps[] = {
-        { "steady", 0, 0, 4 },
-        { "menu-open", VK_INSERT, 1, 4 },
-        { "menu-closed", VK_INSERT, 1, 3 },
-        { "fg-off", VK_END, 1.5, 3 },
-        { "fg-on", VK_END, 2.5, 4 },
-        { "nr-off", VK_NUMPAD5, 1.5, 3 },
-        { "nr-on", VK_NUMPAD5, 2.5, 4 },
-        { "scale", -2, 2.5, 4 },
-        { "resized", -1, 3, 4 },
-        { "menu-resized", VK_INSERT, 1, 3 },
-        { "end", VK_INSERT, 1, 2 },
-    };
+    std::vector<Step> steps;
+    if (options.nrOffStart)
+        steps = { { "guides-only", None, 0, 4 }, { "nr-late-on", VK_NUMPAD5, 4, 4 } };
+    if (options.lifecycle)
+    {
+        steps.insert(steps.end(), {
+                                      { "steady", None, 0, 4 },
+                                      { "new-queue", NewQueue, 4, 4 },
+                                      { "same-queue", SameQueue, 4, 4 },
+                                      { "fg-page", FgPage, 1, 4 },
+                                  });
+        // FG off and on again from the page's own "Active" box.
+        if (options.scenario == "fg")
+            steps.insert(steps.end(), { { "fg-page-off", FgActive, 1.5, 3 }, { "fg-page-on", FgActive, 2.5, 4 } });
+        steps.insert(steps.end(), {
+                                      { "fg-page-closed", FgPageOut, 1, 3 },
+                                      { "minimized", Minimize, 1, 3 },
+                                      { "restored", Restore, 3, 4 },
+                                  });
+        if (options.scenario == "nr")
+            steps.insert(steps.end(), { { "warp", Warp, 3, 3 }, { "hardware", Hardware, 4, 4 } });
+    }
+    else if (!options.nrOffStart)
+        steps = {
+            { "steady", None, 0, 4 },           { "menu-open", VK_INSERT, 1, 4 },
+            { "menu-closed", VK_INSERT, 1, 3 }, { "fg-off", VK_END, 1.5, 3 },
+            { "fg-on", VK_END, 2.5, 4 },        { "nr-off", VK_NUMPAD5, 1.5, 3 },
+            { "nr-on", VK_NUMPAD5, 2.5, 4 },    { "scale", ModelScale, 2.5, 4 },
+            { "resized", Resize, 3, 4 },        { "menu-resized", VK_INSERT, 1, 3 },
+            { "end", VK_INSERT, 1, 2 },
+        };
     for (const auto& step : steps)
     {
         if (step.key > 0)
             app.PressKey(step.key, step.key == VK_INSERT || step.key == VK_END, Pump);
-        else if (step.key == -1)
+        else if (step.key == Resize)
             app.Resize(1600, 900);
-        else if (step.key == -2)
+        else if (step.key == ModelScale)
             app.ChangeModelScale(Pump);
+        else if (step.key == NewQueue || step.key == SameQueue)
+            app.Recreate(step.key == NewQueue);
+        else if (step.key == FgPage)
+            app.OpenFgPage(Pump);
+        else if (step.key == FgPageOut)
+            app.CloseFgPage(Pump);
+        else if (step.key == FgActive)
+            app.Click(360, 350, Pump, 0.6);
+        else if (step.key == Minimize)
+            ShowWindow(app.window, SW_MINIMIZE);
+        else if (step.key == Restore)
+        {
+            ShowWindow(app.window, SW_RESTORE);
+            SetForegroundWindow(app.window);
+        }
+        else if (step.key == Warp || step.key == Hardware)
+            app.RecreateDevice(step.key == Warp);
         auto begin = Clock::now();
         while (Seconds(begin) < step.delay)
         {
@@ -786,7 +996,7 @@ static int Child(const Options& options)
         {
             Pump();
             App::ProbeResult probe;
-            const bool probeNow = Seconds(begin) >= nextProbe && probes.size() < 6;
+            const bool probeNow = !app.options.noProbe && Seconds(begin) >= nextProbe && probes.size() < 6;
             const auto started = Clock::now();
             const HRESULT hr = app.Frame(probeNow ? &probe : nullptr);
             // The longest frame that was not a probe: a stall in Present or in the frame before it.
@@ -891,12 +1101,13 @@ static std::map<std::string, PhaseResult> ParsePhases(const std::string& text)
     return phases;
 }
 
-// Every thread's stack of a hung child, symbolized where a PDB sits beside the module, into hang-stacks.txt.
-static void WriteHangStacks(HANDLE process, DWORD pid, const fs::path& dir)
+// Every thread's stack of another process, symbolized where a PDB sits beside the module, added to a file.
+static void WriteStacks(HANDLE process, DWORD pid, const fs::path& file, const char* title)
 {
-    std::ofstream out(dir / "hang-stacks.txt");
+    std::ofstream out(file, std::ios::app);
+    out << "== " << title << "\n";
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
-    SymInitializeW(process, dir.c_str(), TRUE);
+    SymInitializeW(process, file.parent_path().c_str(), TRUE);
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     THREADENTRY32 entry { sizeof(entry) };
     for (BOOL more = Thread32First(snapshot, &entry); more; more = Thread32Next(snapshot, &entry))
@@ -938,6 +1149,7 @@ static void WriteHangStacks(HANDLE process, DWORD pid, const fs::path& dir)
                 out << text;
             }
         }
+        ResumeThread(thread);
         CloseHandle(thread);
     }
     CloseHandle(snapshot);
@@ -960,7 +1172,7 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
         { L"Log", { L"LogToFile", L"true" } },
         { L"Log", { L"LogLevel", options.logLevel.c_str() } },
         { L"Log", { L"LogAsync", L"false" } },
-        { L"DlssNr", { L"Enabled", L"true" } },
+        { L"DlssNr", { L"Enabled", options.nrOffStart ? L"false" : L"true" } },
         { L"DlssNr", { L"PresentWithoutUpscaler", L"true" } },
         { L"DlssNr", { L"NrBackend", L"daniel" } },
         { L"FrameGen", { L"Enabled", fg ? L"true" : L"false" } },
@@ -971,6 +1183,14 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
     };
     for (auto& [section, kv] : keys)
         WritePrivateProfileStringW(section, kv.first, kv.second, ini.c_str());
+    for (auto& setting : options.settings)
+    {
+        const auto slash = setting.find(L'/'), equals = setting.find(L'=');
+        if (slash < equals && equals != std::wstring::npos)
+            WritePrivateProfileStringW(setting.substr(0, slash).c_str(),
+                                       setting.substr(slash + 1, equals - slash - 1).c_str(),
+                                       setting.substr(equals + 1).c_str(), ini.c_str());
+    }
     for (auto name : { L"OptiScaler.log", L"amd_presr.log", L"dx12_smoke_result.txt" })
         fs::remove(dir / name, ec);
 
@@ -990,7 +1210,7 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
         }
         if (WaitForSingleObject(process.hProcess, timeoutSeconds * 1000) != WAIT_OBJECT_0)
         {
-            WriteHangStacks(process.hProcess, process.dwProcessId, dir);
+            WriteStacks(process.hProcess, process.dwProcessId, dir / "hang-stacks.txt", "hung");
             std::printf("child hung: stacks in hang-stacks.txt\n");
             TerminateProcess(process.hProcess, 9);
             WaitForSingleObject(process.hProcess, 10000);
@@ -1020,40 +1240,95 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
     expect(code == 0, "child ran to completion and exited cleanly");
     expect(Count(result, "child-done") == 1, "child finished every phase");
     expect(Count(log, "887A0005") == 0 && Count(log, "Device removed reason") == 0, "no device removal in the log");
-    expect(Count(log, "OptiInput::ApplyMenuVisibilityChangeLocked menu visibility changed 0 -> 1") >= 2,
-           "menu opened twice");
-    expect(Count(log, "OptiInput::ApplyMenuVisibilityChangeLocked menu visibility changed 1 -> 0") >= 2,
-           "menu closed twice");
     // The runtime falls back for a frame on its own timeouts; a loaded machine can cause them, so they are counted.
-    std::printf("info: NR runtime timeouts %d, frames left without NR while the runtime was busy %d\n",
-                Count(runtimeLog, "AMD timeout"), Count(log, "runtime still busy, frame left without NR"));
-    // A Model scale change restarts the runtime's history for its settings.
-    expect(SettingsResets(runtimeLog) >= 1, "Model scale changed from the menu during the session");
-    for (auto name :
-         { "steady", "menu-open", "menu-closed", "fg-off", "fg-on", "nr-on", "scale", "resized", "menu-resized" })
+    std::printf("info: NR runtime timeouts %d, frames left without NR while the runtime was busy %d, XeFG turned "
+                "off %d and on %d times\n",
+                Count(runtimeLog, "AMD timeout"), Count(log, "runtime still busy, frame left without NR"),
+                Count(log, "SetEnabled: false"), Count(log, "SetEnabled: true"));
+    // Red Dead Redemption's quirk (by the executable's name): the first swapchain is a plain one, XeFG's the next.
+    wchar_t self[MAX_PATH] {};
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    const bool plainFirst = _wcsicmp(fs::path(self).filename().c_str(), L"rdr.exe") == 0;
+    std::vector<const char*> withNr, withoutNr, generating, single;
+    if (options.nrOffStart)
     {
-        std::string what = std::string("NR changed every probed frame in ") + name;
-        expect(phase(name).least > 0.3, what.c_str());
+        withoutNr.push_back("guides-only");
+        withNr.push_back("nr-late-on");
+        generating = { "guides-only", "nr-late-on" };
     }
-    // The menu's "Off" notification covers well under 5% of the frame; NR changes most of it.
-    expect(phase("nr-off").changed < 0.05, "NR off leaves the presented frame untouched");
+    if (options.lifecycle)
+    {
+        withNr.insert(withNr.end(), { "steady", "new-queue", "same-queue", "fg-page", "fg-page-closed", "restored" });
+        // The path without frame generation leaves a minimized window alone, and final-image NR with XeFG
+        // does the same.
+        withoutNr.push_back("minimized");
+        generating.insert(generating.end(), { "new-queue", "same-queue", "fg-page", "fg-page-closed", "restored" });
+        if (fg)
+        {
+            withNr.insert(withNr.end(), { "fg-page-off", "fg-page-on" });
+            single.push_back("fg-page-off");
+            generating.push_back("fg-page-on");
+        }
+        (plainFirst ? single : generating).push_back("steady");
+        // An XeFG swapchain is kept across a recreation (PreserveSwapChain) with its first queue, unless the
+        // game's quirk says otherwise, so only a plain first swapchain makes NR move.
+        if (plainFirst || !fg)
+            expect(Count(log, "Final-image NR: the game presents from another D3D12 queue") >= 1,
+                   "NR follows the game to its new queue");
+        expect(Count(result, "fg-page switched=") == 1 &&
+                   std::atof(result.c_str() + result.find("fg-page switched=") + 17) > 0.1,
+               "the menu shows its Frame Gen page");
+        if (options.scenario == "nr")
+        {
+            // WARP has no runtime: NR waits for the hardware device, which comes back as the same device.
+            withoutNr.push_back("warp");
+            withNr.push_back("hardware");
+            expect(Count(log, "Final-image NR: the game presents from another D3D12 device") >= 2,
+                   "NR follows the game to WARP and back");
+        }
+    }
+    if (!options.nrOffStart && !options.lifecycle)
+    {
+        expect(Count(log, "OptiInput::ApplyMenuVisibilityChangeLocked menu visibility changed 0 -> 1") >= 2,
+               "menu opened twice");
+        expect(Count(log, "OptiInput::ApplyMenuVisibilityChangeLocked menu visibility changed 1 -> 0") >= 2,
+               "menu closed twice");
+        // A Model scale change restarts the runtime's history for its settings.
+        expect(SettingsResets(runtimeLog) >= 1, "Model scale changed from the menu during the session");
+        withNr = {
+            "steady", "menu-open", "menu-closed", "fg-off", "fg-on", "nr-on", "scale", "resized", "menu-resized"
+        };
+        // The menu's "Off" notification covers well under 5% of the frame; NR changes most of it.
+        withoutNr = { "nr-off" };
+        generating = { "steady", "menu-open", "menu-closed", "fg-on",       "nr-off",
+                       "nr-on",  "scale",     "resized",     "menu-resized" };
+        single = { "fg-off" };
+    }
+    if (!options.noProbe)
+    {
+        for (auto name : withNr)
+            expect(phase(name).least > 0.3, (std::string("NR changed every probed frame in ") + name).c_str());
+        for (auto name : withoutNr)
+            expect(phase(name).changed < 0.05,
+                   (std::string("NR left the presented frame untouched in ") + name).c_str());
+    }
     if (fg)
     {
         expect(Count(log, "XeFG swapchain created") >= 1, "XeFG swapchain created");
-        for (auto name :
-             { "steady", "menu-open", "menu-closed", "fg-on", "nr-off", "nr-on", "scale", "resized", "menu-resized" })
-        {
-            std::string what = std::string("XeFG presents generated frames in ") + name + " (ratio >= 2.4)";
-            expect(phase(name).ratio >= 2.4, what.c_str());
-        }
-        expect(phase("fg-off").ratio < 1.2, "FG off presents one frame per game frame");
+        for (auto name : generating)
+            expect(phase(name).ratio >= 2.4,
+                   (std::string("XeFG presents generated frames in ") + name + " (ratio >= 2.4)").c_str());
+        for (auto name : single)
+            expect(phase(name).ratio > 0.9 && phase(name).ratio < 1.2,
+                   (std::string("one present per game frame in ") + name).c_str());
     }
     else
     {
         for (auto& [name, r] : phases)
         {
+            // A minimized window may present nothing at all.
             std::string what = "one present per game frame in " + name;
-            expect(r.ratio > 0.9 && r.ratio < 1.1, what.c_str());
+            expect(name == "minimized" || (r.ratio > 0.9 && r.ratio < 1.1), what.c_str());
         }
     }
     if (options.debugLayer)
@@ -1062,8 +1337,40 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
     return failures ? 1 : 0;
 }
 
+// The click helper: moves the cursor, presses and releases the left button, then leaves the window, as a
+// hand on the mouse does.
+static int ClickHelper(LONG x, LONG y, DWORD holdMs)
+{
+    SetCursorPos(x, y);
+    Sleep(300);
+    INPUT input {};
+    input.type = INPUT_MOUSE;
+    input.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    SendInput(1, &input, sizeof(input));
+    Sleep(holdMs);
+    input.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    SendInput(1, &input, sizeof(input));
+    Sleep(300);
+    SetCursorPos(0, 0);
+    return 0;
+}
+
 int wmain(int argc, wchar_t** argv)
 {
+    if (argc == 4 && std::wstring(argv[1]) == L"--stacks")
+    {
+        const DWORD pid = std::wcstoul(argv[2], nullptr, 10);
+        HANDLE process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+        if (!process)
+            return 1;
+        const std::string title = "stall at frame " + std::to_string(std::wcstoull(argv[3], nullptr, 10));
+        WriteStacks(process, pid, Here() / "stall-stacks.txt", title.c_str());
+        CloseHandle(process);
+        return 0;
+    }
+    if (argc == 5 && std::wstring(argv[1]) == L"--click")
+        return ClickHelper(std::wcstol(argv[2], nullptr, 10), std::wcstol(argv[3], nullptr, 10),
+                           std::wcstoul(argv[4], nullptr, 10));
     Options options;
     bool child = false;
     std::wstring lock;
@@ -1081,10 +1388,20 @@ int wmain(int argc, wchar_t** argv)
             lock = argv[++i];
         else if (arg == L"--dump")
             options.dump = true;
+        else if (arg == L"--lifecycle")
+            options.lifecycle = true;
+        else if (arg == L"--nr-off-start")
+            options.nrOffStart = true;
+        else if (arg == L"--no-probe")
+            options.noProbe = true;
+        else if (arg == L"--stall-stacks")
+            options.stallStacks = true;
         else if (arg == L"--cpu-ms" && i + 1 < argc)
             options.cpuMs = std::wcstod(argv[++i], nullptr);
         else if (arg == L"--model-scale" && i + 1 < argc)
             options.modelScale = argv[++i];
+        else if (arg == L"--set" && i + 1 < argc)
+            options.settings.push_back(argv[++i]);
         else if (arg == L"--log-level" && i + 1 < argc)
             options.logLevel = argv[++i];
         else if (arg == L"--timeout" && i + 1 < argc)
@@ -1095,8 +1412,8 @@ int wmain(int argc, wchar_t** argv)
     }
     if (options.scenario != "nr" && options.scenario != "fg")
     {
-        std::printf("usage: dx12_final_image_smoke.exe <nr|fg> [--bgra] [--debug-layer] [--lock <dir>] "
-                    "[--timeout <seconds>]\n");
+        std::printf("usage: dx12_final_image_smoke.exe <nr|fg> [--bgra] [--debug-layer] [--lifecycle] "
+                    "[--nr-off-start] [--no-probe] [--lock <dir>] [--timeout <seconds>]\n");
         return 2;
     }
     if (child)
@@ -1106,5 +1423,9 @@ int wmain(int argc, wchar_t** argv)
     args += options.debugLayer ? L" --debug-layer" : L"";
     args += options.cpuMs > 0 ? L" --cpu-ms " + std::to_wstring(options.cpuMs) : L"";
     args += options.dump ? L" --dump" : L"";
+    args += options.lifecycle ? L" --lifecycle" : L"";
+    args += options.nrOffStart ? L" --nr-off-start" : L"";
+    args += options.noProbe ? L" --no-probe" : L"";
+    args += options.stallStacks ? L" --stall-stacks" : L"";
     return Parent(options, lock, timeout, args);
 }
