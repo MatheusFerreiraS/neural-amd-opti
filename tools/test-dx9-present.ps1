@@ -74,12 +74,15 @@ $cases = @(
     @{ Name = "soak-fg"; Args = @(); Fg = $true; Frames = 6000; Ini = "[XeFG]`r`nInterpolationCount=2`r`n"
        Script = "1000:motion=soak-1000,3000:motion=soak-3000,5900:motion=soak-5900"
        Log = @("D3D9 bridge frame 5701: XeFG presenter, NR true at scale 1.00, FG true, XeFG last present 3 frames") },
-    # Frame times at 1920x1080 borderless with the scene moving and still, NR or FG on and off.
-    @{ Name = "timing-nr"; Args = @("--borderless", "--size", "1920x1080"); Fg = $false; Frames = 600
-       Script = "100:mark=nr-moving,220:still,230:mark=nr-still,350:still,360:nr,370:mark=off-moving,480:still,490:mark=off-still"
+    # Frame times at 1920x1080 borderless with the scene moving and still, with 8 ms of game CPU work per frame,
+    # NR or FG on and off.
+    @{ Name = "timing-nr"; Args = @("--borderless", "--size", "1920x1080"); Fg = $false; Frames = 880
+       Script = "100:mark=nr-moving,220:still,230:mark=nr-still,350:still,360:cpu=8,370:mark=nr-cpu8,490:nr," +
+                "500:mark=off-cpu8,620:cpu=0,630:mark=off-moving,750:still,760:mark=off-still"
        Log = @("D3D9 bridge frame \d+: D3D9 present, NR true") },
-    @{ Name = "timing-fg"; Args = @("--borderless", "--size", "1920x1080"); Fg = $true; Frames = 720
-       Script = "150:mark=fg-moving,270:still,280:mark=fg-still,400:still,410:fg,420:mark=nr-only-moving,540:nr,550:mark=off-moving"
+    @{ Name = "timing-fg"; Args = @("--borderless", "--size", "1920x1080"); Fg = $true; Frames = 930
+       Script = "150:mark=fg-moving,270:still,280:mark=fg-still,400:still,410:cpu=8,420:mark=fg-cpu8,540:fg," +
+                "550:mark=nr-only-cpu8,670:cpu=0,680:mark=nr-only-moving,800:nr,810:mark=off-moving"
        Log = @("D3D9 bridge frame \d+: XeFG presenter, NR true at scale [0-9.]+, FG true") }
 )
 if ($Case) { $cases = @($cases | Where-Object { $_.Name -eq $Case }) }

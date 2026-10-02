@@ -6,7 +6,8 @@
 //                         [--script "frame:action,..."]
 // Actions: menu (Insert), nr (Numpad 5), fg (End), still (stops or restarts the scrolling), press=XxY (moves the
 // cursor there and holds the left button), release, minimize, restore, window2 (presents into a new window from then
-// on, as a game that recreates its window), reset=WxH, shot=name, motion=name, mark=name.
+// on, as a game that recreates its window), cpu=ms (busy CPU work per frame), reset=WxH, shot=name, motion=name,
+// mark=name.
 #define NOMINMAX
 #include <windows.h>
 #include <d3d9.h>
@@ -331,6 +332,7 @@ int main(int argc, char** argv)
     previous = phaseStart;
     int phaseFrames = 0, failures = 0, scene = 0;
     bool still = false;
+    double cpuWork = 0;
     double worst = 0;
 
     auto endPhase = [&](const std::string& next)
@@ -362,6 +364,8 @@ int main(int argc, char** argv)
                 PostKey(VK_NUMPAD5);
             else if (action == "fg")
                 PostKey(VK_END);
+            else if (action.rfind("cpu=", 0) == 0)
+                cpuWork = std::atof(action.c_str() + 4);
             else if (action == "still")
                 still = !still;
             else if (action == "window2")
@@ -433,6 +437,14 @@ int main(int argc, char** argv)
         }
 
         Pump();
+        // Game work on the CPU before the frame's draws, as a busy wait.
+        LARGE_INTEGER busy, busyNow;
+        QueryPerformanceCounter(&busy);
+
+        do
+            QueryPerformanceCounter(&busyNow);
+        while (1000.0 * double(busyNow.QuadPart - busy.QuadPart) / double(frequency.QuadPart) < cpuWork);
+
         scene += still ? 0 : 1;
         Draw(device, scene, width, height);
 
