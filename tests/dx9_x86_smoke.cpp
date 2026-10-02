@@ -13,9 +13,9 @@
 //   --menu-at F          press the menu key (Insert) at F, move the mouse over the window, press it again
 //   --key-at F VK        press and release a key (hex or decimal virtual key) at frame F
 //   --drag-at F X0 Y0 X1 Y1  drag with the left button from X0,Y0 to X1,Y1 (client pixels) from frame F on
-//   --pin X Y            from the first drag to the end of the last, keep the cursor on client point X,Y (a
-//                        one-pixel clip through the real ClipCursor, as a game that holds the cursor in
-//                        place); the drags then reach their start by relative moves only
+//   --pin X Y            from 60 frames before the first drag to the end of the last, keep the cursor on
+//                        client point X,Y (a one-pixel clip through the real ClipCursor, as a game that
+//                        holds the cursor in place); the drags then reach their start by relative moves only
 //   --reset-at F WxH     Reset the device to a new size at frame F
 //   --kill-host-at F     end the host process at frame F; the proxy must start another
 //   --hold-key F0 F1 VK  press VK at F0 and release it at F1; the game must see the release
@@ -27,6 +27,9 @@
 //                        --window-thread)
 //   --minimize-at F0 F1  minimize the window at F0 and restore it at F1
 //   --hide-cursor        no cursor over the client area (a game in play hides it)
+//   --steer              each drag reaches its start the way a player moves the mouse to the cursor they
+//                        see: relative moves only, aimed again from where the cursor is after each one,
+//                        after a sweep past the window's top edge
 //   --subclass-at F      at F, make the window procedure one that calls nothing installed before it, as
 //                        an engine or overlay that replaces it after the device exists would
 //   --expect-unhooked    OptiScaler must be reported unhooked in each host, and the session native
@@ -83,6 +86,7 @@ UINT watchVk = 0, watchLast = 0;
 decltype(&GetAsyncKeyState) realAsyncKey = nullptr;
 decltype(&GetClipCursor) realGetClip = nullptr;
 decltype(&ClipCursor) realClip = nullptr;
+decltype(&GetCursorPos) realCursor = nullptr;
 // --hide-cursor: no cursor over the client area, as a game that draws its own or none.
 bool hideCursor = false;
 
@@ -174,6 +178,39 @@ bool NudgeMouse(HWND window, int dx, int dy, DWORD button = 0)
     input.mi.dy = dy;
     input.mi.dwFlags = MOUSEEVENTF_MOVE | button;
     return SendInput(1, &input, sizeof(input)) == 1;
+}
+
+// --steer: pointer speed and acceleration make the cursor's pixels differ from the counts sent, and the
+// sweep leaves the cursor at the top of the screen, above the window's top edge. Moves of at most 8
+// counts, as a hand slows down near what it aims at (larger ones overshoot under acceleration).
+bool SteerMouse(HWND window, int x, int y)
+{
+    if (!NudgeMouse(window, 0, -4000))
+        return false;
+    POINT target { x, y };
+    ClientToScreen(window, &target);
+    POINT at {};
+    realCursor(&at);
+    for (int i = 0; i < 400; ++i)
+    {
+        // Wait for the last move to reach the cursor before aiming again.
+        for (int wait = 0; wait < 25; ++wait)
+        {
+            POINT now {};
+            realCursor(&now);
+            const bool moved = now.x != at.x || now.y != at.y;
+            at = now;
+            if (moved)
+                break;
+            Sleep(2);
+        }
+        if (std::abs(target.x - at.x) <= 1 && std::abs(target.y - at.y) <= 1)
+            return true;
+        if (!NudgeMouse(window, std::clamp(int(target.x - at.x), -8, 8), std::clamp(int(target.y - at.y), -8, 8)))
+            return false;
+    }
+    printf("steer: the cursor stopped at %ld,%ld on its way to %ld,%ld (screen)\n", at.x, at.y, target.x, target.y);
+    return true;
 }
 
 COLORREF ScreenPixel(HWND window, int x, int y)
@@ -446,6 +483,7 @@ int main(int argc, char** argv)
     };
     std::vector<Drag> drags;
     int pinX = -1, pinY = -1;
+    bool steer = false;
     for (int i = 1; i < argc; ++i)
     {
         const std::string a = argv[i];
@@ -548,6 +586,8 @@ int main(int argc, char** argv)
         }
         else if (a == "--hide-cursor")
             hideCursor = true;
+        else if (a == "--steer")
+            steer = true;
         else if (a == "--pin")
         {
             pinX = atoi(next());
@@ -572,6 +612,7 @@ int main(int argc, char** argv)
     realAsyncKey = reinterpret_cast<decltype(realAsyncKey)>(GetProcAddress(user32, "GetAsyncKeyState"));
     realGetClip = reinterpret_cast<decltype(realGetClip)>(GetProcAddress(user32, "GetClipCursor"));
     realClip = reinterpret_cast<decltype(realClip)>(GetProcAddress(user32, "ClipCursor"));
+    realCursor = reinterpret_cast<decltype(realCursor)>(GetProcAddress(user32, "GetCursorPos"));
     CreateThread(nullptr, 0, Watchdog, reinterpret_cast<LPVOID>(static_cast<uintptr_t>(timeout)), 0, nullptr);
 
     wchar_t path[MAX_PATH] {};
@@ -900,8 +941,10 @@ int main(int argc, char** argv)
         // process's window follows a mouse by its relative moves, from where the cursor was), button
         // down, twelve relative steps, button up; one event a frame, as OptiScaler reads the mouse once a
         // frame.
-        // With --pin the menu can only follow the mouse by its relative moves, from where they left it.
-        if (pinX >= 0 && !drags.empty() && frame >= drags.front().at && frame <= drags.back().at + 25)
+        // With --pin the menu can only follow the mouse by its relative moves, from where they left it. The
+        // cursor is held from 60 frames before the first drag (before the menu opens in the runner's cases),
+        // as a game holds it all along.
+        if (pinX >= 0 && !drags.empty() && frame >= drags.front().at - 60 && frame <= drags.back().at + 25)
         {
             POINT point { pinX, pinY };
             ClientToScreen(window, &point);
@@ -917,6 +960,8 @@ int main(int argc, char** argv)
                 sent = NudgeMouse(window, d.x0 - pinMoved.x, d.y0 - pinMoved.y);
                 pinMoved = { d.x0 + (d.x1 - d.x0) / 12 * 12, d.y0 + (d.y1 - d.y0) / 12 * 12 };
             }
+            else if (step == 0 && steer)
+                sent = SteerMouse(window, d.x0, d.y0);
             else if (step == 0)
                 sent = MoveMouse(window, d.x0, d.y0);
             else if (step == 2)

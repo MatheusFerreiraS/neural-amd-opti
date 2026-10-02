@@ -18,7 +18,7 @@ $smoke = Join-Path $stage 'dx9_x86_smoke.exe'
 $lock = 'E:\Projetos\opti_rr_dlss5\wt\locks\gpu'
 
 if (-not $OptiScaler) { $OptiScaler = Join-Path $root 'exports\release-local\OptiScaler.dll' }
-Copy-Item $OptiScaler $host64 -Force
+Copy-Item $OptiScaler (Join-Path $host64 'OptiScaler.dll') -Force
 foreach ($pair in @(@($Runtime, 'dlssnr_amd_pass1.dll'), @($Weights, 'dlssnr_on_amd_weights.bin'),
         @((Join-Path $XeFG 'libxess_fg.dll'), 'libxess_fg.dll'), @((Join-Path $XeFG 'libxell.dll'), 'libxell.dll'))) {
     $target = Join-Path $host64 $pair[1]
@@ -196,12 +196,20 @@ try {
     # slider. The menu must follow the cursor, not raw moves counted from the first click. 'menu-pinned':
     # the game hides the cursor and holds it on one point outside the menu (Source in play re-centres
     # it), so the menu can follow the mouse only by the raw moves its input sink reads, here also on
-    # XeFG's present thread.
+    # XeFG's present thread. 'menu-steer': the cursor shows and reaches the slider by relative moves only, as a
+    # player's mouse moves it (pointer acceleration, and a sweep past the window's top edge where the cursor
+    # goes on and the window ends). 'menu-shown-pinned': the cursor shows but the game holds it on one point,
+    # so only raw moves reach the slider. 'menu-hidden-absolute': the cursor is hidden and moved by absolute
+    # moves (a pen tablet or a remote desktop), which bring no raw counts.
     $follow = @('--drag-at', '330', '200', '395', '200', '395', '--drag-at', '370', '470', '395', '420', '395')
-    $pinned = @('--hide-cursor', '--pin', '200', '395', '--drag-at', '340', '470', '395', '420', '395', '--drag-at',
-        '380', '470', '395', '420', '395')
+    $drags = @('--drag-at', '340', '470', '395', '420', '395', '--drag-at', '380', '470', '395', '420', '395')
+    $pinned = @('--hide-cursor', '--pin', '200', '395') + $drags
+    $steer = @('--steer') + $drags
+    $shownPinned = @('--pin', '200', '395') + $drags
+    $hiddenAbsolute = @('--hide-cursor') + $follow
     foreach ($case in @(@('menu-follow', $nr, $follow), @('menu-follow-fg', $fg, $follow), @('menu-pinned', $nr, $pinned),
-            @('menu-pinned-fg', $fg, $pinned))) {
+            @('menu-pinned-fg', $fg, $pinned), @('menu-steer', $nr, $steer), @('menu-steer-fg', $fg, $steer),
+            @('menu-shown-pinned', $nr, $shownPinned), @('menu-hidden-absolute', $nr, $hiddenAbsolute))) {
         $arguments = @('--frames', '900', '--expect-bridged', '--key-at', '300', '0x2D') + $case[2] + @('--shot-at',
             '420', "$($case[0]).bmp", '--key-at', '440', '0x2D')
         if ($case[0] -like '*-fg') { $arguments += '--expect-fg' }
