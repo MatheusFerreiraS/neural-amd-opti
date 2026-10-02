@@ -217,6 +217,9 @@ backbuffers are resolved on the way in and drawn over on the way back.
 With the XeFG settings from the D3D11 section, a D3D12 XeFG swapchain takes over
 the game window at the first frame and the D3D9 Present is skipped; the menu is
 then drawn by the D3D12 overlay. This needs a windowed or borderless D3D9 device.
+If the game switches to exclusive fullscreen or moves to another window, the
+D3D12 swapchain is released, D3D9 presents again with NR and the menu, and frame
+generation stays off until the game is restarted.
 Frame generation runs while NR runs, since its guides come from NR's optical
 flow: turning NR off turns generation off and the frames keep going out through
 the same swapchain. The End key toggles generation and Numpad 5 toggles NR.
