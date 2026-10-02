@@ -85,7 +85,7 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChain(IDXGIFactory* realFactory, Wrap
 
     if (State::Instance().vulkanCreatingSC)
     {
-        LOG_WARN("Vulkan is creating swapchain!");
+        LOG_WARN("Vulkan or OpenGL is creating swapchain!");
 
         if (pDesc != nullptr)
             LOG_DEBUG("Width: {}, Height: {}, Format: {}, Count: {}, Hwnd: {:X}, Windowed: {}, SkipWrapping: {}",
@@ -443,7 +443,7 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChainForHwnd(IDXGIFactory2* realFacto
 
     if (State::Instance().vulkanCreatingSC)
     {
-        LOG_WARN("Vulkan is creating swapchain!");
+        LOG_WARN("Vulkan or OpenGL is creating swapchain!");
         HRESULT result;
 
         {
@@ -833,7 +833,7 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChainForCoreWindow(IDXGIFactory2* rea
 {
     if (State::Instance().vulkanCreatingSC)
     {
-        LOG_WARN("Vulkan is creating swapchain!");
+        LOG_WARN("Vulkan or OpenGL is creating swapchain!");
 
         if (pDesc != nullptr)
             LOG_DEBUG("Width: {}, Height: {}, Format: {}, Flags: {:X}, Count: {}, SkipWrapping: {}", pDesc->Width,

@@ -2,6 +2,7 @@
 
 #include "GL_Hooks.h"
 
+#include <Config.h>
 #include <Logger.h>
 #include <State.h>
 
@@ -20,6 +21,8 @@ typedef BOOL(WINAPI* PFN_wglMakeCurrent)(HDC, HGLRC);
 typedef HGLRC(WINAPI* PFN_wglGetCurrentContext)();
 typedef HDC(WINAPI* PFN_wglGetCurrentDC)();
 typedef PROC(WINAPI* PFN_wglGetProcAddress)(LPCSTR);
+typedef BOOL(WINAPI* PFN_wglSwapIntervalEXT)(int);
+typedef int(WINAPI* PFN_wglGetSwapIntervalEXT)();
 
 static HMODULE _module = nullptr;
 static PFN_wglSwapBuffers o_wglSwapBuffers = nullptr;
@@ -124,6 +127,29 @@ static void Present(HDC hdc)
     _inPresent = false;
 }
 
+// The menu's V-Sync settings, as on DXGI: off is interval 0, on is the chosen interval, at least 1.
+// The swap interval belongs to the game's context, which is current here.
+static void ApplyVsync(HDC hdc)
+{
+    auto config = Config::Instance();
+    if (!config->ForceVsync.has_value() || o_wglGetCurrentDC() != hdc)
+        return;
+
+    static auto setInterval = (PFN_wglSwapIntervalEXT) GLHooks::GetProc("wglSwapIntervalEXT");
+    static auto getInterval = (PFN_wglGetSwapIntervalEXT) GLHooks::GetProc("wglGetSwapIntervalEXT");
+    if (setInterval == nullptr || getInterval == nullptr)
+        return;
+
+    const int interval =
+        config->ForceVsync.value() ? std::max(1, static_cast<int>(config->VsyncInterval.value_or_default())) : 0;
+    static int logged = -1;
+    if (getInterval() != interval && setInterval(interval) && logged != interval)
+    {
+        logged = interval;
+        LOG_INFO("OpenGL: swap interval set to {}", interval);
+    }
+}
+
 static void AfterPresent()
 {
     if (!State::Instance().reflexLimitsFps)
@@ -134,6 +160,7 @@ VALIDATE_HOOK(hkwglSwapBuffers, PFN_wglSwapBuffers)
 static BOOL WINAPI hkwglSwapBuffers(HDC hdc)
 {
     Present(hdc);
+    ApplyVsync(hdc);
     auto result = o_wglSwapBuffers(hdc);
     AfterPresent();
     return result;
@@ -143,7 +170,10 @@ VALIDATE_HOOK(hkwglSwapLayerBuffers, PFN_wglSwapLayerBuffers)
 static BOOL WINAPI hkwglSwapLayerBuffers(HDC hdc, UINT planes)
 {
     if (planes & WGL_SWAP_MAIN_PLANE)
+    {
         Present(hdc);
+        ApplyVsync(hdc);
+    }
 
     auto result = o_wglSwapLayerBuffers(hdc, planes);
 

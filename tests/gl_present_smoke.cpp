@@ -195,6 +195,14 @@ static int Render(HWND hwnd, int frames, bool nr, bool threaded, ULONGLONG launc
     std::printf("GL_VERSION %s, GL_RENDERER %s\n", (const char*) glGetString(GL_VERSION),
                 (const char*) glGetString(GL_RENDERER));
 
+    // V-Sync on, which the runner's ini overrides to off through the menu's V-Sync setting.
+    using SwapInterval = BOOL(WINAPI*)(int);
+    using GetSwapInterval = int(WINAPI*)();
+    const auto swapInterval = reinterpret_cast<SwapInterval>(wglGetProcAddress("wglSwapIntervalEXT"));
+    const auto getSwapInterval = reinterpret_cast<GetSwapInterval>(wglGetProcAddress("wglGetSwapIntervalEXT"));
+    if (!swapInterval || !getSwapInterval || !swapInterval(1))
+        return Fail("WGL_EXT_swap_control");
+
     // State the hooks must not disturb.
     glClearColor(1.0f, 0.0f, 1.0f, 1.0f);
     glEnable(GL_SCISSOR_TEST);
@@ -283,6 +291,7 @@ static int Render(HWND hwnd, int frames, bool nr, bool threaded, ULONGLONG launc
 
     std::printf("%d frames in %llu ms: %llu before the menu opens, %llu open, %llu after\n", frames, ended - started,
                 phase[0] - started, phase[1] - phase[0], ended - phase[1]);
+    std::printf("swap interval after the presents: %d\n", getSwapInterval());
 
     if (!capturedClosed || !capturedOpen)
         return Fail("PrintWindow could not capture the window");

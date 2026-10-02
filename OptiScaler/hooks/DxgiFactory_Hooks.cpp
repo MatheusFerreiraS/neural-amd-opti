@@ -413,7 +413,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
 
     if (State::Instance().vulkanCreatingSC)
     {
-        LOG_WARN("Vulkan is creating swapchain!");
+        LOG_WARN("Vulkan or OpenGL is creating swapchain!");
 
         if (pDesc != nullptr)
             LOG_DEBUG("Width: {}, Height: {}, Format: {}, Count: {}, Hwnd: {:X}, Windowed: {}, SkipWrapping: {}",
@@ -791,7 +791,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
 
     if (State::Instance().vulkanCreatingSC)
     {
-        LOG_WARN("Vulkan is creating swapchain!");
+        LOG_WARN("Vulkan or OpenGL is creating swapchain!");
         HRESULT result;
 
         {
@@ -1192,7 +1192,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForCoreWindow(IDXGIFactory2* realFactor
 {
     if (State::Instance().vulkanCreatingSC)
     {
-        LOG_WARN("Vulkan is creating swapchain!");
+        LOG_WARN("Vulkan or OpenGL is creating swapchain!");
 
         if (pDesc != nullptr)
             LOG_DEBUG("Width: {}, Height: {}, Format: {}, Flags: {:X}, Count: {}, SkipWrapping: {}", pDesc->Width,
@@ -1366,7 +1366,7 @@ HRESULT DxgiFactoryHooks::DLSSGCreateSwapChain(IDXGIFactory* realFactory, IUnkno
 
     if (State::Instance().vulkanCreatingSC)
     {
-        LOG_WARN("Vulkan is creating swapchain!");
+        LOG_WARN("Vulkan or OpenGL is creating swapchain!");
 
         if (pDesc != nullptr)
             LOG_DEBUG("Width: {}, Height: {}, Format: {}, Count: {}, Hwnd: {:X}, Windowed: {}, SkipWrapping: {}",
@@ -1650,7 +1650,7 @@ HRESULT DxgiFactoryHooks::DLSSGCreateSwapChainForHwnd(IDXGIFactory2* realFactory
 
     if (State::Instance().vulkanCreatingSC)
     {
-        LOG_WARN("Vulkan is creating swapchain!");
+        LOG_WARN("Vulkan or OpenGL is creating swapchain!");
         HRESULT result;
 
         {
@@ -1963,7 +1963,7 @@ HRESULT DxgiFactoryHooks::DLSSGCreateSwapChainForCoreWindow(IDXGIFactory2* realF
 {
     if (State::Instance().vulkanCreatingSC)
     {
-        LOG_WARN("Vulkan is creating swapchain!");
+        LOG_WARN("Vulkan or OpenGL is creating swapchain!");
 
         if (pDesc != nullptr)
             LOG_DEBUG("Width: {}, Height: {}, Format: {}, Flags: {:X}, Count: {}, SkipWrapping: {}", pDesc->Width,

@@ -102,7 +102,8 @@ struct FgPresenter
         if (window && !DestroyWindow(window))
             PostMessageW(window, WM_CLOSE, 0, 0);
         window = nullptr;
-        frameId = serial = 0;
+        frameId = 0;
+        serial = 0;
         interpolated = maximum = 0;
         enabled = false;
         visible = false;
@@ -379,6 +380,13 @@ struct FgPresenter
     void Step(HWND hwnd, ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* colour,
               const AmdPresentExperimental::Guides& guides, bool& failed)
     {
+        // Destroying the game's window destroys the child with it, and a new game window gets a child of its own.
+        if (window && (!IsWindow(window) || GetParent(window) != hwnd))
+        {
+            LOG_INFO("{} XeFG: the game window changed, the presenter is created again", api);
+            Release();
+        }
+
         const bool wantFg = Config::Instance()->FGEnabled.value_or_default() &&
                             State::Instance().activeFgInput == FGInput::Upscaler &&
                             State::Instance().activeFgOutput == FGOutput::XeFG;

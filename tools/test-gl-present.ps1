@@ -48,6 +48,9 @@ NrBackend=daniel
 [FrameGen]
 Enabled=$fg
 FGOutput=$(if ($mode -eq "fg") { "xefg" } else { "auto" })
+
+[V-Sync]
+ForceVsync=false
 "@ | Set-Content -Encoding ascii "$out\OptiScaler.ini"
 Remove-Item -Force -ErrorAction SilentlyContinue "$out\OptiScaler.log"
 
@@ -80,13 +83,17 @@ $expected = @(
     "OpenGL menu: ImGui renderer ready",
     "OpenGL menu: opened",
     "OpenGL menu: frame drawn with the menu open",
-    "OpenGL menu: closed"
+    "OpenGL menu: closed",
+    "OpenGL: swap interval set to 0"
 )
 if ($mode -ne "menu") {
     $expected += "OpenGL final-image NR: back buffer 1280x720", "OpenGL final-image NR: first frame processed", "ms average over 120 presents"
 }
 if ($mode -eq "fg") { $expected += "OpenGL XeFG presenter created", "OpenGL XeFG paused while OptiScaler menu is open" }
 $failed = $code -ne 0
+if (-not (Get-Content "$out\stdout.txt" -Raw).Contains("swap interval after the presents: 0")) {
+    Write-Host "MISSING: the game's swap interval of 1 was not forced to 0"; $failed = $true
+}
 foreach ($line in $expected) {
     if ($log.Contains($line)) { Write-Host "ok: $line" } else { Write-Host "MISSING: $line"; $failed = $true }
 }

@@ -114,7 +114,8 @@ struct Gl
 // The crossing is created in D3D12 and imported into OpenGL, R8G8B8A8 because the blit writes it
 // through OpenGL's RGBA view. Two rules measured by the ReShade add-on's OpenGL route on AMD: the
 // memory object is declared dedicated before the import, and the exported NT handle is never
-// closed, because closing it faults inside the driver later.
+// closed, because closing it faults inside the driver later. That is one handle per size the
+// window settles at.
 struct Route
 {
     Gl gl {};
@@ -127,6 +128,8 @@ struct Route
     GLuint resolveTexture = 0, resolveFbo = 0;
     GLint samples = 0;
     uint32_t width = 0, height = 0;
+    uint32_t seenWidth = 0, seenHeight = 0;
+    std::chrono::steady_clock::time_point seenSince {};
     std::vector<HANDLE> keptHandles;
     AmdPresentExperimental::FgPresenter fg { "OpenGL" };
     AmdPresentExperimental::Guides guides;
@@ -353,6 +356,22 @@ void Process(HWND hwnd, uint32_t width, uint32_t height, uint32_t generation)
     if (!r.device && !r.CreateDevice())
     {
         r.Stop("D3D12 device unavailable");
+        return;
+    }
+
+    // A window being resized presents at a new size every few frames. The crossing, and XeFG with it,
+    // is built again once the size has held for 300 ms; until then the game's image is left alone.
+    const auto now = std::chrono::steady_clock::now();
+    if (r.seenWidth != width || r.seenHeight != height)
+    {
+        r.seenWidth = width;
+        r.seenHeight = height;
+        r.seenSince = now;
+    }
+
+    if (r.fbo != 0 && (r.width != width || r.height != height) && now - r.seenSince < std::chrono::milliseconds(300))
+    {
+        r.fg.Pause();
         return;
     }
 
