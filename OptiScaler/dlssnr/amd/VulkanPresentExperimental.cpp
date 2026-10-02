@@ -20,7 +20,7 @@
 #include <mutex>
 #include <chrono>
 #include <atomic>
-#include <future>
+#include <condition_variable>
 #include <thread>
 #include <vector>
 #include <algorithm>
@@ -64,28 +64,48 @@ struct FgWindow
         }();
         if (!registered)
             return false;
-        auto created = std::make_shared<std::promise<HWND>>();
-        auto result = created->get_future();
+        // A thread that finishes after Create gave up destroys its window and exits.
+        struct Start
+        {
+            std::mutex lock;
+            std::condition_variable done;
+            HWND window = nullptr;
+            bool finished = false, abandoned = false;
+        };
+        auto start = std::make_shared<Start>();
         thread = std::thread(
-            [created, parent, width, height]
+            [start, parent, width, height]
             {
                 HWND window =
                     CreateWindowExW(WS_EX_NOPARENTNOTIFY, L"OptiScalerVulkanXeFG", L"", WS_CHILD | WS_DISABLED, 0, 0,
                                     width, height, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
                 if (!window)
                     LOG_ERROR("Vulkan XeFG: child window failed ({})", GetLastError());
-                created->set_value(window);
+                {
+                    std::lock_guard hold(start->lock);
+                    start->finished = true;
+                    if (start->abandoned)
+                    {
+                        if (window)
+                            DestroyWindow(window);
+                        return;
+                    }
+                    start->window = window;
+                }
+                start->done.notify_one();
                 MSG message;
                 while (window && GetMessageW(&message, nullptr, 0, 0) > 0)
                     DispatchMessageW(&message);
             });
-        if (result.wait_for(std::chrono::seconds(2)) != std::future_status::ready)
+        std::unique_lock hold(start->lock);
+        if (!start->done.wait_for(hold, std::chrono::seconds(2), [&] { return start->finished; }))
         {
+            start->abandoned = true;
             LOG_ERROR("Vulkan XeFG: child window creation did not finish");
             thread.detach();
             return false;
         }
-        window = result.get();
+        window = start->window;
         return window != nullptr;
     }
 
