@@ -711,10 +711,16 @@ struct Guides
     UINT width = 0, height = 0;
     bool reset = false;
 };
+// The menu reads this on frame generation's presentation thread: while a frame holds the lock it gets the last
+// status read instead of waiting for that frame.
 inline std::string Status()
 {
-    std::lock_guard g(mutex);
-    return status;
+    static std::mutex lastMutex;
+    static std::string last;
+    std::lock_guard l(lastMutex);
+    if (std::unique_lock g(mutex, std::try_to_lock); g.owns_lock())
+        last = status;
+    return last;
 }
 inline void Report(std::string message)
 {
