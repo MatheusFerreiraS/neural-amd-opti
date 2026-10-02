@@ -153,6 +153,9 @@ struct InputState
     bool ExternalGetCursorPosVirtualizedThisFrame = false;
     bool ExternalCursorRecenteringDetected = false;
     bool ExternalVirtualMouseInitialized = false;
+    // Final image only: the system cursor shows over a target window in another process, so the open
+    // menu follows it instead of counting raw moves.
+    bool ExternalCursorShown = false;
     bool ExternalLowLevelMouseHookInstalled = false;
     bool ExternalRawInputSinkRegistered = false;
     bool ExternalRawInputSinkPumpUsedThisFrame = false;
