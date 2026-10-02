@@ -398,8 +398,11 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
             *Config::Instance(), Config::Instance()->AmdNrScale.value_or_default());
         settings.spinDraw = 0;
         AmdPresentExperimental::Guides guides;
+        // NR runs on the queue the frame generation swapchain was made with, after its wait for the copy above:
+        // XeFG takes the frame and the guides in that queue's order, so the frames it generates carry NR. The copy
+        // queue is not ordered with XeFG's work.
         const bool ready = AmdPresentExperimental::Render(
-            _fgSwapChain, _dx12CommandQueue, Util::DllPath().parent_path(), settings, &guides, neural, true);
+            _fgSwapChain, _fg->GetCommandQueue(), Util::DllPath().parent_path(), settings, &guides, neural, true);
         static unsigned unavailableFrames = 0;
         if (ready)
             unavailableFrames = 0;
