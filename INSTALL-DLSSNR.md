@@ -208,9 +208,10 @@ of the system D3D9 runtime, for chaining another D3D9 wrapper.
 
 The full OptiScaler menu (Insert) is drawn on the D3D9 device. With the
 final-image settings above, each frame crosses from D3D9 to D3D12 through system
-memory, because a D3D9 device cannot share a texture with D3D12. NR runs there and
-the result is copied back before the D3D9 Present. The copies cost about 1.5 ms
-per frame at 1280x720 on an RX 9070 XT, on top of the network. Multisampled
+memory, because a classic D3D9 device cannot share a texture. NR runs there and
+the result is copied back before the D3D9 Present. On an RX 9070 XT the copies
+cost about 1.5 ms per frame at 1280x720 and 4.5 ms at 1920x1080, on top of the
+network. A D3D9Ex device shares the frame with D3D12 instead. Multisampled
 backbuffers are resolved on the way in and drawn over on the way back.
 
 With the XeFG settings from the D3D11 section, a D3D12 XeFG swapchain takes over
@@ -219,7 +220,9 @@ then drawn by the D3D12 overlay. This needs a windowed or borderless D3D9 device
 Frame generation runs while NR runs, since its guides come from NR's optical
 flow: turning NR off turns generation off and the frames keep going out through
 the same swapchain. The End key toggles generation and Numpad 5 toggles NR.
-32-bit D3D9 games are not handled by this DLL.
+Use `InterpolationCount=2` or more: with one generated frame per frame XeFG paces
+this route badly (about 50 ms per rendered frame at 1920x1080, against 18 ms with
+two). 32-bit D3D9 games are not handled by this DLL.
 
 The Optical Flow build needs an in-game visual and resize test before packaging for users.
 
