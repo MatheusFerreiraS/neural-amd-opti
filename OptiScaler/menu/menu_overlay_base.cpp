@@ -3,6 +3,8 @@
 #include "menu_common.h"
 
 #include <Config.h>
+#include <State.h>
+#include <framegen/IFGFeature_Dx12.h>
 #include <Logger.h>
 #include <resource.h>
 
@@ -45,3 +47,15 @@ void MenuOverlayBase::Shutdown() { MenuCommon::Shutdown(); }
 void MenuOverlayBase::HideMenu() { MenuCommon::HideMenu(); }
 
 void MenuOverlayBase::ApplyThemeStyle() { MenuCommon::ApplyThemeStyle(); }
+
+// Read by tools/dx9-x86's 64-bit host after each Present it makes for a 32-bit D3D9 game, so the
+// game side can hold the game's input while the menu is open. Bit 0: menu visible. Bit 1: frame
+// generation active.
+extern "C" __declspec(dllexport) uint32_t OptiScalerOverlayState()
+{
+    uint32_t state = MenuCommon::IsVisible() ? 1u : 0u;
+    auto fg = State::Instance().currentFG;
+    if (fg != nullptr && fg->IsActive() && !fg->IsPaused())
+        state |= 2u;
+    return state;
+}
