@@ -19,7 +19,8 @@
 // thread and Vulkan presents from another that never pumps messages, the way emulators such as yuzu
 // work. Real keyboard and mouse input drives NR, XeFG, the menu, focus loss, minimize, resize and the
 // toggles; each step checks OptiScaler.log, the XeFG window and whether the game window still gets
-// its input. Exit code is the number of failed steps.
+// its input. With "off" as argument it checks instead that PresentWithoutUpscaler=false leaves the
+// game, the menu and the keys alone. Exit code is the number of failed steps.
 
 namespace
 {
@@ -149,7 +150,8 @@ bool Foreground(HWND window)
 }
 
 // OptiScaler drops SendInput calls from the game process while its menu is open, so input comes
-// from a second copy of this program: "input key <vk>" or "input move <x> <y> ..." in screen pixels.
+// from a second copy of this program: "input key <vk>", "input move <x> <y> ..." or
+// "input click <x> <y>" in screen pixels.
 int Inject(int argc, wchar_t** argv)
 {
     if (argc >= 4 && !wcscmp(argv[2], L"key"))
@@ -180,6 +182,17 @@ int Inject(int argc, wchar_t** argv)
             return 1;
         Sleep(40);
     }
+    // "input click <x> <y>" ends with a left click where the cursor stopped.
+    if (!wcscmp(argv[2], L"click"))
+        for (DWORD flag : { MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP })
+        {
+            Sleep(150);
+            INPUT input {};
+            input.type = INPUT_MOUSE;
+            input.mi.dwFlags = flag;
+            if (SendInput(1, &input, sizeof(input)) != 1)
+                return 1;
+        }
     return 0;
 }
 
@@ -236,6 +249,16 @@ bool GameGetsInput(const char*& why)
     return mouse && keyboard;
 }
 
+// Left click at a point of the game's client area.
+bool Click(int x, int y)
+{
+    const RECT rect = ClientOnScreen();
+    const bool sent =
+        RunInjector(L"click " + std::to_wstring(rect.left + x) + L" " + std::to_wstring(rect.top + y));
+    Sleep(600);
+    return sent;
+}
+
 bool FocusStaysWithGame(const char*& why)
 {
     GUITHREADINFO info { sizeof(info) };
@@ -266,19 +289,78 @@ std::vector<uint32_t> Capture()
     return pixels;
 }
 
+// Saves a capture of the client area beside the log, for a person to look at.
+void SaveCapture(const std::vector<uint32_t>& pixels, const char* name)
+{
+    const RECT rect = ClientOnScreen();
+    const LONG width = rect.right - rect.left, height = rect.bottom - rect.top;
+    if (pixels.size() != size_t(width) * height)
+        return;
+    BITMAPINFOHEADER info { sizeof(info), width, -height, 1, 32, BI_RGB };
+    BITMAPFILEHEADER header {};
+    header.bfType = 0x4D42;
+    header.bfOffBits = sizeof(header) + sizeof(info);
+    header.bfSize = header.bfOffBits + DWORD(pixels.size() * 4);
+    std::ofstream file(name, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    file.write(reinterpret_cast<const char*>(&info), sizeof(info));
+    file.write(reinterpret_cast<const char*>(pixels.data()), pixels.size() * 4);
+}
+
+bool Differs(uint32_t a, uint32_t b)
+{
+    int distance = 0;
+    for (int shift : { 0, 8, 16 })
+        distance += std::abs(int((a >> shift) & 255) - int((b >> shift) & 255));
+    return distance > 60;
+}
+
 double Changed(const std::vector<uint32_t>& a, const std::vector<uint32_t>& b)
 {
     if (a.size() != b.size() || a.empty())
         return 0.0;
     size_t changed = 0;
     for (size_t i = 0; i < a.size(); ++i)
-    {
-        int distance = 0;
-        for (int shift : { 0, 8, 16 })
-            distance += std::abs(int((a[i] >> shift) & 255) - int((b[i] >> shift) & 255));
-        changed += distance > 60;
-    }
+        changed += Differs(a[i], b[i]);
     return double(changed) / a.size();
+}
+
+// With the menu open the block starts moving again under it. The menu's pixels in the rows the block
+// sweeps are compared with the still capture: a menu that XeFG warped or ghosted on generated frames
+// changes there, a menu laid over every frame does not. The rest of those rows shows the motion. The
+// captures span about three seconds, the time the block takes to cross the frame.
+bool MenuOverMotion(const std::vector<uint32_t>& closed, const std::vector<uint32_t>& open)
+{
+    const RECT rect = ClientOnScreen();
+    const int width = rect.right - rect.left, height = rect.bottom - rect.top;
+    if (open.size() != size_t(width) * height || closed.size() != open.size())
+        return false;
+    freeze = false;
+    Sleep(300);
+    constexpr int shots = 30;
+    size_t menu = 0, menuChanged = 0, around = 0, aroundChanged = 0;
+    for (int shot = 0; shot < shots; ++shot)
+    {
+        const auto moving = Capture();
+        if (moving.size() != open.size())
+            return false;
+        if (shot % 10 == 0)
+            SaveCapture(moving, ("capture-menu-moving-" + std::to_string(shot / 10) + ".bmp").c_str());
+        for (int y = height / 2 - 64; y < height / 2 + 64; ++y)
+            for (int x = 0; x < width; ++x)
+            {
+                const size_t i = size_t(y) * width + x;
+                const bool inMenu = Differs(closed[i], open[i]);
+                (inMenu ? menu : around) += 1;
+                (inMenu ? menuChanged : aroundChanged) += Differs(moving[i], inMenu ? open[i] : closed[i]);
+            }
+        Sleep(70);
+    }
+    const double menuShare = menu ? double(menuChanged) / menu : 1.0;
+    const double aroundShare = around ? double(aroundChanged) / around : 0.0;
+    Print("menu over motion: %zu menu pixels in the moving rows, %.2f%% changed; the game around it %.2f%%",
+          menu / shots, menuShare * 100.0, aroundShare * 100.0);
+    return menu > 0 && menuShare < 0.03 && aroundShare > 0.05;
 }
 
 LRESULT CALLBACK GameProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
@@ -628,29 +710,28 @@ void Render()
             renderFailed = true;
     renderer.Destroy();
 }
-} // namespace
 
-int wmain(int argc, wchar_t** argv)
+// The NR key must pause XeFG and take its window off the game whatever came before it, and bring
+// both back the second time.
+void NrOffAndOn(const std::string& when)
 {
-    if (argc >= 3 && !wcscmp(argv[1], L"input"))
-        return Inject(argc, argv);
-    if (!LoadLibraryW(L"vulkan-1.dll") || !LoadLibraryW(L"OptiScaler.dll"))
-    {
-        Print("FAIL setup: OptiScaler.dll or vulkan-1.dll did not load (%lu)", GetLastError());
-        return 100;
-    }
-    Sleep(500);
-    HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    std::thread gui(Gui, ready);
-    WaitForSingleObject(ready, 5000);
-    if (!game || !Foreground(game))
-    {
-        Print("FAIL setup: the test window cannot take the foreground (locked or busy desktop)");
-        PostMessageW(game, WM_APP, 0, 0);
-        gui.join();
-        return 101;
-    }
-    std::thread render(Render);
+    auto mark = Mark();
+    Key(VK_NUMPAD5);
+    const bool paused = WaitLog("Vulkan XeFG paused while final-image NR is off", mark, 3000);
+    const bool off = paused && WaitFor([] { return !FgVisible(); }, 3000) && FramesAdvance();
+    Step(("NR key turns NR off and hides XeFG " + when).c_str(), off,
+         !paused ? "no pause line"
+         : off   ? ""
+                 : "XeFG window still visible");
+    mark = Mark();
+    Key(VK_NUMPAD5);
+    Step(("NR key turns NR and XeFG back on " + when).c_str(), off && WaitPresented(mark) && FgVisible(),
+         off ? "" : "NR was never off");
+}
+
+// PresentWithoutUpscaler on: NR, XeFG, the menu, focus, minimize, resize and both keys.
+void FinalImageOn(std::thread& render)
+{
     const char* why = "";
 
     Step("NR through the shared D3D12 image", WaitLog("D3D12 shared GPU image active", 0, 60000) &&
@@ -661,6 +742,7 @@ int wmain(int argc, wchar_t** argv)
 
     Step("game window keeps focus with XeFG on", FocusStaysWithGame(why), why);
     Step("game window gets mouse and keyboard with XeFG on", GameGetsInput(why), why);
+    NrOffAndOn("as the first toggle");
 
     {
         freeze = true;
@@ -676,10 +758,30 @@ int wmain(int argc, wchar_t** argv)
              : stayed ? ""
                       : "closed by itself");
         Step("XeFG keeps generating with the menu open",
-             Count("paused while OptiScaler menu is open", mark) == 0 && WaitPresented(Mark(), 5000) && FgVisible());
-        const double changed = Changed(before, Capture());
+             Count("Vulkan XeFG paused", mark) == 0 && WaitPresented(Mark(), 5000) && FgVisible());
+        const auto open = Capture();
+        const double changed = Changed(before, open);
         Print("menu covers %.1f%% of the visible frame", changed * 100.0);
         Step("menu is visible on screen over the XeFG output", changed > 0.05);
+        SaveCapture(before, "capture-menu-closed.bmp");
+        SaveCapture(open, "capture-menu-open.bmp");
+        Step("menu holds still over moving generated frames", MenuOverMotion(before, open));
+
+        // Positions in the 1280x720 client area at the menu's automatic scale: the FG section button
+        // on the left and the "Active" box of Frame Generation (Vulkan XeFG) in that section.
+        const auto section = Capture();
+        Click(338, 242);
+        Step("a click opens the menu's FG section over the XeFG output", Changed(section, Capture()) > 0.01);
+        auto clickMark = Mark();
+        Click(361, 325);
+        const bool paused = WaitLog("Vulkan XeFG paused while frame generation is off", clickMark, 3000) &&
+                            WaitFor([] { return !FgVisible(); }, 3000);
+        Step("clicking Active in the menu turns XeFG off", paused);
+        clickMark = Mark();
+        Click(361, 325);
+        Step("clicking Active again turns XeFG back on", paused && WaitPresented(clickMark) && FgVisible(),
+             paused ? "" : "XeFG was never off");
+        Click(338, 206);
         const auto closeMark = Mark();
         Key(VK_INSERT);
         Step("menu closes with its key", WaitLog("menu visibility changed 1 -> 0", closeMark, 3000));
@@ -689,22 +791,14 @@ int wmain(int argc, wchar_t** argv)
     {
         auto mark = Mark();
         Key(VK_END);
-        const bool hidden = WaitFor([] { return !FgVisible(); }, 3000);
-        Step("FG key turns XeFG off and hides its window", hidden && FramesAdvance());
+        const bool paused = WaitLog("Vulkan XeFG paused while frame generation is off", mark, 3000);
+        const bool off = paused && WaitFor([] { return !FgVisible(); }, 3000) && FramesAdvance();
+        Step("FG key turns XeFG off and hides its window", off, paused ? "" : "no pause line");
         mark = Mark();
         Key(VK_END);
-        Step("FG key turns XeFG back on", WaitPresented(mark) && FgVisible());
+        Step("FG key turns XeFG back on", off && WaitPresented(mark) && FgVisible(), off ? "" : "FG was never off");
     }
-
-    {
-        auto mark = Mark();
-        Key(VK_NUMPAD5);
-        const bool hidden = WaitFor([] { return !FgVisible(); }, 3000);
-        Step("NR key turns NR off and XeFG stops covering the game", hidden && FramesAdvance());
-        mark = Mark();
-        Key(VK_NUMPAD5);
-        Step("NR key turns NR and XeFG back on", WaitPresented(mark) && FgVisible());
-    }
+    NrOffAndOn("after the FG key");
 
     {
         auto mark = Mark();
@@ -745,9 +839,72 @@ int wmain(int argc, wchar_t** argv)
         GetClientRect(FgWindow(), &client);
         Step("resize recreates the swapchain and the XeFG presenter",
              recreated && WaitPresented(mark) && client.right == 1600 && client.bottom == 900);
+        NrOffAndOn("right after a resize");
         Step("game window gets mouse and keyboard after resize", GameGetsInput(why), why);
         Step("XeFG still generating after resize", WaitPresented(Mark()) && FramesAdvance());
     }
+}
+
+// PresentWithoutUpscaler off: the game presents, the menu works and nothing of the final-image route
+// runs, whatever key is pressed.
+void FinalImageOff()
+{
+    Step("game presents with the final image off", WaitFor([] { return frames > 30; }, 30000));
+    Sleep(2000);
+    auto untouched = []
+    {
+        return Count("first frame processed", 0) + Count("D3D12 shared GPU image", 0) + Count("Vulkan XeFG", 0) == 0 &&
+               !FgWindow();
+    };
+    Step("no NR or XeFG work with the final image off", untouched());
+    const auto mark = Mark();
+    Key(VK_INSERT);
+    const bool opened = WaitLog("menu visibility changed 0 -> 1", mark, 3000);
+    Sleep(1500);
+    Step("menu opens and stays open with the final image off",
+         opened && Count("menu visibility changed 1 -> 0", mark) == 0 && FramesAdvance());
+    const auto closeMark = Mark();
+    Key(VK_INSERT);
+    Step("menu closes with its key", WaitLog("menu visibility changed 1 -> 0", closeMark, 3000));
+    Key(VK_END);
+    Key(VK_NUMPAD5);
+    Step("FG and NR keys start nothing with the final image off", FramesAdvance() && untouched());
+    Key(VK_NUMPAD5);
+    Key(VK_END);
+    RECT rect { 0, 0, 1600, 900 };
+    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+    SetWindowPos(game, nullptr, 0, 0, rect.right - rect.left, rect.bottom - rect.top,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_ASYNCWINDOWPOS);
+    Sleep(1500);
+    Step("resize with the final image off", GuiAlive() && FramesAdvance() && !renderFailed && untouched());
+}
+} // namespace
+
+int wmain(int argc, wchar_t** argv)
+{
+    if (argc >= 3 && !wcscmp(argv[1], L"input"))
+        return Inject(argc, argv);
+    if (!LoadLibraryW(L"vulkan-1.dll") || !LoadLibraryW(L"OptiScaler.dll"))
+    {
+        Print("FAIL setup: OptiScaler.dll or vulkan-1.dll did not load (%lu)", GetLastError());
+        return 100;
+    }
+    Sleep(500);
+    HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::thread gui(Gui, ready);
+    WaitForSingleObject(ready, 5000);
+    if (!game || !Foreground(game))
+    {
+        Print("FAIL setup: the test window cannot take the foreground (locked or busy desktop)");
+        PostMessageW(game, WM_APP, 0, 0);
+        gui.join();
+        return 101;
+    }
+    std::thread render(Render);
+    if (argc >= 2 && !wcscmp(argv[1], L"off"))
+        FinalImageOff();
+    else
+        FinalImageOn(render);
 
     Step("XeFG SDK reported no warning", Count("Vulkan XeFG SDK:", 0) == 0);
     Step("no bridge failure in the log",
