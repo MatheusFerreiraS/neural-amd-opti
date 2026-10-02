@@ -123,6 +123,7 @@ struct FgPresenter
     ComPtr<ID3D12GraphicsCommandList> command;
     ComPtr<ID3D12Fence> fence;
     ComPtr<ID3D12Resource> hudless;
+    ComPtr<ID3D12CommandQueue> queue;
     uint64_t serial = 0;
     uint32_t frameId = 0;
     int interpolated = 0;
@@ -152,17 +153,28 @@ struct FgPresenter
     void Release()
     {
         Pause();
-        command.Reset();
-        allocator.Reset();
-        fence.Reset();
         swap.Reset();
-        hudless.Reset();
         if (context)
             XeFGProxy::Destroy()(context);
         context = nullptr;
         if (xell)
             XeLLProxy::DestroyContext()(xell);
         xell = nullptr;
+        // Generated frames still in flight read the hudless copy and the NR guides; D3D12 frees a
+        // resource at once, so the queue drains before any of them goes.
+        if (queue && fence && SUCCEEDED(queue->Signal(fence.Get(), ++serial)) && fence->GetCompletedValue() < serial)
+        {
+            HANDLE drained = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (drained && SUCCEEDED(fence->SetEventOnCompletion(serial, drained)))
+                WaitForSingleObject(drained, 4000);
+            if (drained)
+                CloseHandle(drained);
+        }
+        queue.Reset();
+        command.Reset();
+        allocator.Reset();
+        fence.Reset();
+        hudless.Reset();
         output.Destroy();
         window = nullptr;
         frameId = serial = 0;
@@ -184,6 +196,7 @@ struct FgPresenter
             return false;
         if (!output.Create(parent, width, height))
             return false;
+        this->queue = queue;
         window = output.window;
         visible = true;
         const auto created = XeFGProxy::D3D12CreateContext()(device, &context);
