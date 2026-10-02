@@ -60,8 +60,9 @@ bool Foreground(HWND window)
     const HWND current = GetForegroundWindow();
     if (current == window)
         return true;
+    // With no foreground window at all (one just closed) any process may take the foreground.
     if (!current)
-        return false;
+        return SetForegroundWindow(window) && GetForegroundWindow() == window;
     const DWORD other = GetWindowThreadProcessId(current, nullptr), me = GetCurrentThreadId();
     AttachThreadInput(me, other, TRUE);
     SetForegroundWindow(window);
