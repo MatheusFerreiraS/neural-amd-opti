@@ -1,0 +1,812 @@
+// A D3D11 game stand-in for final-image NR and the D3D11->D3D12 XeFG bridge.
+//
+// Loads OptiScaler as dxgi.dll from its own folder (beside it: OptiScaler.pdb, the danielblnc pass
+// runtime, its weights and the OptiScaler\ folder of a release), renders a panning scene with depth,
+// and drives OptiScaler the way a player does: menu, NR and FG keys with real key input. Settings
+// without a key (NR scale, passes, menu section) are written into OptiScaler's own Config through
+// the PDB, the same fields the menu writes. Checks read OptiScaler.log, amd_presr.log, the DXGI
+// present count, the RivaTuner Statistics Server shared memory when RTSS runs, and the screen.
+//
+//   dx11_final_image_smoke.exe fg|nr [seconds per phase]
+#define NOMINMAX
+#include <windows.h>
+#include <d3d11.h>
+#include <d3dcompiler.h>
+#include <dxgi1_2.h>
+#include <dbghelp.h>
+#include <wrl/client.h>
+#include <algorithm>
+#include <cstring>
+#include <atomic>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <vector>
+
+using Microsoft::WRL::ComPtr;
+namespace fs = std::filesystem;
+
+static fs::path dir;
+static int failures = 0;
+static std::atomic<unsigned> progress { 0 };
+static std::atomic<const char*> phaseName { "start" };
+
+static void check(HRESULT hr, const char* what)
+{
+    if (FAILED(hr))
+    {
+        char text[160];
+        std::snprintf(text, sizeof(text), "%s failed: 0x%08X", what, (unsigned) hr);
+        throw std::runtime_error(text);
+    }
+}
+static void expect(bool ok, const char* what)
+{
+    std::printf("%s: %s\n", ok ? "ok  " : "FAIL", what);
+    if (!ok)
+        ++failures;
+}
+
+// ---- OptiScaler.ini ---------------------------------------------------------------------------
+static void SetIni(std::vector<std::string>& lines, const std::string& section, const std::string& key,
+                   const std::string& value)
+{
+    bool inside = false;
+    size_t header = lines.size();
+    for (size_t i = 0; i < lines.size(); ++i)
+    {
+        auto& line = lines[i];
+        if (!line.empty() && line[0] == '[')
+        {
+            inside = line == "[" + section + "]";
+            if (inside)
+                header = i;
+        }
+        else if (inside && line.rfind(key + "=", 0) == 0)
+        {
+            line = key + "=" + value;
+            return;
+        }
+    }
+    if (header == lines.size())
+        throw std::runtime_error("INI section not found: " + section);
+    lines.insert(lines.begin() + header + 1, key + "=" + value);
+}
+static void WriteIni(bool fg, bool debugLog)
+{
+    std::ifstream in(dir / "OptiScaler.template.ini");
+    std::vector<std::string> lines;
+    for (std::string line; std::getline(in, line);)
+        lines.push_back(line.size() && line.back() == '\r' ? line.substr(0, line.size() - 1) : line);
+    if (lines.empty())
+        throw std::runtime_error("OptiScaler.template.ini missing");
+    SetIni(lines, "DlssNr", "Enabled", "true");
+    SetIni(lines, "DlssNr", "PresentWithoutUpscaler", "true");
+    SetIni(lines, "DlssNr", "NrBackend", "daniel");
+    SetIni(lines, "FrameGen", "Enabled", fg ? "true" : "false");
+    SetIni(lines, "FrameGen", "FGOutput", fg ? "xefg" : "nofg");
+    SetIni(lines, "XeFG", "InterpolationCount", "2");
+    SetIni(lines, "Log", "LogToFile", "true");
+    SetIni(lines, "Log", "LogLevel", debugLog ? "1" : "2");
+    SetIni(lines, "Menu", "ShowFps", "true");
+    SetIni(lines, "Menu", "DisableSplash", "true");
+    SetIni(lines, "Hotfix", "CheckForUpdate", "false");
+    std::ofstream out(dir / "OptiScaler.ini", std::ios::trunc);
+    for (auto& line : lines)
+        out << line << "\n";
+}
+
+// ---- OptiScaler's settings through its PDB ----------------------------------------------------
+struct Opti
+{
+    HANDLE process = GetCurrentProcess();
+    DWORD64 base = 0;
+    BYTE* config = nullptr;
+    ULONG configType = 0;
+    bool* menuVisible = nullptr;
+    int* menuSection = nullptr;
+    const std::string* nrStatus = nullptr;
+
+    void Load(HMODULE module)
+    {
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+        check(SymInitializeW(process, dir.wstring().c_str(), FALSE) ? S_OK : E_FAIL, "SymInitialize");
+        wchar_t path[MAX_PATH];
+        GetModuleFileNameW(module, path, MAX_PATH);
+        base = SymLoadModuleExW(process, nullptr, path, nullptr, (DWORD64) module, 0, nullptr, 0);
+        if (!base)
+            throw std::runtime_error("OptiScaler symbols not loaded (OptiScaler.pdb beside dxgi.dll?)");
+        BYTE* configPointer = (BYTE*) Address(L"Config::_config");
+        config = *(BYTE**) configPointer;
+        menuVisible = (bool*) Address(L"MenuCommon::_isVisible");
+        menuSection = (int*) Address(L"selectedTab");
+        nrStatus = (const std::string*) Address(L"AmdPresentExperimental::status");
+        SYMBOL_INFOW type {};
+        type.SizeOfStruct = sizeof(type);
+        check(SymGetTypeFromNameW(process, base, L"Config", &type) ? S_OK : E_FAIL, "Config type");
+        configType = type.TypeIndex;
+        if (!config)
+            throw std::runtime_error("Config::_config is null");
+    }
+    void* Address(const wchar_t* name)
+    {
+        std::vector<BYTE> storage(sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(wchar_t));
+        auto symbol = (SYMBOL_INFOW*) storage.data();
+        symbol->SizeOfStruct = sizeof(SYMBOL_INFOW);
+        symbol->MaxNameLen = MAX_SYM_NAME;
+        if (!SymFromNameW(process, name, symbol))
+            throw std::runtime_error("symbol not found");
+        return (void*) symbol->Address;
+    }
+    BYTE* Field(const wchar_t* name)
+    {
+        DWORD count = 0;
+        SymGetTypeInfo(process, base, configType, TI_GET_CHILDRENCOUNT, &count);
+        std::vector<BYTE> storage(sizeof(TI_FINDCHILDREN_PARAMS) + count * sizeof(ULONG));
+        auto children = (TI_FINDCHILDREN_PARAMS*) storage.data();
+        children->Count = count;
+        SymGetTypeInfo(process, base, configType, TI_FINDCHILDREN, children);
+        for (DWORD i = 0; i < count; ++i)
+        {
+            WCHAR* childName = nullptr;
+            if (!SymGetTypeInfo(process, base, children->ChildId[i], TI_GET_SYMNAME, &childName))
+                continue;
+            const bool match = wcscmp(childName, name) == 0;
+            LocalFree(childName);
+            DWORD offset = 0;
+            if (match && SymGetTypeInfo(process, base, children->ChildId[i], TI_GET_OFFSET, &offset))
+                return config + offset;
+        }
+        throw std::runtime_error("Config field not found");
+    }
+    // CustomOptional<T> starts with its std::optional<T>: the value, then the engaged flag.
+    template <class T> void Set(const wchar_t* name, T value)
+    {
+        BYTE* field = Field(name);
+        std::memcpy(field, &value, sizeof(T));
+        field[sizeof(T)] = 1;
+    }
+    // Frames the NR runtime completed, from the status line the Neural section shows.
+    unsigned NrFrames() const
+    {
+        const std::string text = *nrStatus;
+        const size_t at = text.find("completed frames=");
+        return at == std::string::npos ? 0 : (unsigned) std::strtoul(text.c_str() + at + 17, nullptr, 10);
+    }
+    template <class T> T Get(const wchar_t* name)
+    {
+        T value {};
+        std::memcpy(&value, Field(name), sizeof(T));
+        return value;
+    }
+} opti;
+
+// A crash prints where it happened before the process goes.
+static LONG CALLBACK Crash(EXCEPTION_POINTERS* info)
+{
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    static std::atomic<int> printed { 0 };
+    if ((code != 0xC0000005 && code != 0xC0000374 && code != 0xC0000409 && code != 0xC000001D) || printed++ > 2)
+        return EXCEPTION_CONTINUE_SEARCH;
+    std::printf("exception 0x%08X at %p during \"%s\"\n", (unsigned) code, info->ExceptionRecord->ExceptionAddress,
+                phaseName.load());
+    void* frames[48];
+    const USHORT count = RtlCaptureStackBackTrace(0, 48, frames, nullptr);
+    std::vector<BYTE> storage(sizeof(SYMBOL_INFO) + 256);
+    auto symbol = (SYMBOL_INFO*) storage.data();
+    for (USHORT i = 0; i < count; ++i)
+    {
+        symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+        symbol->MaxNameLen = 255;
+        DWORD64 displacement = 0;
+        HMODULE module = nullptr;
+        char moduleName[MAX_PATH] = "?";
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR) frames[i], &module);
+        if (module)
+            GetModuleFileNameA(module, moduleName, MAX_PATH);
+        const bool named = SymFromAddr(GetCurrentProcess(), (DWORD64) frames[i], &displacement, symbol);
+        std::printf("  %2u %s!%s+0x%llx\n", i, fs::path(moduleName).filename().string().c_str(),
+                    named ? symbol->Name : "?", (unsigned long long) displacement);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// ---- Logs -------------------------------------------------------------------------------------
+static std::string ReadShared(const fs::path& path)
+{
+    HANDLE file = CreateFileW(path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, 0, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return {};
+    LARGE_INTEGER size {};
+    GetFileSizeEx(file, &size);
+    std::string text((size_t) size.QuadPart, '\0');
+    DWORD read = 0;
+    ReadFile(file, text.data(), (DWORD) text.size(), &read, nullptr);
+    CloseHandle(file);
+    text.resize(read);
+    return text;
+}
+static size_t Count(const std::string& text, const char* token, size_t from = 0)
+{
+    size_t n = 0;
+    for (size_t at = text.find(token, from); at != std::string::npos; at = text.find(token, at + 1))
+        ++n;
+    return n;
+}
+struct Logs
+{
+    size_t opti = 0, amd = 0;
+    void Mark()
+    {
+        opti = ReadShared(dir / "OptiScaler.log").size();
+        amd = ReadShared(dir / "amd_presr.log").size();
+    }
+    size_t Opti(const char* token) const { return Count(ReadShared(dir / "OptiScaler.log"), token, opti); }
+    size_t Amd(const char* token) const { return Count(ReadShared(dir / "amd_presr.log"), token, amd); }
+};
+
+// ---- RivaTuner Statistics Server --------------------------------------------------------------
+// Framerate RTSS reports for this process (0 when RTSS is not running or has not seen it).
+static double RtssFramerate()
+{
+    HANDLE map = OpenFileMappingW(FILE_MAP_READ, FALSE, L"RTSSSharedMemoryV2");
+    if (!map)
+        return 0;
+    double fps = 0;
+    if (auto memory = (const BYTE*) MapViewOfFile(map, FILE_MAP_READ, 0, 0, 0))
+    {
+        const DWORD* header = (const DWORD*) memory;
+        if (header[0] == 'RTSS' && header[1] >= 0x00020000)
+        {
+            const DWORD entrySize = header[2], arrayOffset = header[3], arraySize = header[4];
+            for (DWORD i = 0; i < arraySize; ++i)
+            {
+                const BYTE* entry = memory + arrayOffset + i * entrySize;
+                if (*(const DWORD*) entry != GetCurrentProcessId())
+                    continue;
+                const DWORD* timing = (const DWORD*) (entry + 4 + MAX_PATH + 4);
+                if (timing[1] > timing[0])
+                    fps = 1000.0 * timing[2] / (timing[1] - timing[0]);
+            }
+        }
+        UnmapViewOfFile(memory);
+    }
+    CloseHandle(map);
+    return fps;
+}
+
+// ---- Window, input, screen --------------------------------------------------------------------
+static HWND window = nullptr, decoy = nullptr;
+static UINT width = 1280, height = 720;
+static bool resized = false;
+
+static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM w, LPARAM l)
+{
+    if (message == WM_SIZE && hwnd == window && LOWORD(l) && HIWORD(l))
+    {
+        width = LOWORD(l);
+        height = HIWORD(l);
+        resized = true;
+    }
+    if (message == WM_CLOSE)
+        return 0;
+    return DefWindowProcW(hwnd, message, w, l);
+}
+static void Pump()
+{
+    for (MSG msg; PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE);)
+    {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+}
+static void Foreground(HWND hwnd)
+{
+    if (GetForegroundWindow() == hwnd)
+        return;
+    // The ALT tap lifts the foreground lock for a process the user did not click.
+    INPUT alt[2] {};
+    alt[0].type = alt[1].type = INPUT_KEYBOARD;
+    alt[0].ki.wVk = alt[1].ki.wVk = VK_MENU;
+    alt[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, alt, sizeof(INPUT));
+    ShowWindow(hwnd, SW_RESTORE);
+    SetForegroundWindow(hwnd);
+    BringWindowToTop(hwnd);
+    SetFocus(hwnd);
+}
+static void Key(WORD vk, bool up)
+{
+    INPUT input {};
+    input.type = INPUT_KEYBOARD;
+    input.ki.wVk = vk;
+    input.ki.wScan = (WORD) MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+    input.ki.dwFlags = (up ? KEYEVENTF_KEYUP : 0) |
+                       (vk == VK_INSERT || vk == VK_END ? KEYEVENTF_EXTENDEDKEY : 0);
+    SendInput(1, &input, sizeof(INPUT));
+}
+// A small grey thumbnail of what the screen shows inside the window right now.
+static std::vector<BYTE> Screen()
+{
+    RECT rect;
+    GetClientRect(window, &rect);
+    POINT origin { 0, 0 };
+    ClientToScreen(window, &origin);
+    const int w = 96, h = 54;
+    HDC screen = GetDC(nullptr), memory = CreateCompatibleDC(screen);
+    BITMAPINFO info {};
+    info.bmiHeader = { sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB };
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(memory, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HGDIOBJ old = SelectObject(memory, bitmap);
+    SetStretchBltMode(memory, HALFTONE);
+    StretchBlt(memory, 0, 0, w, h, screen, origin.x, origin.y, rect.right, rect.bottom, SRCCOPY);
+    std::vector<BYTE> grey(w * h);
+    for (int i = 0; i < w * h; ++i)
+    {
+        const BYTE* p = (const BYTE*) bits + i * 4;
+        grey[i] = (BYTE) ((p[0] + 2 * p[1] + p[2]) / 4);
+    }
+    SelectObject(memory, old);
+    DeleteObject(bitmap);
+    DeleteDC(memory);
+    ReleaseDC(nullptr, screen);
+    return grey;
+}
+static double Difference(const std::vector<BYTE>& a, const std::vector<BYTE>& b)
+{
+    double sum = 0;
+    for (size_t i = 0; i < a.size(); ++i)
+        sum += std::abs(int(a[i]) - int(b[i]));
+    return sum / a.size();
+}
+
+// ---- The game -----------------------------------------------------------------------------------
+static const char* kShader = R"(
+cbuffer Frame : register(b0) { float2 pan; float time; float load; float2 size; float2 pad; };
+float4 vs(uint id : SV_VertexID) : SV_Position
+{ float2 p = float2((id << 1) & 2, id & 2); return float4(p * float2(2, -2) + float2(-1, 1), 0, 1); }
+struct Out { float4 colour : SV_Target; float depth : SV_Depth; };
+Out ps(float4 position : SV_Position)
+{
+    float2 uv = (position.xy + pan) / size.y;
+    float2 cell = floor(uv * 8);
+    float checker = fmod(abs(cell.x + cell.y), 2);
+    float3 colour = lerp(float3(0.20, 0.35, 0.55), float3(0.85, 0.75, 0.55), checker);
+    colour *= 0.75 + 0.25 * sin(uv.x * 3.1 + uv.y * 1.7);
+    float depth = 0.9 - 0.1 * checker;
+    [loop] for (int i = 0; i < 6; ++i)
+    {
+        float2 centre = size * (0.5 + 0.35 * float2(sin(time * (0.7 + 0.13 * i) + i), cos(time * (0.5 + 0.11 * i) + 2 * i)));
+        float d = length(position.xy - centre) / (size.y * (0.05 + 0.015 * i));
+        if (d < 1) { colour = lerp(float3(0.9, 0.3 + 0.1 * i, 0.2), float3(1, 1, 1), 1 - d) * (1 - 0.4 * d * d);
+                     depth = 0.2 + 0.05 * i + 0.05 * d; }
+    }
+    float burn = 0;
+    [loop] for (int k = 0; k < (int) load; ++k) burn += sin(burn + k * 0.001 + position.x);
+    Out o; o.colour = float4(colour + burn * 1e-9, 1); o.depth = depth; return o;
+}
+)";
+
+struct Game
+{
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<IDXGISwapChain> swap;
+    ComPtr<ID3D11RenderTargetView> target;
+    ComPtr<ID3D11DepthStencilView> depthView;
+    ComPtr<ID3D11VertexShader> vs;
+    ComPtr<ID3D11PixelShader> ps;
+    ComPtr<ID3D11Buffer> constants;
+    ComPtr<ID3D11DepthStencilState> depthState;
+    float panX = 0, panY = 0, speed = 4, gpuLoad = 64, cpuMs = 2;
+    double time = 0;
+
+    void Create()
+    {
+        D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_1;
+        check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, &level, 1,
+                                D3D11_SDK_VERSION, &device, nullptr, &context),
+              "D3D11CreateDevice");
+        ComPtr<IDXGIDevice> dxgi;
+        check(device.As(&dxgi), "IDXGIDevice");
+        ComPtr<IDXGIAdapter> adapter;
+        check(dxgi->GetAdapter(&adapter), "GetAdapter");
+        ComPtr<IDXGIFactory> factory;
+        check(adapter->GetParent(IID_PPV_ARGS(&factory)), "GetParent");
+        DXGI_SWAP_CHAIN_DESC desc {};
+        desc.BufferDesc.Width = width;
+        desc.BufferDesc.Height = height;
+        desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        desc.BufferCount = 2;
+        desc.OutputWindow = window;
+        desc.Windowed = TRUE;
+        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        check(factory->CreateSwapChain(device.Get(), &desc, &swap), "CreateSwapChain");
+        ComPtr<ID3DBlob> blob, errors;
+        check(D3DCompile(kShader, strlen(kShader), "scene", nullptr, nullptr, "vs", "vs_5_0", 0, 0, &blob, &errors), "vs");
+        check(device->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, &vs), "vs");
+        check(D3DCompile(kShader, strlen(kShader), "scene", nullptr, nullptr, "ps", "ps_5_0", 0, 0, &blob, &errors), "ps");
+        check(device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, &ps), "ps");
+        D3D11_BUFFER_DESC cb { 32, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER };
+        check(device->CreateBuffer(&cb, nullptr, &constants), "constants");
+        D3D11_DEPTH_STENCIL_DESC ds {};
+        ds.DepthEnable = TRUE;
+        ds.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+        ds.DepthFunc = D3D11_COMPARISON_ALWAYS;
+        check(device->CreateDepthStencilState(&ds, &depthState), "depth state");
+        Views();
+    }
+    void Views()
+    {
+        target.Reset();
+        depthView.Reset();
+        ComPtr<ID3D11Texture2D> back;
+        check(swap->GetBuffer(0, IID_PPV_ARGS(&back)), "GetBuffer");
+        check(device->CreateRenderTargetView(back.Get(), nullptr, &target), "RTV");
+        D3D11_TEXTURE2D_DESC desc {};
+        desc.Width = width;
+        desc.Height = height;
+        desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+        desc.Format = DXGI_FORMAT_R32_TYPELESS;
+        desc.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
+        ComPtr<ID3D11Texture2D> depth;
+        check(device->CreateTexture2D(&desc, nullptr, &depth), "depth");
+        D3D11_DEPTH_STENCIL_VIEW_DESC dsv {};
+        dsv.Format = DXGI_FORMAT_D32_FLOAT;
+        dsv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+        check(device->CreateDepthStencilView(depth.Get(), &dsv, &depthView), "DSV");
+    }
+    void Resize()
+    {
+        context->OMSetRenderTargets(0, nullptr, nullptr);
+        target.Reset();
+        depthView.Reset();
+        context->Flush();
+        check(swap->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0), "ResizeBuffers");
+        Views();
+    }
+    HRESULT Frame()
+    {
+        if (resized)
+        {
+            resized = false;
+            Resize();
+        }
+        time += 1.0 / 60.0;
+        panX += speed;
+        panY += speed * 0.35f;
+        const float data[8] = { panX, panY, (float) time, gpuLoad, (float) width, (float) height, 0, 0 };
+        context->UpdateSubresource(constants.Get(), 0, nullptr, data, 0, 0);
+        D3D11_VIEWPORT viewport { 0, 0, (float) width, (float) height, 0, 1 };
+        context->RSSetViewports(1, &viewport);
+        ID3D11RenderTargetView* targets[] = { target.Get() };
+        context->OMSetRenderTargets(1, targets, depthView.Get());
+        context->OMSetDepthStencilState(depthState.Get(), 0);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(vs.Get(), nullptr, 0);
+        context->PSSetShader(ps.Get(), nullptr, 0);
+        ID3D11Buffer* buffers[] = { constants.Get() };
+        context->PSSetConstantBuffers(0, 1, buffers);
+        context->Draw(3, 0);
+        // The game's own CPU work for the frame.
+        LARGE_INTEGER f, start, now;
+        QueryPerformanceFrequency(&f);
+        QueryPerformanceCounter(&start);
+        do
+            QueryPerformanceCounter(&now);
+        while ((now.QuadPart - start.QuadPart) * 1000.0 / f.QuadPart < cpuMs);
+        // The depth buffer stays bound through Present, as in most D3D11 games.
+        return swap->Present(0, 0);
+    }
+} game;
+
+// ---- Phases -----------------------------------------------------------------------------------
+struct Stats
+{
+    double average = 0, p99 = 0, worst = 0, presentsPerFrame = 0, rtss = 0, appFps = 0;
+    unsigned frames = 0, nr = 0;
+};
+static Stats Run(const char* name, double seconds, bool quiet = false)
+{
+    phaseName = name;
+    LARGE_INTEGER f, start, last, now;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&start);
+    last = start;
+    UINT presents0 = 0, presents1 = 0;
+    game.swap->GetLastPresentCount(&presents0);
+    const unsigned nr0 = opti.NrFrames();
+    std::vector<double> times;
+    double rtss = 0;
+    for (;;)
+    {
+        Pump();
+        const HRESULT hr = game.Frame();
+        if (FAILED(hr) && hr != DXGI_STATUS_OCCLUDED)
+            check(hr, "Present");
+        ++progress;
+        QueryPerformanceCounter(&now);
+        times.push_back((now.QuadPart - last.QuadPart) * 1000.0 / f.QuadPart);
+        last = now;
+        const double elapsed = (now.QuadPart - start.QuadPart) / double(f.QuadPart);
+        if (elapsed > seconds * 0.6 && rtss == 0)
+            rtss = RtssFramerate();
+        if (elapsed >= seconds)
+            break;
+    }
+    game.swap->GetLastPresentCount(&presents1);
+    Stats s;
+    s.frames = (unsigned) times.size();
+    s.nr = opti.NrFrames() - nr0;
+    std::vector<double> sorted = times;
+    std::sort(sorted.begin(), sorted.end());
+    for (double t : times)
+        s.average += t / times.size();
+    s.p99 = sorted[(size_t) (sorted.size() * 0.99)];
+    s.worst = sorted.back();
+    s.presentsPerFrame = double(presents1 - presents0) / times.size();
+    s.appFps = 1000.0 / s.average;
+    s.rtss = rtss;
+    if (!quiet)
+        std::printf("  [%-22s] frames %5u  avg %6.2f ms  p99 %6.2f ms  max %7.2f ms  app %6.1f fps  "
+                    "presents/frame %4.2f  rtss %6.1f fps\n",
+                    name, s.frames, s.average, s.p99, s.worst, s.appFps, s.presentsPerFrame, s.rtss);
+    return s;
+}
+static void Press(WORD vk)
+{
+    Foreground(window);
+    Key(vk, false);
+    Run("key down", 0.15, true);
+    Key(vk, true);
+    Run("key up", 0.25, true);
+}
+// The image on screen keeps moving: two looks a little apart differ.
+static bool Moving()
+{
+    Run("settle", 0.3, true);
+    const auto a = Screen();
+    Run("move", 0.25, true);
+    const auto b = Screen();
+    const double d = Difference(a, b);
+    std::printf("  screen change %.2f\n", d);
+    return d > 1.0;
+}
+
+int wmain(int argc, wchar_t** argv)
+{
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    try
+    {
+        wchar_t self[MAX_PATH];
+        GetModuleFileNameW(nullptr, self, MAX_PATH);
+        dir = fs::path(self).parent_path();
+        const std::wstring mode = argc > 1 ? argv[1] : L"fg";
+        const double phase = argc > 2 ? _wtof(argv[2]) : 4.0;
+        const bool fg = mode == L"fg";
+        fs::remove(dir / "OptiScaler.log");
+        fs::remove(dir / "amd_presr.log");
+        WriteIni(fg, argc > 3 && wcscmp(argv[3], L"debug") == 0);
+
+        // Nothing must hang: a phase that stops presenting for 30 s fails the run.
+        std::thread([] {
+            unsigned seen = 0, still = 0;
+            for (;;)
+            {
+                Sleep(1000);
+                const unsigned now = progress;
+                still = now == seen ? still + 1 : 0;
+                seen = now;
+                if (still >= 30)
+                {
+                    std::printf("FAIL: no frame presented for 30 s during \"%s\"\n", phaseName.load());
+                    std::fflush(stdout);
+                    TerminateProcess(GetCurrentProcess(), 3);
+                }
+            }
+        }).detach();
+
+        HMODULE proxy = LoadLibraryW((dir / L"dxgi.dll").wstring().c_str());
+        if (!proxy)
+            throw std::runtime_error("dxgi.dll (OptiScaler) did not load");
+        opti.Load(proxy);
+        AddVectoredExceptionHandler(1, Crash);
+
+        WNDCLASSW wc {};
+        wc.lpfnWndProc = WindowProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursorW(nullptr, (LPCWSTR) IDC_ARROW);
+        wc.lpszClassName = L"OptiDx11FinalImageSmoke";
+        RegisterClassW(&wc);
+        RECT rect { 0, 0, (LONG) width, (LONG) height };
+        AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+        window = CreateWindowW(wc.lpszClassName, L"OptiScaler D3D11 smoke", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40,
+                               rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, wc.hInstance, nullptr);
+        decoy = CreateWindowW(wc.lpszClassName, L"focus thief", WS_OVERLAPPEDWINDOW, 200, 200, 400, 300, nullptr,
+                              nullptr, wc.hInstance, nullptr);
+        Foreground(window);
+        Pump();
+        resized = false;
+        game.Create();
+
+        Logs logs;
+        Run("warm-up", fg ? 14 : 10);
+        expect(logs.Amd("Completed AMD pre-SR") > 0, "NR ran on the final image (amd_presr.log: Completed AMD pre-SR)");
+        if (fg)
+        {
+            expect(logs.Opti("Created Dx11wDx12SC") == 1, "D3D11 swapchain went through the D3D12 bridge");
+            expect(logs.Opti("XeFG swapchain created") > 0, "XeFG swapchain created");
+        }
+        const double expected = fg ? 3.0 : 1.0;
+        auto FgShowing = [&](const Stats& s) { return s.presentsPerFrame > expected - 0.5; };
+
+        Stats closed = Run("menu closed", phase);
+        expect(closed.nr > closed.frames * 9 / 10, "NR on every frame, menu closed");
+        expect(closed.nr <= closed.frames + 2, "NR once per frame, menu closed");
+        if (fg)
+            expect(FgShowing(closed), "XeFG presents generated frames (3 presents per game frame)");
+        expect(Moving(), "image moves, menu closed");
+
+        Press(VK_INSERT);
+        expect(*opti.menuVisible, "Insert opens the menu");
+        static const char* sections[] = { "menu: Neural", "menu: Upscaling", "menu: Frame Gen",
+                                          "menu: Image", "menu: Interface", "menu: Advanced" };
+        std::vector<Stats> open;
+        for (int section = 0; section < 6; ++section)
+        {
+            *opti.menuSection = section;
+            open.push_back(Run(sections[section], phase));
+            expect(*opti.menuVisible, "menu stays open");
+            expect(open.back().nr > open.back().frames * 9 / 10, "NR keeps running with the menu open");
+            if (fg)
+                expect(FgShowing(open.back()), "XeFG keeps presenting generated frames with the menu open");
+        }
+        *opti.menuSection = 0;
+        expect(Moving(), "image moves, menu open");
+        Press(VK_INSERT);
+        expect(!*opti.menuVisible, "Insert closes the menu");
+        Stats after = Run("menu closed again", phase);
+        expect(after.nr > after.frames * 9 / 10, "NR keeps running after the menu closes");
+        if (fg)
+            expect(FgShowing(after), "XeFG keeps presenting generated frames after the menu closes");
+
+        // Frame time must not depend on the menu: every section within 25% (and 1.5 ms) of closed.
+        for (size_t i = 0; i < open.size(); ++i)
+        {
+            const double gap = open[i].average - closed.average;
+            char text[160];
+            std::snprintf(text, sizeof(text), "%s frame time %.2f ms vs %.2f ms closed", sections[i], open[i].average,
+                          closed.average);
+            expect(gap < std::max(1.5, closed.average * 0.25), text);
+        }
+
+        // Camera: a fast pan costs no more than a still one.
+        game.speed = 0;
+        Stats still = Run("camera still", phase);
+        game.speed = 60;
+        Stats pan = Run("camera fast pan", phase);
+        game.speed = 4;
+        {
+            char text[160];
+            std::snprintf(text, sizeof(text), "fast pan %.2f ms vs still %.2f ms per frame", pan.average, still.average);
+            expect(pan.average < still.average * 1.15 + 0.5, text);
+        }
+
+        // Resize with everything on.
+        SetWindowPos(window, nullptr, 0, 0, 1600 + 16, 900 + 39, SWP_NOMOVE | SWP_NOZORDER);
+        Run("resize settle", 3);
+        Stats big = Run("after ResizeBuffers", phase);
+        expect(width != 1280, "window resized");
+        expect(big.nr > big.frames * 9 / 10, "NR runs after ResizeBuffers");
+        if (fg)
+            expect(FgShowing(big), "XeFG presents generated frames after ResizeBuffers");
+        expect(Moving(), "image moves after ResizeBuffers");
+
+        // NR scale and passes.
+        const float scale0 = opti.Get<float>(L"AmdNrScale");
+        const uint32_t passes0 = opti.Get<uint32_t>(L"DlssNrPasses");
+        opti.Set<float>(L"AmdNrScale", 0.5f);
+        Run("scale settle", 3);
+        Stats half = Run("NR scale 0.5", phase);
+        expect(half.nr > half.frames * 9 / 10, "NR runs at scale 0.5");
+        if (fg)
+            expect(FgShowing(half), "XeFG presents generated frames at NR scale 0.5");
+        expect(Moving(), "image moves at NR scale 0.5");
+        opti.Set<uint32_t>(L"DlssNrPasses", 2);
+        Run("passes settle", 3);
+        Stats two = Run("NR 2 passes", phase);
+        expect(opti.nrStatus->find("passes=2") != std::string::npos && two.nr > two.frames * 9 / 10, "NR runs 2 passes");
+        if (fg)
+            expect(FgShowing(two), "XeFG presents generated frames with 2 NR passes");
+        expect(Moving(), "image moves with 2 NR passes");
+        opti.Set<float>(L"AmdNrScale", scale0);
+        opti.Set<uint32_t>(L"DlssNrPasses", passes0);
+        Run("restore settle", 3, true);
+
+        // NR off and on, FG off and on: the image never freezes.
+        for (int round = 0; round < 2; ++round)
+        {
+            Press(VK_NUMPAD5);
+            Stats off = Run("NR off", phase);
+            expect(off.nr == 0, "NR key turns NR off");
+            expect(Moving(), "image moves with NR off");
+            if (fg)
+                expect(FgShowing(off), "XeFG keeps presenting generated frames with NR off");
+            Press(VK_NUMPAD5);
+            Stats on = Run("NR on", phase);
+            expect(on.nr > on.frames * 9 / 10, "NR key turns NR back on");
+            expect(Moving(), "image moves after NR comes back");
+            if (!fg)
+                continue;
+            Press(VK_END);
+            Stats fgOff = Run("FG off", phase);
+            expect(fgOff.presentsPerFrame < 1.5, "End turns XeFG off (one present per game frame)");
+            expect(fgOff.nr > fgOff.frames * 9 / 10 && fgOff.nr <= fgOff.frames + 2, "NR once per frame with FG off");
+            if (fgOff.rtss > 0)
+            {
+                char text[160];
+                std::snprintf(text, sizeof(text), "RTSS reports %.1f fps for %.1f game fps with FG off", fgOff.rtss,
+                              fgOff.appFps);
+                expect(fgOff.rtss < fgOff.appFps * 1.3, text);
+            }
+            expect(Moving(), "image moves with FG off");
+            Press(VK_END);
+            Run("FG on settle", 2, true);
+            Stats fgOn = Run("FG on", phase);
+            expect(FgShowing(fgOn), "End turns XeFG back on");
+            expect(Moving(), "image moves after FG comes back");
+        }
+
+        // Focus loss and regain, then a minimise and restore (what Alt+Tab does to many games).
+        Foreground(decoy);
+        Run("unfocused", phase);
+        expect(GetForegroundWindow() != window, "focus moved to another window");
+        Foreground(window);
+        Stats back = Run("focus regained", phase);
+        expect(back.nr > back.frames * 9 / 10, "NR runs after focus returns");
+        if (fg)
+            expect(FgShowing(back), "XeFG presents generated frames after focus returns");
+        expect(Moving(), "image moves after focus returns");
+        ShowWindow(window, SW_MINIMIZE);
+        Run("minimised", 2);
+        ShowWindow(window, SW_RESTORE);
+        Foreground(window);
+        Run("restore settle", 2, true);
+        Stats restored = Run("restored", phase);
+        if (fg)
+            expect(FgShowing(restored), "XeFG presents generated frames after a minimise");
+        expect(Moving(), "image moves after a minimise");
+        Press(VK_INSERT);
+        expect(*opti.menuVisible, "menu opens after focus changes");
+        Run("menu after focus", 2);
+        expect(*opti.menuVisible, "menu stays open after focus changes");
+        Press(VK_INSERT);
+        expect(!*opti.menuVisible, "menu closes after focus changes");
+
+        const auto log = ReadShared(dir / "OptiScaler.log");
+        expect(Count(log, "GPU timeout") == 0 && Count(log, "restart required") == 0, "no NR stop in OptiScaler.log");
+        expect(Count(log, "DEVICE_REMOVED") == 0 && Count(log, "device removed") == 0, "no device removal");
+        std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
+        std::fflush(stdout);
+        // Leave like a game that closes its window.
+        game.swap.Reset();
+        game.context->ClearState();
+        game.context->Flush();
+        DestroyWindow(window);
+        return failures ? 1 : 0;
+    }
+    catch (const std::exception& e)
+    {
+        std::printf("FAIL: %s (phase %s)\n", e.what(), phaseName.load());
+        return 2;
+    }
+}
