@@ -27,12 +27,10 @@ foreach ($file in @($opti, (Join-Path $Runtime "dlssnr_amd_pass1.dll"), (Join-Pa
 $nrScript = "90:mark=nr-on,150:motion=nr-on,170:menu,190:shot=menu-open,200:menu,215:shot=menu-closed," +
             "230:nr,240:mark=nr-off,300:motion=nr-off,310:nr,320:mark=nr-on-again,380:reset=1600x900," +
             "390:mark=after-reset,400:menu,415:shot=menu-after-reset,425:menu,450:motion=after-reset,460:shot=after-reset"
-# With FG, the menu's model scale slider (at 380,395 in the 1280x720 window) is clicked near its left end, then the
-# menu's Frame Generation section (its sidebar button at 337,241) is opened: neither may stop generation. The cursor
-# is moved while the menu is closed, since OptiScaler holds it while the menu is open.
-$fgScript = "150:mark=fg-on,200:motion=fg-on,205:move=380x395,220:menu,232:shot=fg-menu-open,235:press,241:release," +
-            "244:shot=fg-scale-set,246:menu,248:move=337x241,252:menu,256:press,259:release,266:shot=fg-section," +
-            "270:menu,275:shot=fg-menu-closed,280:fg,290:mark=fg-off,330:motion=fg-off," +
+# With FG, the menu's model scale slider is clicked near its left end (the smoke puts the cursor at 380,395 in the
+# 1280x720 window before OptiScaler starts, as OptiScaler holds the cursor while its menu is open).
+$fgScript = "150:mark=fg-on,200:motion=fg-on,220:menu,232:shot=fg-menu-open,235:press,241:release," +
+            "244:shot=fg-scale-set,250:menu,265:shot=fg-menu-closed,280:fg,290:mark=fg-off,330:motion=fg-off," +
             "340:fg,350:mark=fg-on-again,420:motion=fg-on-again,430:nr,440:mark=nr-off,480:motion=nr-off,490:nr," +
             "500:mark=nr-on,580:motion=nr-on,650:reset=1600x900,660:mark=after-reset,760:motion=after-reset," +
             "765:shot=fg-after-reset,780:minimize,820:restore,840:menu,850:shot=fg-menu-after-restore,860:menu," +
@@ -68,9 +66,15 @@ $cases = @(
     @{ Name = "ex-nr"; Args = @("--ex"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
     @{ Name = "chain-nr"; Args = @("--chain"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
     @{ Name = "msaa-nr"; Args = @("--msaa"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
-    @{ Name = "classic-fg"; Args = @(); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
-    @{ Name = "ex-fg"; Args = @("--ex"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
-    @{ Name = "msaa-fg"; Args = @("--msaa"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
+    @{ Name = "classic-fg"; Args = @("--cursor", "380x395"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
+    @{ Name = "ex-fg"; Args = @("--ex", "--cursor", "380x395"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
+    @{ Name = "msaa-fg"; Args = @("--msaa", "--cursor", "380x395"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
+    # The menu's Frame Generation section (its sidebar button at 337,241) is opened with XeFG running: generation
+    # stays on. Opening that tab turned frame generation off in the archived D3D9 build.
+    @{ Name = "fg-section"; Args = @("--cursor", "337x241"); Fg = $true; Frames = 320
+       Script = "150:menu,160:shot=fg-section-before,165:press,170:release,180:shot=fg-section,200:menu,300:motion=after"
+       Log = @("D3D9 bridge frame \d+: frame generation on", "D3D9 bridge frame \d+: menu open")
+       NotLog = @("D3D9 bridge frame (1[5-9]\d|2\d\d|3\d\d): frame generation off") },
     # The game moves to a new window: after two quiet seconds on the old one the bridge follows it. With FG the
     # presenter is released and D3D9 presents from then on, with the menu on the D3D9 device.
     @{ Name = "window-nr"; Args = @(); Fg = $false; Frames = 700

@@ -2,12 +2,13 @@
 // presents through IDirect3DDevice9::Present, PresentEx or IDirect3DSwapChain9::Present, and follows a script of
 // key presses posted to its window (the menu, NR and frame-generation keys), device Resets with a new size and screen
 // samples. It prints the frame time of each scripted phase and whether sampled frames still change on screen.
-//   dx9_present_smoke.exe [--ex] [--chain] [--msaa] [--vsync] [--borderless] [--size WxH] [--frames N] [--shots folder]
+//   dx9_present_smoke.exe [--ex] [--chain] [--msaa] [--vsync] [--borderless] [--size WxH] [--cursor XxY]
+//                         [--frames N] [--shots folder]
 //                         [--script "frame:action,..."]
-// Actions: menu (Insert), nr (Numpad 5), fg (End), still (stops or restarts the scrolling), move=XxY (puts the
-// cursor there), press and release (the left button), minimize, restore, window2 (presents into a new window from then
-// on, as a game that recreates its window), cpu=ms (busy CPU work per frame), reset=WxH, shot=name, motion=name,
-// diff=name (compares the screen with an earlier shot), mark=name.
+// Actions: menu (Insert), nr (Numpad 5), fg (End), still (stops or restarts the scrolling), press and release
+// (the left button, where --cursor XxY put the cursor before OptiScaler started), minimize, restore, window2 (presents
+// into a new window from then on, as a game that recreates its window), cpu=ms (busy CPU work per frame), reset=WxH,
+// shot=name, motion=name, diff=name (compares the screen with an earlier shot), mark=name.
 #define NOMINMAX
 #include <windows.h>
 #include <d3d9.h>
@@ -197,6 +198,7 @@ void Draw(IDirect3DDevice9* device, int frame, int width, int height)
 int main(int argc, char** argv)
 {
     bool ex = false, chainPresent = false, msaa = false, vsync = false;
+    POINT cursor { -1, -1 };
     int width = 1280, height = 720, frames = 300;
     std::string shots = ".", script;
 
@@ -213,6 +215,8 @@ int main(int argc, char** argv)
             msaa = true;
         else if (arg == "--borderless")
             borderless = true;
+        else if (arg == "--cursor" && std::sscanf(next, "%ldx%ld", &cursor.x, &cursor.y) == 2)
+            ++i;
         else if (arg == "--vsync")
             vsync = true;
         else if (arg == "--size" && std::sscanf(next, "%dx%d", &width, &height) == 2)
@@ -264,6 +268,10 @@ int main(int argc, char** argv)
     ClientSize(width, height);
     SetForegroundWindow(window);
     Pump();
+
+    // Before OptiScaler's menu holds the cursor: this is where the script's clicks land.
+    if (cursor.x >= 0 && ClientToScreen(window, &cursor))
+        SetCursorPos(cursor.x, cursor.y);
 
     IDirect3D9* api = nullptr;
     IDirect3D9Ex* apiEx = nullptr;
@@ -384,15 +392,6 @@ int main(int argc, char** argv)
 
                 if (action == "restore")
                     SetForegroundWindow(window);
-            }
-            else if (action.rfind("move=", 0) == 0)
-            {
-                // OptiScaler keeps the game from moving the cursor while its menu is open: move it before.
-                POINT point {};
-
-                if (std::sscanf(action.c_str(), "move=%ldx%ld", &point.x, &point.y) == 2 &&
-                    ClientToScreen(window, &point))
-                    SetCursorPos(point.x, point.y);
             }
             else if (action == "press" || action == "release")
             {
