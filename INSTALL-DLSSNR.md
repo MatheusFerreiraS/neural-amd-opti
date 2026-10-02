@@ -141,8 +141,9 @@ and still incurs NR's GPU cost. Successful RR initialization alone does not prov
 
 ## AMD games without an upscaler (experimental)
 
-The final-image route can run the danielblnc AMD runtime at D3D11 or D3D12
-`Present`, without an upscaler call. Put `dlssnr_amd_pass1.dll` and its
+The final-image route can run the danielblnc AMD runtime at D3D11, D3D12 or Vulkan
+`Present`, without an upscaler call. The lmxxf and mochizuki runtimes run only inside an
+upscaler call; with either one active the Neural tab says the final image is off. Put `dlssnr_amd_pass1.dll` and its
 weights beside the OptiScaler proxy, then enable:
 
 ```ini
@@ -158,22 +159,26 @@ estimates motion directly from successive frames, without installing ReShade.
 The current route requires an unmultisampled RGBA8 or BGRA8 backbuffer; OpenGL,
 DXVK D3D11 and HDR swapchains are not supported. Native Vulkan final-image NR
 uses a Vulkan-to-D3D12 shared image when supported, with host readback as fallback.
-The swapchain must support transfer source and destination usage.
-XeFG/MFG is still unavailable for native Vulkan presentation; the bundled XeFG SDK exposes a D3D12 swapchain.
+The swapchain must support transfer source and destination usage, and Vulkan needs
+`PresentWithoutUpscaler=true` before the game creates its swapchain: restart the game after
+turning it on. On Vulkan, XeFG presents through a D3D12 swapchain of its own in a child window
+over the game's.
 The first six frames after a reset use zero motion while the estimator warms up.
 Its scene-change score resets neural history before a cut frame runs. The noise
-seed is fixed on supported AMD runtime versions (0.4.1 through 0.5.0). On D3D11,
+seed is fixed on supported AMD runtime versions (0.4.1 through 0.6.0). On D3D11,
 a bound, shader-readable depth buffer at Present is copied as a real depth guide;
 otherwise depth remains synthetic. D3D12 final-image mode uses synthetic depth.
 The look can still differ from the ReShade add-on and
 the ordinary pre-SR path. If Optical Flow fails, the route uses zero motion and
 reports the fallback in the Neural tab. A residual filter smooths small changes
-with default strength 0.8 and threshold 4/255. The model keeps its temporal
+with default strength 0.8 and threshold 4/255. RenoDX composition does not apply to the final
+image; Effect strength sets the runtime's own strength there. A job the GPU holds for
+`AmdStallStandDownMs` turns the route off until the game restarts, as on the upscaler path. The model keeps its temporal
 history by default. Set `AmdEveryFrame=true` to compare the independent-frame
 path, which can flicker more. ResizeBuffers releases its own
 backbuffer reference after bounded GPU waits. If a wait fails, the route stops
 for that process rather than reusing an unfinished image.
-The Neural tab also lets you set one to three passes and 50–100% model scale.
+The Neural tab also lets you set one to three passes and a model scale of 50 to 100%.
 
 ### XeFG from a D3D11 final image (experimental)
 
