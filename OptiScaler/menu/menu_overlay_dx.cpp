@@ -680,7 +680,10 @@ void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
         return;
 
     auto queue = fg->GetCommandQueue();
-    const bool neural = config.DlssNrEnabled.value_or_default();
+    DXGI_SWAP_CHAIN_DESC desc {};
+    fgSwapChain->GetDesc(&desc);
+    // No NR while the window is minimized, as without frame generation; XeFG keeps its guides.
+    const bool neural = config.DlssNrEnabled.value_or_default() && !(desc.OutputWindow && IsIconic(desc.OutputWindow));
     const bool fgEnabled = config.FGEnabled.value_or_default();
     const bool xefg = state.activeFgOutput == FGOutput::XeFG && state.activeFgInput == FGInput::Upscaler;
     AmdPresentExperimental::Guides guides;
@@ -716,8 +719,6 @@ void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
 
     FG_Constants constants {};
     constants.flags |= FG_Flags::DisplayResolutionMVs;
-    DXGI_SWAP_CHAIN_DESC desc {};
-    fgSwapChain->GetDesc(&desc);
     constants.displayWidth = ready ? guides.width : desc.BufferDesc.Width;
     constants.displayHeight = ready ? guides.height : desc.BufferDesc.Height;
 
