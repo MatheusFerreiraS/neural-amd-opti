@@ -153,9 +153,10 @@ struct InputState
     bool ExternalGetCursorPosVirtualizedThisFrame = false;
     bool ExternalCursorRecenteringDetected = false;
     bool ExternalVirtualMouseInitialized = false;
-    // Final image only: the system cursor shows over a target window in another process, so the open
-    // menu follows it instead of counting raw moves.
-    bool ExternalCursorShown = false;
+    // Final image with a target window in another process only (input_system.cpp): the menu draws its
+    // own cursor, and an absolute mouse move (pen tablet, remote desktop) came in since the last frame.
+    bool ExternalMenuCursorDrawn = false;
+    bool ExternalAbsoluteMouseMoved = false;
     bool ExternalLowLevelMouseHookInstalled = false;
     bool ExternalRawInputSinkRegistered = false;
     bool ExternalRawInputSinkPumpUsedThisFrame = false;
@@ -351,6 +352,12 @@ struct InputState
     bool ExternalLastMouseHookScreenValid = false;
     LONG ExternalPendingMouseDeltaX = 0;
     LONG ExternalPendingMouseDeltaY = 0;
+    // Final image only (ApplyFinalImageMouseLocked): where the cursor was in the target's client area at
+    // the last menu frame, when it last moved, and the raw counts read since while it stayed still.
+    POINT ExternalLastCursorClient {};
+    ULONGLONG ExternalCursorMovedTick = 0;
+    POINT ExternalHeldDelta {};
+    bool ExternalCursorHeld = false;
     HHOOK ExternalLowLevelMouseHook = nullptr;
     HWND ExternalRawInputSinkHwnd = nullptr;
     DWORD ExternalRawInputSinkThreadId = 0;
