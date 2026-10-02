@@ -53,6 +53,9 @@ struct Context
     ComPtr<ID3D12Fence> fence;
     UINT64 serial = 0;
     ComPtr<ID3D12Resource> input, motion, depth, output, heldBack;
+    // Guides frame generation may still hold from before a resize, kept until two frames after it.
+    ComPtr<ID3D12Resource> retired[2];
+    UINT64 retiredUntil = 0;
     ComPtr<ID3D12DescriptorHeap> heap, clearCpu;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pipeline;
@@ -72,7 +75,7 @@ struct Context
     AmdPreSr::Backend* backend = nullptr;
     std::unique_ptr<AmdPreSr::ResidualStabilizer> stabilizer;
     bool stableLast = false;
-    bool lastFlowValid = false, lastReset = false;
+    bool lastFlowValid = false, lastReset = false, lastNeural = true;
     ULONGLONG lastModifiedTick = 0;
     UINT width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
@@ -118,8 +121,12 @@ struct Context
         flowScdReadback.Reset();
         input.Reset();
         output.Reset();
-        motion.Reset();
-        depth.Reset();
+        if (motion)
+        {
+            retired[0] = std::move(motion);
+            retired[1] = std::move(depth);
+            retiredUntil = serial + 2;
+        }
         width = height = 0;
         format = DXGI_FORMAT_UNKNOWN;
         if (backend)
@@ -380,9 +387,11 @@ struct Context
         Transition(cmd.Get(), flowScd.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
         sceneReadbackPending = true;
     }
-    bool Frame(ID3D12Resource* back, D3D12_RESOURCE_STATES backState,
-               const std::filesystem::path& directory, AmdPreSr::Settings settings,
-               ID3D12Resource* realDepth = nullptr)
+    // With neural off only the optical-flow guides are made and the frame is left as it is. Without wait
+    // the frame is not waited for here; only a swapchain buffer allows that, as the swapchain keeps it and
+    // ResizeBuffers waits for its queue.
+    bool Frame(ID3D12Resource* back, D3D12_RESOURCE_STATES backState, const std::filesystem::path& directory,
+               AmdPreSr::Settings settings, ID3D12Resource* realDepth = nullptr, bool neural = true, bool wait = true)
     {
         if (stopped)
             return false;
@@ -394,7 +403,12 @@ struct Context
             return false;
         }
         heldBack.Reset();
-        if (backend && !backend->Ready())
+        if (serial >= retiredUntil)
+        {
+            retired[0].Reset();
+            retired[1].Reset();
+        }
+        if (neural && backend && !backend->Ready())
         {
             stableLast = false;
             status = backend->Status();
@@ -422,8 +436,6 @@ struct Context
                 output = Texture(format, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
             motion = Texture(DXGI_FORMAT_R16G16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
             depth = Texture(DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-            if (!backend)
-                backend = new AmdPreSr::Backend(device.Get(), queue.Get(), directory);
             if (!stabilizer)
                 stabilizer = std::make_unique<AmdPreSr::ResidualStabilizer>(device.Get());
         }
@@ -432,6 +444,8 @@ struct Context
             status = "Final-image NR: output size changed; waiting for swapchain reset";
             return false;
         }
+        if (neural && !backend)
+            backend = new AmdPreSr::Backend(device.Get(), queue.Get(), directory);
         heldBack = back;
         Check(allocator->Reset());
         Check(cmd->Reset(allocator.Get(), nullptr));
@@ -476,30 +490,27 @@ struct Context
         const bool flowValid = RecordFlow(realDepth != nullptr);
         const bool sceneCut = ReadSceneCut();
         QueueSceneCut();
-        if (sceneCut)
+        // History that missed frames (scene cut, flow just valid, NR back on) starts over.
+        if (backend && (sceneCut || (flowValid && flowFrames == 7) || (neural && !lastNeural)))
         {
             backend->InvalidateHistory();
             stabilizer->Invalidate();
         }
-        if (flowValid && flowFrames == 7)
-        {
-            backend->InvalidateHistory();
-            stabilizer->Invalidate();
-        }
+        lastNeural = neural;
         AmdPreSr::Frame f {};
         f.colour = input.Get();
         f.motion = motion.Get();
         f.depth = depth.Get();
         f.width = width;
         f.height = height;
-        f.reset = sceneCut || backend->RecordedFrames() == 0;
+        f.reset = sceneCut || (backend && backend->RecordedFrames() == 0);
         lastFlowValid = flowValid;
         lastReset = f.reset;
         settings.passes = std::clamp(settings.passes, 1u, 3u);
         settings.modelScale = std::clamp(settings.modelScale, 0.5f, 1.f);
         settings.fixedSeed = true;
-        const auto before = backend->RecordedFrames();
-        auto result = backend->Record(cmd.Get(), f, settings);
+        const auto before = neural ? backend->RecordedFrames() : 0;
+        auto result = neural ? backend->Record(cmd.Get(), f, settings) : nullptr;
         const bool modified = result && backend->RecordedFrames() != before;
         if (modified)
         {
@@ -533,16 +544,23 @@ struct Context
             Compose(back, backState, result);
         Check(cmd->Close());
         ID3D12CommandList* lists[] = { cmd.Get() };
-        backend->Submitting(queue.Get(), 1, lists);
+        if (backend)
+            backend->Submitting(queue.Get(), 1, lists);
         queue->ExecuteCommandLists(1, lists);
-        backend->Submitted(queue.Get(), 1, lists);
+        if (backend)
+            backend->Submitted(queue.Get(), 1, lists);
         Check(queue->Signal(fence.Get(), ++serial));
-        ReleaseBackBuffer();
+        if (wait)
+            ReleaseBackBuffer();
+        else
+            heldBack.Reset();
         if (!stopped)
-            status = std::string("Final-image NR (") + (flowValid ? "FidelityFX Optical Flow" :
-                flowFailed ? "synthetic guides; Optical Flow unavailable" : "Optical Flow warming up") +
-                (realDepth ? ", real depth" : ", synthetic depth") +
-                (sceneCut ? ", scene reset" : "") + ", stabilized): " + backend->Status();
+            status = std::string("Final-image NR (") +
+                     (flowValid    ? "FidelityFX Optical Flow"
+                      : flowFailed ? "synthetic guides; Optical Flow unavailable"
+                                   : "Optical Flow warming up") +
+                     (realDepth ? ", real depth" : ", synthetic depth") + (sceneCut ? ", scene reset" : "") +
+                     ", stabilized): " + (neural ? backend->Status() : std::string("NR off, guides only"));
         return modified && !stopped;
     }
     ComPtr<ID3D12DescriptorHeap> composeHeap;
@@ -668,7 +686,7 @@ inline void Report(std::string message)
     status = std::move(message);
 }
 inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::filesystem::path& directory,
-                   AmdPreSr::Settings s, Guides* guides = nullptr)
+                   AmdPreSr::Settings s, Guides* guides = nullptr, bool neural = true, bool wait = true)
 {
     std::lock_guard g(mutex);
     if (!queue)
@@ -688,7 +706,7 @@ inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::fil
         }
         ComPtr<ID3D12Resource> b;
         Check(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&b)));
-        context->Frame(b.Get(), D3D12_RESOURCE_STATE_PRESENT, directory, s);
+        context->Frame(b.Get(), D3D12_RESOURCE_STATE_PRESENT, directory, s, nullptr, neural, wait);
         if (guides && !context->stopped && context->lastFlowValid)
         {
             guides->motion = context->motion;

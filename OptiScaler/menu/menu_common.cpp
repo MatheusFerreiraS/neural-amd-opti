@@ -5177,7 +5177,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     inputOptions = {
         { FGInput::NoFG, "None" },
         { FGInput::Upscaler, "OptiFG (Upscaler)",
-            "Requires an upscaler, or D3D11 final-image NR with XeFG\n\nCan be used with any FG Output, but might be imperfect with some\nTo prevent UI glitching, HUDfix required" },
+            "Requires an upscaler, or final-image NR with XeFG\n\nCan be used with any FG Output, but might be imperfect with some\nTo prevent UI glitching, HUDfix required" },
         { FGInput::DLSSG, "DLSSG via Streamline",
             "Can be used with any FG Output\n\nRequires enabling DLSS-FG in game settings\nSupports HUDless out of the box\n\nLimited to games that use Streamline" },
         { FGInput::NvngxFG, "DLSSG via Nvngx",
@@ -6083,7 +6083,6 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             nativeAA = currentFeature->RenderWidth() == currentFeature->DisplayWidth();
 
         const bool finalImageFlow = config->DlssNrPresent.value_or_default() &&
-                                    state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
                                     state.activeFgInput == FGInput::Upscaler && currentFeature == nullptr;
         const bool correctMVs = fgOutput->IsLowResMV() || nativeAA || finalImageFlow ||
                                 (State::Instance().gameQuirks & GameQuirk::ForceFGRenderSizeMVs) || ignoreChecks;

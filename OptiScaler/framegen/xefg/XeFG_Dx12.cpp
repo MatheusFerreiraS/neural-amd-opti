@@ -666,7 +666,6 @@ void XeFG_Dx12::Activate()
         nativeAA = currentFeature->RenderWidth() == currentFeature->DisplayWidth();
 
     const bool finalImageFlow = Config::Instance()->DlssNrPresent.value_or_default() &&
-                                State::Instance().currentD3D11Device != nullptr &&
                                 State::Instance().activeFgInput == FGInput::Upscaler && currentFeature == nullptr;
 
     if (_swapChainContext != nullptr && _fgContext != nullptr && !_isActive &&
@@ -934,8 +933,8 @@ bool XeFG_Dx12::Dispatch()
 
         memcpy(constData.viewMatrix, view.r, sizeof(view));
     }
-    else if (Config::Instance()->DlssNrPresent.value_or_default() &&
-             state.currentD3D11Device != nullptr)
+    else if (Config::Instance()->DlssNrPresent.value_or_default() && state.activeFgInput == FGInput::Upscaler &&
+             state.currentFeature == nullptr)
     {
         // Final-image optical flow has no game camera transform.
         const auto view = XMMatrixIdentity();

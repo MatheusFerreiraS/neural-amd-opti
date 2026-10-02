@@ -1155,6 +1155,10 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
 #endif
     }
 
+    // Final-image NR on the game's frame and XeFG's inputs, before anything below reads FG state
+    if (willPresent && config->DlssNrPresent.value_or_default())
+        MenuOverlayDx::FinalImageFrameGen(This);
+
     IFGFeature* fg = state.currentFG;
 
     if (fg != nullptr && willPresent && fg->IsActive() && !fg->IsPaused())
