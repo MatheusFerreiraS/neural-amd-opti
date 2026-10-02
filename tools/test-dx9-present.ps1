@@ -27,11 +27,12 @@ foreach ($file in @($opti, (Join-Path $Runtime "dlssnr_amd_pass1.dll"), (Join-Pa
 $nrScript = "90:mark=nr-on,150:motion=nr-on,170:menu,190:shot=menu-open,200:menu,215:shot=menu-closed," +
             "230:nr,240:mark=nr-off,300:motion=nr-off,310:nr,320:mark=nr-on-again,380:reset=1600x900," +
             "390:mark=after-reset,400:menu,415:shot=menu-after-reset,425:menu,450:motion=after-reset,460:shot=after-reset"
-# With FG, the open menu's model scale slider (at 380,395 in the 1280x720 window) is dragged to the left end, then
-# the menu's Frame Generation section (its sidebar button at 337,241) is opened: neither may stop generation.
-$fgScript = "150:mark=fg-on,200:motion=fg-on,220:menu,232:shot=fg-menu-open,235:press=380x395,241:release," +
-            "244:shot=fg-scale-set,246:press=337x241,249:release,256:shot=fg-section,262:menu," +
-            "270:shot=fg-menu-closed,280:fg,290:mark=fg-off,330:motion=fg-off," +
+# With FG, the menu's model scale slider (at 380,395 in the 1280x720 window) is clicked near its left end, then the
+# menu's Frame Generation section (its sidebar button at 337,241) is opened: neither may stop generation. The cursor
+# is moved while the menu is closed, since OptiScaler holds it while the menu is open.
+$fgScript = "150:mark=fg-on,200:motion=fg-on,205:move=380x395,220:menu,232:shot=fg-menu-open,235:press,241:release," +
+            "244:shot=fg-scale-set,246:menu,248:move=337x241,252:menu,256:press,259:release,266:shot=fg-section," +
+            "270:menu,275:shot=fg-menu-closed,280:fg,290:mark=fg-off,330:motion=fg-off," +
             "340:fg,350:mark=fg-on-again,420:motion=fg-on-again,430:nr,440:mark=nr-off,480:motion=nr-off,490:nr," +
             "500:mark=nr-on,580:motion=nr-on,650:reset=1600x900,660:mark=after-reset,760:motion=after-reset," +
             "765:shot=fg-after-reset,780:minimize,820:restore,840:menu,850:shot=fg-menu-after-restore,860:menu," +

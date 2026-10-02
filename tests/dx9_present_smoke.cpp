@@ -4,8 +4,8 @@
 // samples. It prints the frame time of each scripted phase and whether sampled frames still change on screen.
 //   dx9_present_smoke.exe [--ex] [--chain] [--msaa] [--vsync] [--borderless] [--size WxH] [--frames N] [--shots folder]
 //                         [--script "frame:action,..."]
-// Actions: menu (Insert), nr (Numpad 5), fg (End), still (stops or restarts the scrolling), press=XxY (moves the
-// cursor there and holds the left button), release, minimize, restore, window2 (presents into a new window from then
+// Actions: menu (Insert), nr (Numpad 5), fg (End), still (stops or restarts the scrolling), move=XxY (puts the
+// cursor there), press and release (the left button), minimize, restore, window2 (presents into a new window from then
 // on, as a game that recreates its window), cpu=ms (busy CPU work per frame), reset=WxH, shot=name, motion=name,
 // diff=name (compares the screen with an earlier shot), mark=name.
 #define NOMINMAX
@@ -385,27 +385,21 @@ int main(int argc, char** argv)
                 if (action == "restore")
                     SetForegroundWindow(window);
             }
-            else if (action.rfind("press=", 0) == 0 || action == "release")
+            else if (action.rfind("move=", 0) == 0)
             {
-                // Injected input: OptiScaler keeps the game from moving the cursor with SetCursorPos while its
-                // menu is open.
+                // OptiScaler keeps the game from moving the cursor while its menu is open: move it before.
                 POINT point {};
-                INPUT input[2] {};
-                input[0].type = input[1].type = INPUT_MOUSE;
-                input[1].mi.dwFlags = action == "release" ? MOUSEEVENTF_LEFTUP : MOUSEEVENTF_LEFTDOWN;
 
-                if (std::sscanf(action.c_str(), "press=%ldx%ld", &point.x, &point.y) == 2)
-                {
-                    ClientToScreen(window, &point);
-                    input[0].mi.dx = point.x * 65535 / (GetSystemMetrics(SM_CXSCREEN) - 1);
-                    input[0].mi.dy = point.y * 65535 / (GetSystemMetrics(SM_CYSCREEN) - 1);
-                    input[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
-                    SendInput(2, input, sizeof(INPUT));
-                }
-                else
-                {
-                    SendInput(1, &input[1], sizeof(INPUT));
-                }
+                if (std::sscanf(action.c_str(), "move=%ldx%ld", &point.x, &point.y) == 2 &&
+                    ClientToScreen(window, &point))
+                    SetCursorPos(point.x, point.y);
+            }
+            else if (action == "press" || action == "release")
+            {
+                INPUT input {};
+                input.type = INPUT_MOUSE;
+                input.mi.dwFlags = action == "release" ? MOUSEEVENTF_LEFTUP : MOUSEEVENTF_LEFTDOWN;
+                SendInput(1, &input, sizeof(INPUT));
             }
             else if (action.rfind("mark=", 0) == 0)
                 endPhase(action.substr(5));
