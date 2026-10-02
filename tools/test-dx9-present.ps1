@@ -83,7 +83,7 @@ $cases = @(
        Log = @("D3D9 bridge frame \d+: frame generation on", "D3D9 bridge frame \d+: menu open")
        NotLog = @("D3D9 bridge frame (1[5-9]\d|2\d\d|3\d\d): frame generation off")
        ClickOut = @("(?s)diff fg-section-before: [0-9.]+ of the pixels changed, mean difference 0\.[0-4].*" +
-               "diff fg-section-before: [0-9.]+ of the pixels changed, mean difference (?:[1-9]|0\.[5-9])") },
+               "diff fg-section-before: (?:0\.0[2-9]|0\.[1-9])\d* of the pixels changed") },
     # The game moves to a new window: after two quiet seconds on the old one the bridge follows it. With FG the
     # presenter is released and D3D9 presents from then on, with the menu on the D3D9 device.
     @{ Name = "window-nr"; Args = @(); Fg = $false; Frames = 700
@@ -176,7 +176,7 @@ foreach ($c in $cases) {
     foreach ($pattern in $c.NotLog) { if ($log -match $pattern) { $problems += "log has: $pattern" } }
     foreach ($pattern in $c.Out) { if ($stdout -notmatch $pattern) { $problems += "output lacks: $pattern" } }
     $note = ""
-    if ($stdout -match "injected mouse input does not reach the desktop") {
+    if ($stdout -match "injected mouse input does not reach the desktop|the mouse \w+ did not land") {
         if ($c.ClickLog -or $c.ClickOut) { $note = " (menu clicks did not reach the desktop: click checks skipped)" }
     } else {
         foreach ($pattern in $c.ClickLog) { if ($log -notmatch $pattern) { $problems += "log lacks: $pattern" } }

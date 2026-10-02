@@ -51,20 +51,34 @@ LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM w, LPARAM l)
     return DefWindowProcW(hwnd, message, w, l);
 }
 
-// A left-button press or release as a mouse would send it. OptiScaler drops the game's own SendInput mouse events
-// while its menu is open, so this goes to win32u directly, below that hook.
-void Click(bool down)
+// A left-button press or release as a mouse would send it, and whether the desktop took it. OptiScaler drops the
+// game's own SendInput mouse events while its menu is open and answers GetAsyncKeyState for it, so both go to win32u
+// directly, below those hooks.
+bool Click(bool down)
 {
     using SendInputFn = UINT(WINAPI*)(UINT, LPINPUT, int);
-    static const auto send =
-        reinterpret_cast<SendInputFn>(GetProcAddress(LoadLibraryW(L"win32u.dll"), "NtUserSendInput"));
+    using KeyStateFn = SHORT(WINAPI*)(int);
+    static const HMODULE win32u = LoadLibraryW(L"win32u.dll");
+    static const auto send = reinterpret_cast<SendInputFn>(GetProcAddress(win32u, "NtUserSendInput"));
+    static const auto keyState = reinterpret_cast<KeyStateFn>(GetProcAddress(win32u, "NtUserGetAsyncKeyState"));
 
     INPUT input {};
     input.type = INPUT_MOUSE;
     input.mi.dwFlags = down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
 
-    if (send == nullptr || send(1, &input, sizeof(INPUT)) != 1)
-        std::printf("  the mouse %s could not be sent\n", down ? "press" : "release");
+    if (send == nullptr || keyState == nullptr || send(1, &input, sizeof(INPUT)) != 1)
+        return false;
+
+    // The desktop takes the event on its own thread.
+    for (int wait = 0; wait < 10; ++wait)
+    {
+        if (((keyState(VK_LBUTTON) & 0x8000) != 0) == down)
+            return true;
+
+        Sleep(5);
+    }
+
+    return false;
 }
 
 void Pump()
@@ -292,8 +306,7 @@ int main(int argc, char** argv)
     if (cursor.x >= 0 && ClientToScreen(window, &cursor))
     {
         SetCursorPos(cursor.x, cursor.y);
-        Click(true);
-        const bool landed = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+        const bool landed = Click(true);
         Click(false);
         Pump();
 
@@ -423,7 +436,9 @@ int main(int argc, char** argv)
             }
             else if (action == "press" || action == "release")
             {
-                Click(action == "press");
+                if (!Click(action == "press"))
+                    std::printf("  the mouse %s did not land (%s has the foreground)\n", action.c_str(),
+                                GetForegroundWindow() == window ? "this window" : "another window");
             }
             else if (action.rfind("mark=", 0) == 0)
                 endPhase(action.substr(5));
