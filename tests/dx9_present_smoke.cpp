@@ -269,9 +269,19 @@ int main(int argc, char** argv)
     SetForegroundWindow(window);
     Pump();
 
-    // Before OptiScaler's menu holds the cursor: this is where the script's clicks land.
+    // Before OptiScaler's menu holds the cursor: this is where the script's clicks land. A process started in the
+    // background cannot take the foreground with SetForegroundWindow, and the first click on an inactive window
+    // only activates it, so click once here.
     if (cursor.x >= 0 && ClientToScreen(window, &cursor))
+    {
         SetCursorPos(cursor.x, cursor.y);
+        INPUT click[2] {};
+        click[0].type = click[1].type = INPUT_MOUSE;
+        click[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+        click[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        SendInput(2, click, sizeof(INPUT));
+        Pump();
+    }
 
     IDirect3D9* api = nullptr;
     IDirect3D9Ex* apiEx = nullptr;
