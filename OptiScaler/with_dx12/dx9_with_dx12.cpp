@@ -64,7 +64,7 @@ ComPtr<ID3D12Resource> Buffer(ID3D12Device* device, D3D12_HEAP_TYPE heap, UINT64
 // The XeFG guides come from the network's optical flow, so frame generation runs while NR does. This follows the
 // D3D11 route's feed (dx11_with_dx12_sc.cpp) and also turns generation off while NR is off.
 void FeedFrameGeneration(ID3D12Device* device, UINT width, UINT height, bool ready,
-                         const AmdPresentExperimental::Guides& guides)
+                         const AmdPresentExperimental::Guides& guides, double renderMs)
 {
     auto fg = State::Instance().currentFG;
 
@@ -75,7 +75,13 @@ void FeedFrameGeneration(ID3D12Device* device, UINT width, UINT height, bool rea
 
     // A frame is only counted when it carries guides; counting the others makes XeFG warn about every skipped one.
     if (enabled && ready)
+    {
         fg->StartNewFrame();
+
+        // XeFG paces with this. The time between Presents would include its own pacing and grow without end.
+        if (renderMs > 0)
+            fg->SetFrameTimeDelta(renderMs);
+    }
 
     if (!ready && fg->IsActive())
         fg->Deactivate();
@@ -126,9 +132,11 @@ struct Bridge
     D3DFORMAT format = D3DFMT_UNKNOWN, copyFormat = D3DFMT_UNKNOWN;
     bool multisampled = false;
 
-    // staging: a render target for MSAA resolve or format conversion, and the target of the copy back.
+    // staging: a render target for MSAA resolve or format conversion, and the target of the copy back. On a
+    // D3D9Ex device it is shared with D3D12 as shared12 and the frame does not go through system memory.
     ComPtr<IDirect3DTexture9> stagingTexture;
     ComPtr<IDirect3DSurface9> staging, readSys, writeSys;
+    ComPtr<ID3D12Resource> shared12;
 
     ID3D12Device* device12 = nullptr;
     ID3D12CommandQueue* queue12 = nullptr;
@@ -148,6 +156,7 @@ struct Bridge
     UINT swapWidth = 0, swapHeight = 0;
     bool presenterFailed = false;
     bool fullscreenSaid = false;
+    double presentReturned = 0;
     bool tearing = false;
 
     UINT64 frames = 0;
@@ -193,6 +202,23 @@ struct Bridge
         location.pResource = texture;
         location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         return location;
+    }
+
+    // The captured frame into a texture in the copy-destination state.
+    void RecordIn(ID3D12Resource* target)
+    {
+        const auto destination = Subresource(target);
+        const auto source = shared12 != nullptr ? Subresource(shared12.Get()) : Footprint(upload.Get());
+
+        if (shared12 != nullptr)
+            AmdPresentExperimental::Transition(list.Get(), shared12.Get(), D3D12_RESOURCE_STATE_COMMON,
+                                               D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+        list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+
+        if (shared12 != nullptr)
+            AmdPresentExperimental::Transition(list.Get(), shared12.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                                               D3D12_RESOURCE_STATE_COMMON);
     }
 
     ComPtr<IDXGIAdapter> FindAdapter(IDirect3DDevice9* device)
@@ -275,6 +301,7 @@ struct Bridge
         if (fence != nullptr)
             Wait();
 
+        shared12.Reset();
         staging.Reset();
         stagingTexture.Reset();
         readSys.Reset();
@@ -296,6 +323,28 @@ struct Bridge
         ReleaseFrameObjects();
         AmdPresentExperimental::BeforeResize();
 
+        ComPtr<IDirect3DDevice9Ex> ex;
+        HANDLE handle = nullptr;
+
+        if (SUCCEEDED(game->QueryInterface(IID_PPV_ARGS(&ex))) &&
+            SUCCEEDED(game->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
+                                          D3DPOOL_DEFAULT, &stagingTexture, &handle)) &&
+            SUCCEEDED(stagingTexture->GetSurfaceLevel(0, &staging)) &&
+            SUCCEEDED(device12->OpenSharedHandle(handle, IID_PPV_ARGS(&shared12))))
+        {
+            width = desc.Width;
+            height = desc.Height;
+            format = desc.Format;
+            multisampled = msaa;
+            copyFormat = D3DFMT_A8R8G8B8;
+            LOG_INFO("D3D9 bridge: {}x{} format {}, MSAA {}, shared with D3D12", width, height, (UINT) format,
+                     (UINT) desc.MultiSampleType);
+            return true;
+        }
+
+        shared12.Reset();
+        staging.Reset();
+        stagingTexture.Reset();
         const bool direct = desc.Format == D3DFMT_A8R8G8B8 || desc.Format == D3DFMT_X8R8G8B8;
         copyFormat = direct ? desc.Format : D3DFMT_A8R8G8B8;
         pitch = (desc.Width * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
@@ -339,12 +388,17 @@ struct Bridge
         desc.Format = FrameFormat;
         desc.SampleDesc.Count = 1;
         desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-        readback = Buffer(device12, D3D12_HEAP_TYPE_READBACK, UINT64(pitch) * height, D3D12_RESOURCE_STATE_COPY_DEST);
 
-        if (readback == nullptr || FAILED(readback->Map(0, nullptr, reinterpret_cast<void**>(&readBack))) ||
+        if (shared12 == nullptr)
+            readback =
+                Buffer(device12, D3D12_HEAP_TYPE_READBACK, UINT64(pitch) * height, D3D12_RESOURCE_STATE_COPY_DEST);
+
+        if ((shared12 == nullptr &&
+             (readback == nullptr || FAILED(readback->Map(0, nullptr, reinterpret_cast<void**>(&readBack))) ||
+              FAILED(game->CreateOffscreenPlainSurface(width, height, copyFormat, D3DPOOL_SYSTEMMEM, &writeSys,
+                                                       nullptr)))) ||
             FAILED(device12->CreateCommittedResource(&properties, D3D12_HEAP_FLAG_NONE, &desc,
-                                                     D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&frame))) ||
-            FAILED(game->CreateOffscreenPlainSurface(width, height, copyFormat, D3DPOOL_SYSTEMMEM, &writeSys, nullptr)))
+                                                     D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&frame))))
         {
             LOG_ERROR("D3D9 bridge: write-back objects failed");
             frame.Reset();
@@ -354,9 +408,30 @@ struct Bridge
         return true;
     }
 
-    // The D3D9 frame into the upload buffer. GetRenderTargetData queues the copy; the lock waits for it.
+    bool WaitForD3D9()
+    {
+        ComPtr<IDirect3DQuery9> query;
+
+        if (FAILED(game->CreateQuery(D3DQUERYTYPE_EVENT, &query)) || FAILED(query->Issue(D3DISSUE_END)))
+            return false;
+
+        const auto start = GetTickCount64();
+        HRESULT result;
+
+        while ((result = query->GetData(nullptr, 0, D3DGETDATA_FLUSH)) == S_FALSE && GetTickCount64() - start < 4000)
+            Sleep(0);
+
+        return result == S_OK;
+    }
+
+    // The D3D9 frame into the shared texture, or into the upload buffer, where GetRenderTargetData queues the copy
+    // and the lock waits for it.
     bool Capture(IDirect3DSurface9* back)
     {
+        if (shared12 != nullptr)
+            return SUCCEEDED(game->StretchRect(back, nullptr, staging.Get(), nullptr, D3DTEXF_NONE)) && Wait() &&
+                   WaitForD3D9();
+
         IDirect3DSurface9* source = back;
 
         if (multisampled || copyFormat != format)
@@ -452,11 +527,9 @@ struct Bridge
         if (!EnsureWriteBack() || !Begin())
             return false;
 
-        auto destination = Subresource(frame.Get());
-        auto source = Footprint(upload.Get());
         AmdPresentExperimental::Transition(list.Get(), frame.Get(), D3D12_RESOURCE_STATE_COMMON,
                                            D3D12_RESOURCE_STATE_COPY_DEST);
-        list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+        RecordIn(frame.Get());
         AmdPresentExperimental::Transition(list.Get(), frame.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                                            D3D12_RESOURCE_STATE_COMMON);
 
@@ -479,29 +552,46 @@ struct Bridge
         if (!Begin())
             return false;
 
-        destination = Footprint(readback.Get());
-        source = Subresource(frame.Get());
+        const auto destination = shared12 != nullptr ? Subresource(shared12.Get()) : Footprint(readback.Get());
+        const auto source = Subresource(frame.Get());
         AmdPresentExperimental::Transition(list.Get(), frame.Get(), D3D12_RESOURCE_STATE_COMMON,
                                            D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+        if (shared12 != nullptr)
+            AmdPresentExperimental::Transition(list.Get(), shared12.Get(), D3D12_RESOURCE_STATE_COMMON,
+                                               D3D12_RESOURCE_STATE_COPY_DEST);
+
         list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
         AmdPresentExperimental::Transition(list.Get(), frame.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
                                            D3D12_RESOURCE_STATE_COMMON);
 
-        D3DLOCKED_RECT locked {};
+        if (shared12 != nullptr)
+            AmdPresentExperimental::Transition(list.Get(), shared12.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                               D3D12_RESOURCE_STATE_COMMON);
 
-        if (!Submit() || !Wait() || FAILED(writeSys->LockRect(&locked, nullptr, 0)))
+        if (!Submit() || !Wait())
             return false;
 
-        for (UINT y = 0; y < height; ++y)
-            memcpy(static_cast<BYTE*>(locked.pBits) + size_t(y) * locked.Pitch, readBack + size_t(y) * pitch,
-                   size_t(width) * 4);
+        if (shared12 == nullptr)
+        {
+            D3DLOCKED_RECT locked {};
 
-        writeSys->UnlockRect();
+            if (FAILED(writeSys->LockRect(&locked, nullptr, 0)))
+                return false;
 
-        const bool written =
-            SUCCEEDED(game->UpdateSurface(writeSys.Get(), nullptr, staging.Get(), nullptr)) &&
-            (multisampled ? DrawOver(back)
-                          : SUCCEEDED(game->StretchRect(staging.Get(), nullptr, back, nullptr, D3DTEXF_NONE)));
+            for (UINT y = 0; y < height; ++y)
+                memcpy(static_cast<BYTE*>(locked.pBits) + size_t(y) * locked.Pitch, readBack + size_t(y) * pitch,
+                       size_t(width) * 4);
+
+            writeSys->UnlockRect();
+
+            if (FAILED(game->UpdateSurface(writeSys.Get(), nullptr, staging.Get(), nullptr)))
+                return false;
+        }
+
+        const bool written = multisampled
+                                 ? DrawOver(back)
+                                 : SUCCEEDED(game->StretchRect(staging.Get(), nullptr, back, nullptr, D3DTEXF_NONE));
         spentBack += Util::MillisecondsNow() - start;
         return written;
     }
@@ -619,11 +709,9 @@ struct Bridge
 
         if (Begin() && SUCCEEDED(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&buffer))))
         {
-            auto destination = Subresource(buffer.Get());
-            auto source = Footprint(upload.Get());
             AmdPresentExperimental::Transition(list.Get(), buffer.Get(), D3D12_RESOURCE_STATE_PRESENT,
                                                D3D12_RESOURCE_STATE_COPY_DEST);
-            list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+            RecordIn(buffer.Get());
             AmdPresentExperimental::Transition(list.Get(), buffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                                                D3D12_RESOURCE_STATE_PRESENT);
             Submit();
@@ -634,17 +722,17 @@ struct Bridge
         start = Util::MillisecondsNow();
 
         AmdPresentExperimental::Guides guides;
-        // The network runs while XeFG paces this Present instead of before it: the queue orders the two, and the
-        // next frame waits for the network before it reuses anything.
-        const bool ready =
-            NrWanted() && AmdPresentExperimental::Render(swap.Get(), queue12, Util::DllPath().parent_path(),
-                                                         NrSettings(), &guides, true);
-        FeedFrameGeneration(device12, width, height, ready, guides);
+        const bool ready = NrWanted() && AmdPresentExperimental::Render(
+                                             swap.Get(), queue12, Util::DllPath().parent_path(), NrSettings(), &guides);
+        const double renderMs =
+            presentReturned > 0 ? std::clamp(Util::MillisecondsNow() - presentReturned, 1.0, 100.0) : 0.0;
+        FeedFrameGeneration(device12, width, height, ready, guides, renderMs);
         spentNeural += Util::MillisecondsNow() - start;
 
         start = Util::MillisecondsNow();
         const UINT sync = interval == D3DPRESENT_INTERVAL_IMMEDIATE ? 0 : 1;
         const HRESULT presented = swap->Present(sync, sync == 0 && tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+        presentReturned = Util::MillisecondsNow();
         spentPresent += Util::MillisecondsNow() - start;
 
         if (FAILED(presented))

@@ -92,6 +92,14 @@ $cases = @(
        Script = "150:mark=fg-moving,270:still,280:mark=fg-still,400:still,410:cpu=8,420:mark=fg-cpu8,540:fg," +
                 "550:mark=nr-only-cpu8,670:cpu=0,680:mark=nr-only-moving,800:nr,810:mark=off-moving"
        Log = @("D3D9 bridge frame \d+: XeFG presenter, NR true at scale [0-9.]+, FG true") },
+    @{ Name = "timing-fg-900"; Args = @("--size", "1600x900"); Fg = $true; Frames = 930
+       Script = "150:mark=fg-moving,270:still,280:mark=fg-still,400:still,410:cpu=8,420:mark=fg-cpu8,540:fg," +
+                "550:mark=nr-only-cpu8,670:cpu=0,680:mark=nr-only-moving,800:nr,810:mark=off-moving"
+       Log = @("D3D9 bridge frame \d+: XeFG presenter, NR true at scale [0-9.]+, FG true") },
+    @{ Name = "timing-fg-toggle"; Args = @("--borderless", "--size", "1920x1080"); Fg = $true; Frames = 930
+       Script = "100:fg,110:fg,150:mark=fg-moving,270:still,280:mark=fg-still,400:still,410:cpu=8,420:mark=fg-cpu8," +
+                "540:fg,550:mark=nr-only-cpu8,670:cpu=0,680:mark=nr-only-moving,800:nr,810:mark=off-moving"
+       Log = @("D3D9 bridge frame \d+: XeFG presenter, NR true at scale [0-9.]+, FG true") },
     @{ Name = "timing-fg-nopacing"; Args = @("--borderless", "--size", "1920x1080"); Fg = $true; Frames = 930
        Ini = "[XeFG]`r`nExtraPacing=false`r`n"
        Script = "150:mark=fg-moving,270:still,280:mark=fg-still,400:still,410:cpu=8,420:mark=fg-cpu8,540:fg," +
