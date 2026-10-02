@@ -7,7 +7,7 @@
 // the PDB, the same fields the menu writes. Checks read OptiScaler.log, amd_presr.log, the DXGI
 // present count, the RivaTuner Statistics Server shared memory when RTSS runs, and the screen.
 //
-//   dx11_final_image_smoke.exe fg|nr [seconds per phase]
+//   dx11_final_image_smoke.exe fg|nr|keys [seconds per phase] [log level]
 #define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
@@ -76,7 +76,7 @@ static void SetIni(std::vector<std::string>& lines, const std::string& section, 
         throw std::runtime_error("INI section not found: " + section);
     lines.insert(lines.begin() + header + 1, key + "=" + value);
 }
-static void WriteIni(bool fg, bool debugLog)
+static void WriteIni(bool fg, const wchar_t* logLevel)
 {
     std::ifstream in(dir / "OptiScaler.template.ini");
     std::vector<std::string> lines;
@@ -91,7 +91,7 @@ static void WriteIni(bool fg, bool debugLog)
     SetIni(lines, "FrameGen", "FGOutput", fg ? "xefg" : "nofg");
     SetIni(lines, "XeFG", "InterpolationCount", "2");
     SetIni(lines, "Log", "LogToFile", "true");
-    SetIni(lines, "Log", "LogLevel", debugLog ? "1" : "2");
+    SetIni(lines, "Log", "LogLevel", logLevel ? std::string(logLevel, logLevel + wcslen(logLevel)) : "2");
     SetIni(lines, "Menu", "ShowFps", "true");
     SetIni(lines, "Menu", "DisableSplash", "true");
     SetIni(lines, "Hotfix", "CheckForUpdate", "false");
@@ -173,9 +173,12 @@ struct Opti
     // Frames the NR runtime completed, from the status line the Neural section shows.
     unsigned NrFrames() const
     {
+        static unsigned last = 0;
         const std::string text = *nrStatus;
         const size_t at = text.find("completed frames=");
-        return at == std::string::npos ? 0 : (unsigned) std::strtoul(text.c_str() + at + 17, nullptr, 10);
+        if (at != std::string::npos)
+            last = (unsigned) std::strtoul(text.c_str() + at + 17, nullptr, 10);
+        return last;
     }
     template <class T> T Get(const wchar_t* name)
     {
@@ -184,6 +187,61 @@ struct Opti
         return value;
     }
 } opti;
+
+static void PrintFrame(DWORD64 address)
+{
+    std::vector<BYTE> storage(sizeof(SYMBOL_INFO) + 256);
+    auto symbol = (SYMBOL_INFO*) storage.data();
+    symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+    symbol->MaxNameLen = 255;
+    DWORD64 displacement = 0;
+    HMODULE module = nullptr;
+    char moduleName[MAX_PATH] = "?";
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCSTR) address, &module);
+    if (module)
+        GetModuleFileNameA(module, moduleName, MAX_PATH);
+    const bool named = SymFromAddr(GetCurrentProcess(), address, &displacement, symbol);
+    std::printf("    %s!%s+0x%llx\n", fs::path(moduleName).filename().string().c_str(), named ? symbol->Name : "?",
+                (unsigned long long) displacement);
+}
+// Where a thread is stuck.
+static void PrintStack(HANDLE thread)
+{
+    SuspendThread(thread);
+    CONTEXT context {};
+    context.ContextFlags = CONTEXT_FULL;
+    GetThreadContext(thread, &context);
+    STACKFRAME64 frame {};
+    frame.AddrPC = { context.Rip, 0, AddrModeFlat };
+    frame.AddrFrame = { context.Rbp, 0, AddrModeFlat };
+    frame.AddrStack = { context.Rsp, 0, AddrModeFlat };
+    for (int i = 0; i < 40 && StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), thread, &frame, &context,
+                                            nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr);
+         ++i)
+        PrintFrame(frame.AddrPC.Offset);
+    // Hooks leave frames without unwind data; code addresses found on the stack fill the gap.
+    std::printf("  return addresses on the stack:\n");
+    MEMORY_BASIC_INFORMATION stackInfo {};
+    VirtualQuery((void*) context.Rsp, &stackInfo, sizeof(stackInfo));
+    const auto top = (const DWORD64*) ((BYTE*) stackInfo.BaseAddress + stackInfo.RegionSize);
+    int shown = 0;
+    for (auto p = (const DWORD64*) context.Rsp; p < top && shown < 60; ++p)
+    {
+        HMODULE module = nullptr;
+        if (*p > 0x10000 && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                               (LPCSTR) *p, &module))
+        {
+            MEMORY_BASIC_INFORMATION code {};
+            if (VirtualQuery((void*) *p, &code, sizeof(code)) && (code.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE)))
+            {
+                PrintFrame(*p);
+                ++shown;
+            }
+        }
+    }
+}
 
 // A crash prints where it happened before the process goes.
 static LONG CALLBACK Crash(EXCEPTION_POINTERS* info)
@@ -294,7 +352,8 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM w, LPARAM l)
         height = HIWORD(l);
         resized = true;
     }
-    if (message == WM_CLOSE)
+    // Like most games: no window menu loop on ALT (the foreground helper taps ALT).
+    if (message == WM_CLOSE || (message == WM_SYSCOMMAND && (w & 0xFFF0) == SC_KEYMENU))
         return 0;
     return DefWindowProcW(hwnd, message, w, l);
 }
@@ -306,6 +365,20 @@ static void Pump()
         DispatchMessageW(&msg);
     }
 }
+// OptiScaler filters this process's SendInput and PostMessage while its menu is open, as a game's own synthetic input;
+// a keyboard does not go through them, so neither do these keys.
+static UINT Send(UINT count, INPUT* inputs)
+{
+    using SendInputFn = UINT(WINAPI*)(UINT, LPINPUT, int);
+    static auto send = (SendInputFn) GetProcAddress(LoadLibraryW(L"win32u.dll"), "NtUserSendInput");
+    return send ? send(count, inputs, sizeof(INPUT)) : SendInput(count, inputs, sizeof(INPUT));
+}
+static void Post(UINT message, WPARAM w, LPARAM l)
+{
+    using PostFn = BOOL(WINAPI*)(HWND, UINT, WPARAM, LPARAM);
+    static auto post = (PostFn) GetProcAddress(LoadLibraryW(L"win32u.dll"), "NtUserPostMessage");
+    (post ? post : PostMessageW)(window, message, w, l);
+}
 static void Foreground(HWND hwnd)
 {
     if (GetForegroundWindow() == hwnd)
@@ -315,7 +388,7 @@ static void Foreground(HWND hwnd)
     alt[0].type = alt[1].type = INPUT_KEYBOARD;
     alt[0].ki.wVk = alt[1].ki.wVk = VK_MENU;
     alt[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(2, alt, sizeof(INPUT));
+    Send(2, alt);
     ShowWindow(hwnd, SW_RESTORE);
     SetForegroundWindow(hwnd);
     BringWindowToTop(hwnd);
@@ -329,7 +402,16 @@ static void Key(WORD vk, bool up)
     input.ki.wScan = (WORD) MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
     input.ki.dwFlags = (up ? KEYEVENTF_KEYUP : 0) |
                        (vk == VK_INSERT || vk == VK_END ? KEYEVENTF_EXTENDEDKEY : 0);
-    SendInput(1, &input, sizeof(INPUT));
+    // While the menu is open, keys injected into the desktop do not reach this thread's key state on this machine
+    // (the window keeps the foreground and the focus). The open menu gets the window message a keyboard produces.
+    if (!*opti.menuVisible)
+    {
+        Send(1, &input);
+        return;
+    }
+    const bool extended = vk == VK_INSERT || vk == VK_END;
+    Post(up ? WM_KEYUP : WM_KEYDOWN, vk,
+         1 | (LPARAM(input.ki.wScan) << 16) | (extended ? LPARAM(1) << 24 : 0) | (up ? LPARAM(3) << 30 : 0));
 }
 // A small grey thumbnail of what the screen shows inside the window right now.
 static std::vector<BYTE> Screen()
@@ -592,13 +674,16 @@ int wmain(int argc, wchar_t** argv)
         dir = fs::path(self).parent_path();
         const std::wstring mode = argc > 1 ? argv[1] : L"fg";
         const double phase = argc > 2 ? _wtof(argv[2]) : 4.0;
-        const bool fg = mode == L"fg";
+        const bool fg = mode == L"fg" || mode == L"focus";
         fs::remove(dir / "OptiScaler.log");
         fs::remove(dir / "amd_presr.log");
-        WriteIni(fg, argc > 3 && wcscmp(argv[3], L"debug") == 0);
+        WriteIni(fg, argc > 3 ? argv[3] : nullptr);
 
         // Nothing must hang: a phase that stops presenting for 30 s fails the run.
-        std::thread([] {
+        HANDLE mainThread = nullptr;
+        DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &mainThread, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS);
+        std::thread([mainThread] {
             unsigned seen = 0, still = 0;
             for (;;)
             {
@@ -609,6 +694,7 @@ int wmain(int argc, wchar_t** argv)
                 if (still >= 30)
                 {
                     std::printf("FAIL: no frame presented for 30 s during \"%s\"\n", phaseName.load());
+                    PrintStack(mainThread);
                     std::fflush(stdout);
                     TerminateProcess(GetCurrentProcess(), 3);
                 }
@@ -639,6 +725,22 @@ int wmain(int argc, wchar_t** argv)
         game.Create();
 
         Logs logs;
+        if (mode == L"keys")
+        {
+            // Menu and hotkeys only, quickly.
+            Run("warm-up", 4);
+            for (int i = 0; i < 3; ++i)
+            {
+                Press(VK_INSERT);
+                expect(*opti.menuVisible, "Insert opens the menu");
+                Run("menu open", 1, true);
+                Press(VK_INSERT);
+                expect(!*opti.menuVisible, "Insert closes the menu");
+                Run("menu closed", 1, true);
+            }
+            std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
+            return failures ? 1 : 0;
+        }
         Run("warm-up", fg ? 14 : 10);
         expect(logs.Amd("Completed AMD pre-SR") > 0, "NR ran on the final image (amd_presr.log: Completed AMD pre-SR)");
         if (fg)
@@ -648,6 +750,8 @@ int wmain(int argc, wchar_t** argv)
         }
         const double expected = fg ? 3.0 : 1.0;
         auto FgShowing = [&](const Stats& s) { return s.presentsPerFrame > expected - 0.5; };
+        if (mode != L"focus")
+        {
 
         Stats closed = Run("menu closed", phase);
         expect(closed.nr > closed.frames * 9 / 10, "NR on every frame, menu closed");
@@ -764,6 +868,8 @@ int wmain(int argc, wchar_t** argv)
             Stats fgOn = Run("FG on", phase);
             expect(FgShowing(fgOn), "End turns XeFG back on");
             expect(Moving(), "image moves after FG comes back");
+        }
+
         }
 
         // Focus loss and regain, then a minimise and restore (what Alt+Tab does to many games).

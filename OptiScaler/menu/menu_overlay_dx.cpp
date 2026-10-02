@@ -40,6 +40,9 @@ static IUnknown* currentSCCommandQueue = nullptr;
 
 // status
 static bool _isInited = false;
+// XeFG draws the overlay from its own present thread while the game thread may release it for a resize.
+static std::recursive_mutex _overlayMutex;
+static std::atomic<bool> _heldForResize = false;
 static bool _d3d12Captured = false;
 
 // for showing
@@ -519,20 +522,27 @@ void MenuOverlayDx::CleanupRenderTarget(bool clearQueue, HWND hWnd)
         fg->Deactivate();
     }
 
+    std::lock_guard lock(_overlayMutex);
     if (_dx11Device)
         CleanupRenderTargetDx11(false);
     else
         CleanupRenderTargetDx12(clearQueue);
 }
 
+void MenuOverlayDx::HoldForResize(bool hold) { _heldForResize = hold; }
+
 void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                             const DXGI_PRESENT_PARAMETERS* pPresentParameters, IUnknown* pDevice, HWND hWnd, bool isUWP)
 {
+    // Through the D3D11 bridge, Dx11wDx12SC runs NR before XeFG; the swapchain XeFG presents to is not a second
+    // target.
     if (AmdPresentExperimental::IsTarget() &&
         Config::Instance()->DlssNrEnabled.value_or_default() &&
         !State::Instance().currentFeature &&
         !(State::Instance().activeFgOutput == FGOutput::XeFG &&
           State::Instance().currentFGSwapchain == pSwapChain &&
+          !FGHooks::IsDx12InteropPresentSC(pSwapChain)) &&
+        !(State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
           !FGHooks::IsDx12InteropPresentSC(pSwapChain)) &&
         (!State::Instance().currentFG || !State::Instance().currentFG->IsActive() ||
          State::Instance().currentFG->IsPaused()) &&
@@ -569,6 +579,10 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // data. MenuOverlayVk stands down for vkd3d-proton D3D12 swapchains; this covers the reverse
     // order, where it claimed the backend first.
     if (State::Instance().menuOverlayIsVulkan)
+        return;
+
+    std::lock_guard lock(_overlayMutex);
+    if (_heldForResize)
         return;
 
     LOG_DEBUG("");

@@ -5,7 +5,7 @@
 #include <Logger.h>
 #include <wrl/client.h>
 #include <d3dcompiler.h>
-#include <d3d11.h>
+#include <d3d11_4.h>
 #include <dxgi1_4.h>
 #include <cstring>
 #include <algorithm>
@@ -52,7 +52,7 @@ struct Context
     ComPtr<ID3D12GraphicsCommandList> cmd;
     ComPtr<ID3D12Fence> fence;
     UINT64 serial = 0;
-    ComPtr<ID3D12Resource> input, motion, depth, output, heldBack;
+    ComPtr<ID3D12Resource> input, motion, depth, output;
     ComPtr<ID3D12DescriptorHeap> heap, clearCpu;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pipeline;
@@ -92,19 +92,13 @@ struct Context
         CloseHandle(done);
         return signaled;
     }
-    void ReleaseBackBuffer()
-    {
-        if (WaitForFrame())
-            heldBack.Reset();
-        else
-        {
-            stopped = true;
-            status = "Final-image NR: GPU timeout; backbuffer retained until process exit";
-        }
-    }
     void BeforeResize()
     {
-        ReleaseBackBuffer();
+        if (!WaitForFrame())
+        {
+            stopped = true;
+            status = "Final-image NR: GPU timeout; stopped";
+        }
         if (stopped)
             return;
         if (flowCreated)
@@ -384,21 +378,20 @@ struct Context
         Transition(cmd.Get(), flowScd.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
         sceneReadbackPending = true;
     }
-    bool Frame(ID3D12Resource* back, D3D12_RESOURCE_STATES backState,
-               const std::filesystem::path& directory, AmdPreSr::Settings settings,
-               ID3D12Resource* realDepth = nullptr)
+    bool Frame(ID3D12Resource* back, D3D12_RESOURCE_STATES backState, const std::filesystem::path& directory,
+               AmdPreSr::Settings settings, ID3D12Resource* realDepth = nullptr, bool neural = true)
     {
         if (stopped)
             return false;
         lastFlowValid = false;
+        // The previous frame ran on the GPU while the game prepared this one; its list and descriptors are reused now.
         if (!WaitForFrame())
         {
             stopped = true;
             status = "Final-image NR: GPU timeout; stopped";
             return false;
         }
-        heldBack.Reset();
-        if (backend && !backend->Ready())
+        if (neural && backend && !backend->Ready())
         {
             stableLast = false;
             status = backend->Status();
@@ -426,8 +419,6 @@ struct Context
                 output = Texture(format, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
             motion = Texture(DXGI_FORMAT_R16G16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
             depth = Texture(DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-            if (!backend)
-                backend = new AmdPreSr::Backend(device.Get(), queue.Get(), directory);
             if (!stabilizer)
                 stabilizer = std::make_unique<AmdPreSr::ResidualStabilizer>(device.Get());
         }
@@ -436,7 +427,6 @@ struct Context
             status = "Final-image NR: output size changed; waiting for swapchain reset";
             return false;
         }
-        heldBack = back;
         Check(allocator->Reset());
         Check(cmd->Reset(allocator.Get(), nullptr));
         Transition(cmd.Get(), back, backState, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -480,30 +470,27 @@ struct Context
         const bool flowValid = RecordFlow(realDepth != nullptr);
         const bool sceneCut = ReadSceneCut();
         QueueSceneCut();
-        if (sceneCut)
-        {
+        // Without NR the flow still feeds XeFG; NR starts again without history.
+        if ((sceneCut || (flowValid && flowFrames == 7) || !neural) && backend)
             backend->InvalidateHistory();
+        if (sceneCut || (flowValid && flowFrames == 7))
             stabilizer->Invalidate();
-        }
-        if (flowValid && flowFrames == 7)
-        {
-            backend->InvalidateHistory();
-            stabilizer->Invalidate();
-        }
+        if (neural && !backend)
+            backend = new AmdPreSr::Backend(device.Get(), queue.Get(), directory);
         AmdPreSr::Frame f {};
         f.colour = input.Get();
         f.motion = motion.Get();
         f.depth = depth.Get();
         f.width = width;
         f.height = height;
-        f.reset = sceneCut || backend->RecordedFrames() == 0;
+        f.reset = sceneCut || !backend || backend->RecordedFrames() == 0;
         lastFlowValid = flowValid;
         lastReset = f.reset;
         settings.passes = std::clamp(settings.passes, 1u, 3u);
         settings.modelScale = std::clamp(settings.modelScale, 0.5f, 1.f);
         settings.fixedSeed = true;
-        const auto before = backend->RecordedFrames();
-        auto result = backend->Record(cmd.Get(), f, settings);
+        const auto before = neural ? backend->RecordedFrames() : 0;
+        auto result = neural ? backend->Record(cmd.Get(), f, settings) : nullptr;
         const bool modified = result && backend->RecordedFrames() != before;
         if (modified)
         {
@@ -537,17 +524,19 @@ struct Context
             Compose(back, backState, result);
         Check(cmd->Close());
         ID3D12CommandList* lists[] = { cmd.Get() };
-        backend->Submitting(queue.Get(), 1, lists);
+        if (backend)
+            backend->Submitting(queue.Get(), 1, lists);
         queue->ExecuteCommandLists(1, lists);
-        backend->Submitted(queue.Get(), 1, lists);
+        if (backend)
+            backend->Submitted(queue.Get(), 1, lists);
         Check(queue->Signal(fence.Get(), ++serial));
-        ReleaseBackBuffer();
-        if (!stopped)
-            status = std::string("Final-image NR (") + (flowValid ? "FidelityFX Optical Flow" :
-                flowFailed ? "synthetic guides; Optical Flow unavailable" : "Optical Flow warming up") +
-                (realDepth ? ", real depth" : ", synthetic depth") +
-                (sceneCut ? ", scene reset" : "") + ", stabilized): " + backend->Status();
-        return modified && !stopped;
+        status = std::string(neural ? "Final-image NR (" : "Final-image NR off, guides for XeFG (") +
+                 (flowValid    ? "FidelityFX Optical Flow"
+                  : flowFailed ? "synthetic guides; Optical Flow unavailable"
+                               : "Optical Flow warming up") +
+                 (realDepth ? ", real depth" : ", synthetic depth") + (sceneCut ? ", scene reset" : "") +
+                 (neural ? ", stabilized): " + backend->Status() : std::string(")"));
+        return modified;
     }
     ComPtr<ID3D12DescriptorHeap> composeHeap;
     void ComposeBgra(ID3D12Resource* back, D3D12_RESOURCE_STATES backState)
@@ -661,20 +650,33 @@ struct Guides
     UINT width = 0, height = 0;
     bool reset = false;
 };
+inline std::mutex shownMutex;
+inline std::string shown = status;
+// Holds the NR work and, on release, shows the status it left. The menu and the FPS overlay read it from the present
+// thread, so they never wait for a frame's NR work.
+struct Lock
+{
+    std::lock_guard<std::mutex> work { mutex };
+    ~Lock()
+    {
+        std::lock_guard g(shownMutex);
+        shown = status;
+    }
+};
 inline std::string Status()
 {
-    std::lock_guard g(mutex);
-    return status;
+    std::lock_guard g(shownMutex);
+    return shown;
 }
 inline void Report(std::string message)
 {
-    std::lock_guard g(mutex);
+    Lock g;
     status = std::move(message);
 }
 inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::filesystem::path& directory,
-                   AmdPreSr::Settings s, Guides* guides = nullptr)
+                   AmdPreSr::Settings s, Guides* guides = nullptr, bool neural = true)
 {
-    std::lock_guard g(mutex);
+    Lock g;
     if (!queue)
         return false;
     try
@@ -692,7 +694,7 @@ inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::fil
         }
         ComPtr<ID3D12Resource> b;
         Check(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&b)));
-        context->Frame(b.Get(), D3D12_RESOURCE_STATE_PRESENT, directory, s);
+        context->Frame(b.Get(), D3D12_RESOURCE_STATE_PRESENT, directory, s, nullptr, neural);
         if (guides && !context->stopped && context->lastFlowValid)
         {
             guides->motion = context->motion;
@@ -715,7 +717,7 @@ inline bool RenderResource(ID3D12Resource* resource, ID3D12Device* device, ID3D1
                            const std::filesystem::path& directory, AmdPreSr::Settings settings,
                            Guides* guides = nullptr)
 {
-    std::lock_guard g(mutex);
+    Lock g;
     if (guides)
         *guides = {};
     try
@@ -728,6 +730,12 @@ inline bool RenderResource(ID3D12Resource* resource, ID3D12Device* device, ID3D1
             return false;
         }
         const bool rendered = context->Frame(resource, D3D12_RESOURCE_STATE_COMMON, directory, settings);
+        // Vulkan copies the shared image back as soon as this returns.
+        if (!context->WaitForFrame())
+        {
+            context->stopped = true;
+            status = "Final-image NR: GPU timeout; stopped";
+        }
         if (guides && rendered && !context->stopped && context->lastFlowValid)
         {
             guides->motion = context->motion;
@@ -747,12 +755,17 @@ inline bool RenderResource(ID3D12Resource* resource, ID3D12Device* device, ID3D1
     }
 }
 
-// The D3D11 colour crossing follows the ReShade add-on's shared-texture route. The
-// two CPU waits keep both APIs off a backbuffer after Present or ResizeBuffers.
+// The D3D11 colour crossing follows the ReShade add-on's shared-texture route. A shared fence
+// orders it on the GPU: D3D12 starts after D3D11's copy and D3D11 goes on after NR, so neither
+// API waits on the CPU and only D3D11 touches the backbuffer.
 struct Bridge11
 {
     ComPtr<ID3D11Device> game;
     ComPtr<ID3D11DeviceContext> immediate;
+    ComPtr<ID3D11DeviceContext4> immediate4;
+    ComPtr<ID3D11Fence> fence11;
+    ComPtr<ID3D12Fence> fence12;
+    UINT64 fenceValue = 0;
     ComPtr<ID3D12Device> work;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<ID3D11Texture2D> shared11;
@@ -771,26 +784,6 @@ struct Bridge11
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     bool stopped = false;
 
-    bool Wait11()
-    {
-        D3D11_QUERY_DESC desc {};
-        desc.Query = D3D11_QUERY_EVENT;
-        ComPtr<ID3D11Query> done;
-        if (FAILED(game->CreateQuery(&desc, &done)))
-            return false;
-        immediate->End(done.Get());
-        immediate->Flush();
-        const auto start = GetTickCount64();
-        for (;;)
-        {
-            const HRESULT hr = immediate->GetData(done.Get(), nullptr, 0, 0);
-            if (hr == S_OK)
-                return SUCCEEDED(game->GetDeviceRemovedReason());
-            if (hr != S_FALSE || GetTickCount64() - start > 2000 || FAILED(game->GetDeviceRemovedReason()))
-                return false;
-            Sleep(1);
-        }
-    }
     void ReleaseShared()
     {
         depthTarget.Reset();
@@ -828,6 +821,15 @@ struct Bridge11
         D3D12_COMMAND_QUEUE_DESC queueDesc {};
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         Check(work->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue)));
+        ComPtr<ID3D11Device5> device5;
+        Check(game.As(&device5));
+        Check(immediate.As(&immediate4));
+        Check(device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence11)));
+        HANDLE shared = nullptr;
+        Check(fence11->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &shared));
+        const HRESULT opened = work->OpenSharedHandle(shared, IID_PPV_ARGS(&fence12));
+        CloseHandle(shared);
+        Check(opened);
         engine = new Context(work.Get(), queue.Get());
     }
     void EnsureShared(UINT w, UINT h, DXGI_FORMAT f)
@@ -933,11 +935,6 @@ struct Bridge11
             ComPtr<ID3D11CommandList> commands;
             Check(depthDeferred->FinishCommandList(FALSE, &commands));
             immediate->ExecuteCommandList(commands.Get(), TRUE);
-            if (!Wait11())
-            {
-                stopped = true;
-                return false;
-            }
             return true;
         }
         catch (...)
@@ -968,23 +965,19 @@ struct Bridge11
             return;
         }
         EnsureShared(desc.Width, desc.Height, desc.Format);
-        if (stopped)
+        if (stopped || engine->stopped)
             return;
         const bool realDepth = captureDepth && CaptureDepth(desc.Width, desc.Height);
-        if (stopped)
-            return;
         immediate->CopyResource(shared11.Get(), back);
-        if (!Wait11())
-            throw std::runtime_error("Final-image NR: D3D11 input copy timed out");
+        Check(immediate4->Signal(fence11.Get(), ++fenceValue));
+        immediate->Flush();
+        Check(queue->Wait(fence12.Get(), fenceValue));
         const bool modified = engine->Frame(shared12.Get(), D3D12_RESOURCE_STATE_COMMON, directory, settings,
                                             realDepth ? sharedDepth12.Get() : nullptr);
+        Check(queue->Signal(fence12.Get(), ++fenceValue));
+        Check(immediate4->Wait(fence11.Get(), fenceValue));
         if (modified)
-        {
             immediate->CopyResource(back, shared11.Get());
-            if (!Wait11())
-                throw std::runtime_error("Final-image NR: D3D11 output copy timed out");
-        }
-        immediate->Flush();
     }
     void Frame(IDXGISwapChain* sc, ID3D11Device* device, const std::filesystem::path& directory,
                AmdPreSr::Settings settings)
@@ -1001,7 +994,7 @@ inline Bridge11* bridge11 = nullptr;
 inline void Render11(IDXGISwapChain* sc, ID3D11Device* device, const std::filesystem::path& directory,
                      AmdPreSr::Settings settings)
 {
-    std::lock_guard g(mutex);
+    Lock g;
     try
     {
         if (!bridge11)
@@ -1018,7 +1011,7 @@ inline void Render11(IDXGISwapChain* sc, ID3D11Device* device, const std::filesy
 inline bool RenderTexture11(ID3D11Texture2D* texture, ID3D11Device* device,
                             const std::filesystem::path& directory, AmdPreSr::Settings settings)
 {
-    std::lock_guard g(mutex);
+    Lock g;
     try
     {
         if (!bridge11)
@@ -1036,7 +1029,7 @@ inline bool RenderTexture11(ID3D11Texture2D* texture, ID3D11Device* device,
 }
 inline void BeforeResize()
 {
-    std::lock_guard g(mutex);
+    Lock g;
     if (context)
         context->BeforeResize();
     if (bridge11)

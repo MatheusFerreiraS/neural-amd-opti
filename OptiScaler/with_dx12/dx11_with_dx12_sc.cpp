@@ -347,9 +347,12 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     const bool fgHookedPresenter =
         State::Instance().currentFGSwapchain == _fgSwapChain && !FGHooks::IsDx12InteropPresentSC(_fgSwapChain);
 
-    if (fgHookedPresenter && State::Instance().activeFgOutput == FGOutput::XeFG &&
-        !State::Instance().currentFeature &&
-        AmdPresentExperimental::IsTarget() && Config::Instance()->DlssNrEnabled.value_or_default() &&
+    // With NR off the optical flow still runs while XeFG is on: it is XeFG's only motion.
+    const bool neural = Config::Instance()->DlssNrEnabled.value_or_default();
+    if (fgHookedPresenter && State::Instance().activeFgOutput == FGOutput::XeFG && !State::Instance().currentFeature &&
+        AmdPresentExperimental::IsTarget() &&
+        (neural ||
+         (Config::Instance()->FGEnabled.value_or_default() && State::Instance().activeFgInput == FGInput::Upscaler)) &&
         Config::Instance()->NrBackend.value_or_default() == "daniel")
     {
         auto settings = DlssNr::AmdBridge::SettingsFromConfig(
@@ -357,7 +360,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
         settings.spinDraw = 0;
         AmdPresentExperimental::Guides guides;
         const bool ready = AmdPresentExperimental::Render(_fgSwapChain, _dx12CommandQueue,
-                                                          Util::DllPath().parent_path(), settings, &guides);
+                                                          Util::DllPath().parent_path(), settings, &guides, neural);
         static unsigned unavailableFrames = 0;
         if (ready)
             unavailableFrames = 0;
@@ -489,6 +492,9 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
     if (!_WaitForCopyQueueIdle())
         LOG_WARN("continuing ResizeBuffers after copy fence wait failure");
 
+    // XeFG draws the menu on the swapchain it presents to from its own thread and refuses to resize while the menu
+    // holds its buffers: the menu stays released until both swapchains are resized.
+    MenuOverlayDx::HoldForResize(true);
     MenuOverlayDx::CleanupRenderTarget(true, _handle);
     _ReleaseInteropBackBuffers();
 
@@ -500,6 +506,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
         fgResult = _fgSwapChain->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
 
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers results: real {:X}, fg {:X}", (UINT) realResult, (UINT) fgResult);
+    MenuOverlayDx::HoldForResize(false);
 
     if (SUCCEEDED(realResult) && SUCCEEDED(fgResult))
     {
@@ -698,6 +705,9 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
     if (!_WaitForCopyQueueIdle())
         LOG_WARN("continuing ResizeBuffers1 after copy fence wait failure");
 
+    // XeFG draws the menu on the swapchain it presents to from its own thread and refuses to resize while the menu
+    // holds its buffers: the menu stays released until both swapchains are resized.
+    MenuOverlayDx::HoldForResize(true);
     MenuOverlayDx::CleanupRenderTarget(true, _handle);
     _ReleaseInteropBackBuffers();
 
@@ -713,6 +723,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
     }
 
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers1 results: real {:X}, fg {:X}", (UINT) realResult, (UINT) fgResult);
+    MenuOverlayDx::HoldForResize(false);
 
     if (SUCCEEDED(realResult) && SUCCEEDED(fgResult))
     {
