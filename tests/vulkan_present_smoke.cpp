@@ -129,11 +129,18 @@ bool Foreground(HWND window)
 {
     for (int i = 0; i < 20 && GetForegroundWindow() != window; ++i)
     {
+        // An Alt press lifts the foreground lock when no window or another process holds it.
+        INPUT alt[2] {};
+        alt[0].type = alt[1].type = INPUT_KEYBOARD;
+        alt[0].ki.wVk = alt[1].ki.wVk = VK_MENU;
+        alt[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        SendInput(1, &alt[0], sizeof(INPUT));
         const DWORD current = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
         AttachThreadInput(GetCurrentThreadId(), current, TRUE);
         BringWindowToTop(window);
         SetForegroundWindow(window);
         AttachThreadInput(GetCurrentThreadId(), current, FALSE);
+        SendInput(1, &alt[1], sizeof(INPUT));
         if (GetForegroundWindow() != window)
             SwitchToThisWindow(window, TRUE);
         Sleep(150);
@@ -287,7 +294,7 @@ LRESULT CALLBACK GameProc(HWND window, UINT message, WPARAM wparam, LPARAM lpara
         PostQuitMessage(0);
         return 0;
     }
-    else if (message == WM_CLOSE)
+    else if (message == WM_CLOSE || (message == WM_SYSCOMMAND && (wparam & 0xFFF0) == SC_KEYMENU))
         return 0;
     return DefWindowProcW(window, message, wparam, lparam);
 }
