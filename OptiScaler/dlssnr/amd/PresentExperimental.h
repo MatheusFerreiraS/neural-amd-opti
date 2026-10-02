@@ -524,7 +524,8 @@ struct Context
         f.height = height;
         f.reset = sceneCut || (backend && backend->RecordedFrames() == 0);
         lastFlowValid = flowValid;
-        lastReset = f.reset;
+        // Frame generation resets on scene cuts only: a runtime that never records a frame must not reset it.
+        lastReset = sceneCut;
         settings.passes = std::clamp(settings.passes, 1u, 3u);
         settings.modelScale = std::clamp(settings.modelScale, 0.5f, 1.f);
         settings.fixedSeed = true;
