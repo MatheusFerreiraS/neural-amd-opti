@@ -260,6 +260,16 @@ struct Bridge
 
     bool EnsureD3D12(IDirect3DDevice9* device)
     {
+        if (device12 != nullptr && FAILED(device12->GetDeviceRemovedReason()))
+        {
+            LOG_ERROR("D3D9 bridge: the D3D12 device was removed ({:X}), NR and frame generation are off",
+                      (UINT) device12->GetDeviceRemovedReason());
+            ReleasePresenter(false);
+            ReleaseFrameObjects();
+            device12 = nullptr;
+            d3d12Failed = true;
+        }
+
         if (device12 != nullptr)
             return true;
 
@@ -317,6 +327,7 @@ struct Bridge
     {
         const bool msaa = desc.MultiSampleType != D3DMULTISAMPLE_NONE;
 
+        // The same size keeps its objects, or stays without them when they failed, until a Reset or another device.
         if (desc.Width == width && desc.Height == height && desc.Format == format && msaa == multisampled)
             return staging != nullptr;
 
@@ -361,6 +372,10 @@ struct Bridge
             LOG_ERROR("D3D9 bridge: copy objects for {}x{} format {} failed", desc.Width, desc.Height,
                       (UINT) desc.Format);
             ReleaseFrameObjects();
+            width = desc.Width;
+            height = desc.Height;
+            format = desc.Format;
+            multisampled = msaa;
             return false;
         }
 
@@ -429,7 +444,7 @@ struct Bridge
     bool Capture(IDirect3DSurface9* back)
     {
         if (shared12 != nullptr)
-            return SUCCEEDED(game->StretchRect(back, nullptr, staging.Get(), nullptr, D3DTEXF_NONE)) && Wait() &&
+            return Wait() && SUCCEEDED(game->StretchRect(back, nullptr, staging.Get(), nullptr, D3DTEXF_NONE)) &&
                    WaitForD3D9();
 
         IDirect3DSurface9* source = back;
@@ -596,19 +611,39 @@ struct Bridge
         return written;
     }
 
-    // A second XeFG swapchain in the same process does not survive (smoke case window-fg crashed in the provider's
-    // swapchain creation), so once released the presenter is not created again and D3D9 presents from then on.
-    void ReleasePresenter()
+    // Gives the window back to D3D9, for exclusive fullscreen, another window or after a D3D12 failure. A window
+    // that a flip-model swapchain has presented to keeps showing that swapchain's last frame whatever D3D9 presents
+    // there in a window, also after the swapchain is released (tests\dx9_flip_window.cpp), so the presenter comes
+    // back as soon as the game is windowed again, unless it went because of a failure.
+    void ReleasePresenter(bool again)
     {
-        presenterFailed = true;
+        presenterFailed = presenterFailed || !again;
 
         if (swap == nullptr)
             return;
 
-        LOG_INFO("D3D9 bridge: releasing the XeFG presenter; frame generation stays off for this session");
+        LOG_INFO("D3D9 bridge: releasing the XeFG presenter{}",
+                 again ? "" : "; frame generation stays off for this session");
         MenuOverlayDx::CleanupRenderTarget(true, window);
         Wait();
+
+        // XeFG keeps its swapchain, and with it the window's flip-model presentation, until its context is
+        // destroyed, and it destroys it only once no reference to the swapchain is left. The FG hooks keep the
+        // last reference of their current swapchain alive for a game that creates another one, so this one stops
+        // being current first.
+        auto fg = State::Instance().currentFG;
+
+        if (fg != nullptr)
+            fg->Deactivate();
+
+        if (State::Instance().currentFGSwapchain == swap.Get())
+            State::Instance().currentFGSwapchain = nullptr;
+
         swap.Reset();
+
+        if (fg != nullptr && fg->Mutex.getOwner() != 1 && fg->SwapchainContext() != nullptr)
+            fg->ReleaseSwapchain(window);
+
         State::Instance().swapchainInteropApi = SwapchainInteropApi::None;
     }
 
@@ -641,6 +676,11 @@ struct Bridge
         desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         desc.Flags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
 
+        // XeFG paces one generated frame per frame badly on this route (44-67 ms per rendered frame at 1920x1080,
+        // against 18-28 ms with two), so two is the default here. An InterpolationCount from the INI or the menu wins.
+        if (!Config::Instance()->FGXeFGInterpolationCount.has_value())
+            Config::Instance()->FGXeFGInterpolationCount.set_volatile_value(2);
+
         // OptiScaler's factory hooks build the XeFG swapchain for a D3D12 queue, as for a D3D12 game.
         ComPtr<IDXGISwapChain1> created;
         const HRESULT result = factory->CreateSwapChainForHwnd(queue12, window, &desc, nullptr, nullptr, &created);
@@ -661,9 +701,37 @@ struct Bridge
         swapWidth = width;
         swapHeight = height;
         State::Instance().swapchainInteropApi = SwapchainInteropApi::Dx9wDx12;
+
+        // A new XeFG swapchain starts at its largest interpolation count, and OptiScaler sends the count only when
+        // its own value changes, which it does not when the presenter is made again.
+        const auto fg = State::Instance().currentFG;
+
+        if (fg != nullptr && fg->SwapchainContext() != nullptr && XeFGProxy::SetNumInterpolatedFrames() != nullptr)
+        {
+            ScopedSkipSpoofingGlobal skipSpoofing {};
+            XeFGProxy::SetNumInterpolatedFrames()((xefg_swapchain_handle_t) fg->SwapchainContext(),
+                                                  Config::Instance()->FGXeFGInterpolationCount.value_or_default());
+        }
+
         LOG_INFO("D3D9 bridge: XeFG presenter {:X} on window {:X}, {}x{}, tearing {}", (size_t) swap.Get(),
                  (size_t) window, width, height, tearing);
         return true;
+    }
+
+    // The captured frame into the swapchain's current buffer.
+    bool CopyToSwap()
+    {
+        ComPtr<ID3D12Resource> buffer;
+
+        if (FAILED(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&buffer))) || !Begin())
+            return false;
+
+        AmdPresentExperimental::Transition(list.Get(), buffer.Get(), D3D12_RESOURCE_STATE_PRESENT,
+                                           D3D12_RESOURCE_STATE_COPY_DEST);
+        RecordIn(buffer.Get());
+        AmdPresentExperimental::Transition(list.Get(), buffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                           D3D12_RESOURCE_STATE_PRESENT);
+        return Submit();
     }
 
     bool PresentThroughSwap(IDirect3DSurface9* back, UINT interval)
@@ -681,7 +749,7 @@ struct Bridge
 
             if (FAILED(resized))
             {
-                ReleasePresenter();
+                ReleasePresenter(false);
                 return false;
             }
 
@@ -700,26 +768,13 @@ struct Bridge
         auto start = Util::MillisecondsNow();
 
         // Without the frame the swapchain would show stale buffers: give the window back to D3D9.
-        if (!Capture(back))
+        if (!Capture(back) || !CopyToSwap())
         {
-            LOG_ERROR("D3D9 bridge: the frame could not be read back");
-            ReleasePresenter();
+            LOG_ERROR("D3D9 bridge: the frame could not be copied to the XeFG presenter");
+            ReleasePresenter(false);
             return false;
         }
 
-        ComPtr<ID3D12Resource> buffer;
-
-        if (Begin() && SUCCEEDED(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&buffer))))
-        {
-            AmdPresentExperimental::Transition(list.Get(), buffer.Get(), D3D12_RESOURCE_STATE_PRESENT,
-                                               D3D12_RESOURCE_STATE_COPY_DEST);
-            RecordIn(buffer.Get());
-            AmdPresentExperimental::Transition(list.Get(), buffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                                               D3D12_RESOURCE_STATE_PRESENT);
-            Submit();
-        }
-
-        buffer.Reset();
         spentCapture += Util::MillisecondsNow() - start;
         start = Util::MillisecondsNow();
 
@@ -737,8 +792,13 @@ struct Bridge
         presentReturned = Util::MillisecondsNow();
         spentPresent += Util::MillisecondsNow() - start;
 
+        // A swapchain that no longer presents gives the window back to D3D9.
         if (FAILED(presented))
+        {
             LOG_ERROR("D3D9 bridge: XeFG presenter Present failed {:X}", (UINT) presented);
+            ReleasePresenter(false);
+            return false;
+        }
 
         return true;
     }
@@ -748,7 +808,7 @@ struct Bridge
         LOG_INFO("D3D9 bridge: following device {:X}, window {:X}", (size_t) device, (size_t) target);
 
         if (target != window && swap != nullptr)
-            ReleasePresenter();
+            ReleasePresenter(true);
 
         if (device != game)
             MenuOverlayDx9::Shutdown();
@@ -829,10 +889,11 @@ struct Bridge
                                              : creation.hFocusWindow;
         const auto now = GetTickCount64();
 
-        // One device and window at a time; another one takes over after two quiet seconds.
+        // One device and window at a time; another one takes over after two quiet seconds. A new device on the
+        // window the XeFG presenter owns takes over at once, as its own Present would not reach the screen.
         if (device != game || target != window)
         {
-            if (game != nullptr && now - lastPresent < 2000)
+            if (game != nullptr && now - lastPresent < 2000 && (target != window || swap == nullptr))
                 return false;
 
             Follow(device, target);
@@ -847,17 +908,20 @@ struct Bridge
             State::Instance().screenHeight = static_cast<float>(desc.Height);
         }
 
-        // Exclusive fullscreen belongs to the D3D9 device.
-        if (swap != nullptr && !params.Windowed)
-            ReleasePresenter();
+        // Exclusive fullscreen belongs to the D3D9 device, and a window takes one flip-model swapchain only, which
+        // a D3D9Ex FLIPEX device already holds (CreateSwapChainForHwnd returns E_ACCESSDENIED).
+        const bool presentable = params.Windowed && params.SwapEffect != D3DSWAPEFFECT_FLIPEX;
 
-        if (PresenterWanted() && !params.Windowed && !fullscreenSaid)
+        if (swap != nullptr && !presentable)
+            ReleasePresenter(true);
+
+        if (PresenterWanted() && !presentable && !fullscreenSaid)
         {
-            LOG_WARN("D3D9 bridge: XeFG needs a windowed or borderless D3D9 device");
+            LOG_WARN("D3D9 bridge: XeFG needs a windowed or borderless D3D9 device without D3DSWAPEFFECT_FLIPEX");
             fullscreenSaid = true;
         }
 
-        if (PresenterWanted() && params.Windowed && !presenterFailed && EnsureD3D12(device) && Size(desc) &&
+        if (PresenterWanted() && presentable && !presenterFailed && EnsureD3D12(device) && Size(desc) &&
             (swap != nullptr || CreatePresenter()))
         {
             const bool presented = PresentThroughSwap(back.Get(), params.PresentationInterval);
@@ -884,10 +948,14 @@ struct Bridge
         return false;
     }
 
-    void BeforeReset(IDirect3DDevice9* device)
+    void BeforeReset(IDirect3DDevice9* device, const D3DPRESENT_PARAMETERS* params)
     {
         if (device != game)
             return;
+
+        // The XeFG swapchain leaves the window before D3D9 takes it for exclusive fullscreen.
+        if (swap != nullptr && params != nullptr && !params->Windowed)
+            ReleasePresenter(true);
 
         ReleaseFrameObjects();
         MenuOverlayDx9::BeforeReset();
@@ -909,10 +977,10 @@ bool Dx9WithDx12::Present(IDirect3DDevice9* device, IDirect3DSwapChain9* chain, 
     return bridge->Present(device, chain, overrideWindow);
 }
 
-void Dx9WithDx12::BeforeReset(IDirect3DDevice9* device)
+void Dx9WithDx12::BeforeReset(IDirect3DDevice9* device, const D3DPRESENT_PARAMETERS* params)
 {
     std::lock_guard lock(mutex);
 
     if (bridge != nullptr)
-        bridge->BeforeReset(device);
+        bridge->BeforeReset(device, params);
 }

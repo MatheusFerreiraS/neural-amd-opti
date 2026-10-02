@@ -130,7 +130,7 @@ HRESULT STDMETHODCALLTYPE HookPresentChain(IDirect3DSwapChain9* chain, const REC
 
 HRESULT STDMETHODCALLTYPE HookReset(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS* params)
 {
-    Dx9WithDx12::BeforeReset(device);
+    Dx9WithDx12::BeforeReset(device, params);
     const HRESULT result = realReset(device, params);
     LOG_INFO("D3D9 Reset: {:X}, {}x{}, windowed {}", (UINT) result, params ? params->BackBufferWidth : 0,
              params ? params->BackBufferHeight : 0, params ? params->Windowed : 0);
@@ -139,7 +139,7 @@ HRESULT STDMETHODCALLTYPE HookReset(IDirect3DDevice9* device, D3DPRESENT_PARAMET
 
 HRESULT STDMETHODCALLTYPE HookResetEx(IDirect3DDevice9Ex* device, D3DPRESENT_PARAMETERS* params, D3DDISPLAYMODEEX* mode)
 {
-    Dx9WithDx12::BeforeReset(device);
+    Dx9WithDx12::BeforeReset(device, params);
     const HRESULT result = realResetEx(device, params, mode);
     LOG_INFO("D3D9 ResetEx: {:X}, {}x{}, windowed {}", (UINT) result, params ? params->BackBufferWidth : 0,
              params ? params->BackBufferHeight : 0, params ? params->Windowed : 0);
@@ -328,7 +328,10 @@ HRESULT WINAPI _Direct3DCreate9On12Ex(UINT version, D3D9ON12_ARGS* args, UINT co
 }
 
 // The remaining exports of the system d3d9.dll pass straight through. The undocumented ones forward as many
-// pointer-sized arguments as they take and whatever they return, which the x64 calling convention carries unchanged.
+// pointer-sized arguments as they take and whatever they return, which the x64 calling convention carries unchanged
+// (DebugSetLevel and DebugSetMute are empty in the system DLL). Its six unnamed ordinals (16-19, 22, 23, settings the
+// compatibility shims set) are not exported: they need ordinals below 100, which would renumber the export table
+// that every proxy name shares. Looking one up here returns null.
 #define D3D9_FORWARD(ret, name, params, args, fallback)                                                                \
     ret WINAPI _##name params                                                                                          \
     {                                                                                                                  \
