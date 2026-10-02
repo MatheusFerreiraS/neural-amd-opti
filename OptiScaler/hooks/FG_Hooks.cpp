@@ -35,6 +35,24 @@ static HANDLE _semaphore = nullptr;
 inline static std::vector<void*> oldBackBuffers;
 #endif
 
+// For a moment after Present, XeFG's presentation thread still holds the backbuffer it is presenting.
+// In final-image mode the loops below wait for that reference to go before they release what the game
+// still holds, so XeFG's own reference is not released under it.
+static ULONG SettledRefCount(ID3D12Resource* backBuffer, ULONG refCount)
+{
+    if (!Config::Instance()->DlssNrPresent.value_or_default())
+        return refCount;
+
+    for (int i = 0; refCount > XEFG_RESOURCE_REF_LIMIT && i < 50; i++)
+    {
+        Sleep(2);
+        backBuffer->AddRef();
+        refCount = backBuffer->Release();
+    }
+
+    return refCount;
+}
+
 static bool CheckForFGStatus()
 {
     // Need to check overlay menu parameter, goes to places it shouldn't go
@@ -732,7 +750,7 @@ HRESULT FGHooks::hkResizeBuffers(IDXGISwapChain* This, UINT BufferCount, UINT Wi
             if (bbResult == S_OK)
             {
                 LOG_DEBUG("Backbuffer {}: {:X}", i, (size_t) backBuffer);
-                auto refCount = backBuffer->Release();
+                auto refCount = SettledRefCount(backBuffer, backBuffer->Release());
                 while (refCount > XEFG_RESOURCE_REF_LIMIT)
                 {
                     LOG_DEBUG("Releasing backbuffer {}: RefCount {}", i, refCount);
@@ -969,7 +987,7 @@ HRESULT FGHooks::hkResizeBuffers1(IDXGISwapChain3* This, UINT BufferCount, UINT 
             if (bbResult == S_OK)
             {
                 LOG_DEBUG("Backbuffer {}: {:X}", i, (size_t) backBuffer);
-                auto refCount = backBuffer->Release();
+                auto refCount = SettledRefCount(backBuffer, backBuffer->Release());
                 while (refCount > XEFG_RESOURCE_REF_LIMIT)
                 {
                     LOG_DEBUG("Releasing backbuffer {}: RefCount {}", i, refCount);
@@ -1387,7 +1405,7 @@ ULONG FGHooks::hkFGRelease(IUnknown* This)
                     if (bbResult == S_OK)
                     {
                         LOG_DEBUG("Backbuffer {}: {:X}", i, (size_t) backBuffer);
-                        auto refCount = backBuffer->Release();
+                        auto refCount = SettledRefCount(backBuffer, backBuffer->Release());
                         while (refCount > XEFG_RESOURCE_REF_LIMIT)
                         {
                             LOG_DEBUG("Releasing backbuffer {}: RefCount {}", i, refCount);
