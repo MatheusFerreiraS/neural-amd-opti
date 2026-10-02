@@ -391,12 +391,8 @@ struct Context
             status = "Final-image NR: GPU timeout; stopped";
             return false;
         }
-        if (neural && backend && !backend->Ready())
-        {
-            stableLast = false;
-            status = backend->Status();
-            return false;
-        }
+        // The runtime keeps its own slots and skips a frame when they are all busy, as with an upscaler; waiting for
+        // it to drain here would drop XeFG's guides for the frame as well.
         auto desc = back->GetDesc();
         if (!input)
         {
