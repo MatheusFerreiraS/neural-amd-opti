@@ -242,10 +242,13 @@ void RenderMenu(Config* config, float menuResScale)
                    "\nFidelityFX estimates motion. D3D11 uses a bound shader-readable depth buffer when available."
                    "\nVulkan shares the image with D3D12 when the driver permits; otherwise host readback adds latency."
                    "\nScene cuts reset history; the runtime noise seed is fixed on supported versions.");
-        if (present && DlssNr::Backend::ActiveKindFromConfig() != DlssNr::Backend::Kind::Daniel)
-            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f),
-                               "The final image runs on the danielblnc runtime only. This session's runtime"
-                               "\nruns inside an upscaler call, so a game without one gets no NR.");
+        if (const auto kind = DlssNr::Backend::ActiveKindFromConfig(); present && kind != DlssNr::Backend::Kind::Daniel)
+            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "%s",
+                               kind == DlssNr::Backend::Kind::Off
+                                   ? "The final image runs on the danielblnc runtime only. NrBackend is off,"
+                                     "\nso this session runs no NR."
+                                   : "The final image runs on the danielblnc runtime only. This session's runtime"
+                                     "\nruns inside an upscaler call, so a game without one gets no NR.");
 
         // With more than one runtime installed, choose the one the next launch uses. This session keeps the
         // one it started with: each installs its own D3D12 hooks as the device is created.
@@ -783,7 +786,9 @@ void RenderMenu(Config* config, float menuResScale)
             }
         };
 
-        const bool finalImage = AmdPresentExperimental::IsTarget();
+        // The final image runs only in a danielblnc session without an upscaler; otherwise the upscaler path does.
+        const bool finalImage = AmdPresentExperimental::IsTarget() && !State::Instance().currentFeature &&
+                                DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
         if (finalImage)
         {
             if (DlssNr::AmdBridge::HasFiles())
@@ -1154,7 +1159,7 @@ void RenderMenu(Config* config, float menuResScale)
 
             if (ImGui::TreeNode("Info"))
             {
-                if (!finalImage || State::Instance().currentFeature)
+                if (!finalImage)
                     ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
                 ImGui::TextWrapped("AMD HIP backend. Each pass owns independent temporal history. More passes increase "
                                    "GPU time and memory. Restart the game after a backend failure.");

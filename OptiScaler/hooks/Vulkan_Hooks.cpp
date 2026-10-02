@@ -63,7 +63,8 @@ static void HookDevice(VkDevice InDevice)
 
     o_QueuePresentKHR = (PFN_vkQueuePresentKHR) (vkGetDeviceProcAddr(InDevice, "vkQueuePresentKHR"));
     o_CreateSwapchainKHR = (PFN_vkCreateSwapchainKHR) (vkGetDeviceProcAddr(InDevice, "vkCreateSwapchainKHR"));
-    o_DestroySwapchainKHR = (PFN_vkDestroySwapchainKHR) (vkGetDeviceProcAddr(InDevice, "vkDestroySwapchainKHR"));
+    if (Config::Instance()->DlssNrPresent.value_or_default())
+        o_DestroySwapchainKHR = (PFN_vkDestroySwapchainKHR) (vkGetDeviceProcAddr(InDevice, "vkDestroySwapchainKHR"));
 
     if (o_CreateSwapchainKHR)
     {
@@ -402,7 +403,7 @@ static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPres
         return VK_ERROR_DEVICE_LOST;
 
     // render menu if needed
-    if (!MenuOverlayVk::QueuePresent(queue, &localPresentInfo))
+    if (Config::Instance()->OverlayMenu.value_or_default() && !MenuOverlayVk::QueuePresent(queue, &localPresentInfo))
     {
         LOG_ERROR("QueuePresent: false!");
         return VK_ERROR_OUT_OF_DATE_KHR;
@@ -509,7 +510,8 @@ static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateI
         if (Config::Instance()->DlssNrPresent.value_or_default())
             AmdVkPresent::Created(_instance, _PD, device, _hwnd, _nrGraphicsFamily, *pSwapchain, requested);
 
-        MenuOverlayVk::CreateSwapchain(device, _PD, _instance, _hwnd, pCreateInfo, pAllocator, pSwapchain);
+        if (Config::Instance()->OverlayMenu.value_or_default())
+            MenuOverlayVk::CreateSwapchain(device, _PD, _instance, _hwnd, pCreateInfo, pAllocator, pSwapchain);
     }
 
     LOG_FUNC_RESULT(result);

@@ -1039,7 +1039,7 @@ inline bool RenderTexture11(ID3D11Texture2D* texture, ID3D11Device* device,
         if (!bridge11)
             bridge11 = new Bridge11;
         bridge11->FrameTexture(texture, device, directory, settings, false);
-        return !bridge11->stopped;
+        return !bridge11->stopped && !(bridge11->engine && bridge11->engine->stopped);
     }
     catch (const std::exception& e)
     {
