@@ -105,7 +105,7 @@ $cases = @(
                 "550:mark=nr-only-cpu8,670:cpu=0,680:mark=nr-only-moving,800:nr,810:mark=off-moving"
        Log = @("D3D9 bridge frame \d+: XeFG presenter, NR true at scale [0-9.]+, FG true") }
 )
-if ($Case) { $cases = @($cases | Where-Object { $_.Name -eq $Case }) }
+if ($Case) { $cases = @($cases | Where-Object { $_.Name -in ($Case -split ",") }) }
 if ($cases.Count -eq 0) { throw "unknown case $Case" }
 
 function Enter-Lock {
