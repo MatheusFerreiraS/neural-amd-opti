@@ -312,12 +312,13 @@ struct Context
         dispatch.commandList = OptiFfxGetCommandListDX12(cmd.Get());
         dispatch.color = OptiFfxGetResourceDX12(flowInput.Get(), ffxGetResourceDescriptionDX12(flowInput.Get()),
                                                 L"OptiScaler flow input", FFX_API_RESOURCE_STATE_COMPUTE_READ);
-        dispatch.opticalFlowVector = OptiFfxGetResourceDX12(flowSparse.Get(),
-            ffxGetResourceDescriptionDX12(flowSparse.Get(), FFX_API_RESOURCE_USAGE_UAV),
-            L"OptiScaler flow vectors", FFX_API_RESOURCE_STATE_COMPUTE_READ);
-        dispatch.opticalFlowSCD = OptiFfxGetResourceDX12(flowScd.Get(),
-            ffxGetResourceDescriptionDX12(flowScd.Get(), FFX_API_RESOURCE_USAGE_UAV),
-            L"OptiScaler scene change", FFX_API_RESOURCE_STATE_COMPUTE_READ);
+        // Optical Flow returns its outputs in the state given here, where they rest between frames.
+        dispatch.opticalFlowVector = OptiFfxGetResourceDX12(
+            flowSparse.Get(), ffxGetResourceDescriptionDX12(flowSparse.Get(), FFX_API_RESOURCE_USAGE_UAV),
+            L"OptiScaler flow vectors", FFX_API_RESOURCE_STATE_COMMON);
+        dispatch.opticalFlowSCD = OptiFfxGetResourceDX12(
+            flowScd.Get(), ffxGetResourceDescriptionDX12(flowScd.Get(), FFX_API_RESOURCE_USAGE_UAV),
+            L"OptiScaler scene change", FFX_API_RESOURCE_STATE_COMMON);
         dispatch.reset = flowFrames == 0;
         dispatch.backbufferTransferFunction = FFX_API_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
         dispatch.minMaxLuminance = { 0.f, 1.f };
@@ -327,7 +328,7 @@ struct Context
             return false;
         }
         const bool valid = flowFrames++ >= 6;
-        Transition(cmd.Get(), flowSparse.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        Transition(cmd.Get(), flowSparse.Get(), D3D12_RESOURCE_STATE_COMMON,
                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         if (valid)
         {
@@ -363,13 +364,8 @@ struct Context
     void QueueSceneCut()
     {
         if (!flowCreated || flowFailed || flowFrames <= 6)
-        {
-            if (flowCreated && !flowFailed)
-                Transition(cmd.Get(), flowScd.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                           D3D12_RESOURCE_STATE_COMMON);
             return;
-        }
-        Transition(cmd.Get(), flowScd.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        Transition(cmd.Get(), flowScd.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
         D3D12_TEXTURE_COPY_LOCATION src {};
         src.pResource = flowScd.Get();
         src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
