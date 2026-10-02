@@ -56,6 +56,8 @@ struct FgPresenter
     bool visible = false;
     bool resetOnResume = true;
     std::chrono::steady_clock::time_point previous {};
+    // Why generated frames are not shown, logged when it changes.
+    const char* waiting = nullptr;
 
     void Show(bool show)
     {
@@ -317,6 +319,18 @@ struct FgPresenter
         const HWND root = GetAncestor(hwnd, GA_ROOT);
         const HWND foreground = GetForegroundWindow();
         const bool background = root && IsWindowVisible(root) && foreground && GetAncestor(foreground, GA_ROOT) != root;
+        const char* reason = !wantFg                           ? nullptr
+                             : menuOpen                        ? "the menu is open"
+                             : background                      ? "the game window is in the background"
+                             : failed                          ? "it failed earlier"
+                             : !guides.motion || !guides.depth ? "the optical-flow guides are not ready"
+                                                               : nullptr;
+        if (reason != waiting)
+        {
+            if (reason != nullptr)
+                LOG_INFO("{} XeFG waiting: {}", api, reason);
+            waiting = reason;
+        }
         if (!wantFg || menuOpen || background)
         {
             if (window && (enabled || visible))

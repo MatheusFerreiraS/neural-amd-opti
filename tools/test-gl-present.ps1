@@ -12,7 +12,7 @@ if ($mode -ne "menu" -and -not (Test-Path (Join-Path $runtime "dlssnr_amd_pass1.
 $out = [System.IO.Path]::GetFullPath("exports\gl-present\$mode")
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
-& cl /nologo /std:c++20 /EHsc /W4 /utf-8 tests\gl_present_smoke.cpp "/Fe$out\gl_present_smoke.exe" "/Fo$out\gl_present_smoke.obj" /link opengl32.lib gdi32.lib user32.lib
+& cl /nologo /std:c++20 /EHsc /W4 /utf-8 tests\gl_present_smoke.cpp "/Fe$out\gl_present_smoke.exe" "/Fo$out\gl_present_smoke.obj" /link opengl32.lib gdi32.lib user32.lib dwmapi.lib
 if ($LASTEXITCODE -ne 0) { throw "cl failed" }
 
 Copy-Item -Force "exports\release-local\OptiScaler.dll" "$out\opengl32.dll"

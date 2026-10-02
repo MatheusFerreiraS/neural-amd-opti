@@ -1984,6 +1984,10 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                     api = "VLK";
                     break;
 
+                case OpenGL:
+                    api = "OGL";
+                    break;
+
                 case DX11:
                     api = "D3D11";
                     break;
@@ -5199,11 +5203,13 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // OptiFG requirements
     auto constexpr optiFgIndex = (uint32_t) FGInput::Upscaler;
-    const bool vulkanFinalImageFg = state.swapchainApi == API::Vulkan &&
-        config->DlssNrPresent.value_or_default() && config->DlssNrEnabled.value_or_default() &&
-        config->NrBackend.value_or_default() == "daniel";
-    inputOptions[optiFgIndex].set_disabled(state.swapchainApi == API::Vulkan && !vulkanFinalImageFg,
-                                           "Vulkan XeFG requires final-image NR");
+    // Vulkan and OpenGL games get XeFG only through final-image NR, in a D3D12 child window.
+    const bool childWindowFgApi = state.swapchainApi == API::Vulkan || state.swapchainApi == API::OpenGL;
+    const bool childWindowFinalImageFg = childWindowFgApi && config->DlssNrPresent.value_or_default() &&
+                                         config->DlssNrEnabled.value_or_default() &&
+                                         config->NrBackend.value_or_default() == "daniel";
+    inputOptions[optiFgIndex].set_disabled(childWindowFgApi && !childWindowFinalImageFg,
+                                           "XeFG on Vulkan and OpenGL requires final-image NR");
     inputOptions[optiFgIndex].set_disabled(config->DlssNrPresent.value_or_default() &&
                                                config->FGOutput.value_or_default() != FGOutput::XeFG,
                                            "Final-image NR has no upscaler motion/depth inputs for OptiFG");
@@ -5267,7 +5273,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
             "No real DLSSG, unsupported hardware\nOnly Nvngx FG replacements available";
     }
 
-    outputOptions[dlssgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan, "Unsupported API");
+    outputOptions[dlssgOutputIndex].set_disabled(childWindowFgApi, "Unsupported API");
     outputOptions[dlssgOutputIndex].set_disabled(!supportsDlssg && !hasDlssgReplacement,
                                                  "Unsupported hardware and no replacements");
 
@@ -5280,12 +5286,12 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // FSR FG output requirements
     auto constexpr fsrfgOutputIndex = (uint32_t) FGOutput::FSRFG;
-    outputOptions[fsrfgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan, "Unsupported API");
+    outputOptions[fsrfgOutputIndex].set_disabled(childWindowFgApi, "Unsupported API");
 
     // XeFG output requirements
     auto constexpr xefgOutputIndex = (uint32_t) FGOutput::XeFG;
-    outputOptions[xefgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan && !vulkanFinalImageFg,
-                                                 "XeFG requires final-image NR on Vulkan");
+    outputOptions[xefgOutputIndex].set_disabled(childWindowFgApi && !childWindowFinalImageFg,
+                                                "XeFG requires final-image NR on Vulkan and OpenGL");
     // Unsupported FG input selected
     const auto currentInputIndex = (uint32_t) state.activeFgInput;
     if (config->FGInput != FGInput::NoFG && inputOptions.size() > currentInputIndex &&
@@ -6051,12 +6057,13 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         }
     }
 
-    if (state.swapchainApi == API::Vulkan && config->DlssNrPresent.value_or_default() &&
-        config->DlssNrEnabled.value_or_default() && config->NrBackend.value_or_default() == "daniel" &&
-        state.activeFgInput == FGInput::Upscaler &&
+    if ((state.swapchainApi == API::Vulkan || state.swapchainApi == API::OpenGL) &&
+        config->DlssNrPresent.value_or_default() && config->DlssNrEnabled.value_or_default() &&
+        config->NrBackend.value_or_default() == "daniel" && state.activeFgInput == FGInput::Upscaler &&
         state.activeFgOutput == FGOutput::XeFG)
     {
-        ImGui::SeparatorText("Frame Generation (Vulkan XeFG)");
+        ImGui::SeparatorText(state.swapchainApi == API::OpenGL ? "Frame Generation (OpenGL XeFG)"
+                                                               : "Frame Generation (Vulkan XeFG)");
         bool enabled = config->FGEnabled.value_or_default();
         if (ImGui::Checkbox("Active##VulkanXeFG", &enabled))
             config->FGEnabled = enabled;

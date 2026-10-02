@@ -235,12 +235,13 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::Checkbox("Enable NR", &enabled))
             config->DlssNrEnabled = enabled;
         bool present = config->DlssNrPresent.value_or_default();
-        if (ImGui::Checkbox("Final image (D3D11/D3D12/Vulkan, no upscaler)", &present))
+        if (ImGui::Checkbox("Final image (D3D11/D3D12/Vulkan/OpenGL, no upscaler)", &present))
             config->DlssNrPresent = present;
-        HelpMarker("Processes the D3D11, D3D12 or Vulkan final image when no upscaler is active."
+        HelpMarker("Processes the D3D11, D3D12, Vulkan or OpenGL final image when no upscaler is active."
                    "\nRequires the danielblnc AMD runtime. The HUD is included."
                    "\nFidelityFX estimates motion. D3D11 uses a bound shader-readable depth buffer when available."
                    "\nVulkan shares the image with D3D12 when the driver permits; otherwise host readback adds latency."
+                   "\nOpenGL needs OptiScaler installed as opengl32.dll and shares the back buffer with D3D12."
                    "\nScene cuts reset history; the runtime noise seed is fixed on supported versions.");
 
         // With more than one runtime installed, choose the one the next launch uses. This session keeps the
@@ -786,7 +787,7 @@ void RenderMenu(Config* config, float menuResScale)
                 scheduling();
             ImGui::TextWrapped(
                 "Final-image neural: optical flow, scene resets, fixed noise seed and depth when available. Includes game HUD.");
-            ImGui::TextUnformatted("D3D11/D3D12 final image; HUD included.");
+            ImGui::TextUnformatted("D3D11/D3D12/Vulkan/OpenGL final image; HUD included.");
             float scale = std::clamp(config->AmdNrScale.value_or_default(), .5f, 1.f);
             if (ImGui::SliderFloat("Model scale", &scale, .5f, 1.f))
                 config->AmdNrScale = scale;
