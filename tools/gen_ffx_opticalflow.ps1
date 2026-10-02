@@ -1,5 +1,5 @@
 # Compiles the FidelityFX SDK's optical-flow shaders with dxc into the permutation headers
-# ffx_opticalflow_shaderblobs.cpp includes, for build.ps1 -Ffx. Lab only: taken from the Magpie fork
+# ffx_opticalflow_shaderblobs.cpp includes; OptiScaler.vcxproj runs it before ClCompile on x64. Taken from the Magpie fork
 # (SAOG0721/Magpie@3841698, scripts/Generate-FidelityFXOpticalFlowShaders.ps1, GPLv3), so the flow is
 # compiled exactly as the reference build compiles it: cs_6_2, FP32, wave64 and 16-bit as aliases.
 

@@ -13,6 +13,7 @@
 #include <Config.h>
 #include <dlssnr/amd/PresentExperimental.h>
 #include <dlssnr/amd/AmdBridge.h>
+#include <dlssnr/backend/Selector.h>
 
 #include <d3d11.h>
 #include <d3d11_4.h>
@@ -138,7 +139,8 @@ Dx11wDx12SC::Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Devi
     }
 
     State::Instance().swapchainInteropApi = SwapchainInteropApi::Dx11wDx12;
-    State::Instance().swapchainApi = API::DX11;
+    if (Config::Instance()->DlssNrPresent.value_or_default())
+        State::Instance().swapchainApi = API::DX11;
 
     _RefreshCachedSwapchainDesc();
 
@@ -350,7 +352,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     if (fgHookedPresenter && State::Instance().activeFgOutput == FGOutput::XeFG &&
         !State::Instance().currentFeature &&
         AmdPresentExperimental::IsTarget() && Config::Instance()->DlssNrEnabled.value_or_default() &&
-        Config::Instance()->NrBackend.value_or_default() == "daniel")
+        DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel)
     {
         auto settings = DlssNr::AmdBridge::SettingsFromConfig(
             *Config::Instance(), Config::Instance()->AmdNrScale.value_or_default());

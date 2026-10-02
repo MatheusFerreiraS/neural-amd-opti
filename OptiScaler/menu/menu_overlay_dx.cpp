@@ -1,6 +1,7 @@
 #include "pch.h"
 #include <dlssnr/amd/PresentExperimental.h>
 #include <dlssnr/amd/AmdBridge.h>
+#include <dlssnr/backend/Selector.h>
 #include "menu_overlay_base.h"
 #include "menu_overlay_dx.h"
 
@@ -536,7 +537,7 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
           !FGHooks::IsDx12InteropPresentSC(pSwapChain)) &&
         (!State::Instance().currentFG || !State::Instance().currentFG->IsActive() ||
          State::Instance().currentFG->IsPaused()) &&
-        Config::Instance()->NrBackend.value_or_default() == "daniel" &&
+        DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel &&
         !(Flags & DXGI_PRESENT_TEST) && pDevice && (!hWnd || !IsIconic(hWnd)))
     {
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;

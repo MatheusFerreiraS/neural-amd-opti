@@ -7,6 +7,7 @@
 
 #include <dlssnr/DlssNr.h>
 #include <dlssnr/amd/AmdBridge.h>
+#include <dlssnr/backend/Selector.h>
 
 #include "input/input_system.h"
 
@@ -5201,9 +5202,9 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     auto constexpr optiFgIndex = (uint32_t) FGInput::Upscaler;
     const bool vulkanFinalImageFg = state.swapchainApi == API::Vulkan &&
         config->DlssNrPresent.value_or_default() && config->DlssNrEnabled.value_or_default() &&
-        config->NrBackend.value_or_default() == "daniel";
+        DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
     inputOptions[optiFgIndex].set_disabled(state.swapchainApi == API::Vulkan && !vulkanFinalImageFg,
-                                           "Vulkan XeFG requires final-image NR");
+                                           "Vulkan XeFG requires final-image NR on the danielblnc runtime");
     inputOptions[optiFgIndex].set_disabled(config->DlssNrPresent.value_or_default() &&
                                                config->FGOutput.value_or_default() != FGOutput::XeFG,
                                            "Final-image NR has no upscaler motion/depth inputs for OptiFG");
@@ -5285,7 +5286,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     // XeFG output requirements
     auto constexpr xefgOutputIndex = (uint32_t) FGOutput::XeFG;
     outputOptions[xefgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan && !vulkanFinalImageFg,
-                                                 "XeFG requires final-image NR on Vulkan");
+                                                 "Vulkan XeFG requires final-image NR on the danielblnc runtime");
     // Unsupported FG input selected
     const auto currentInputIndex = (uint32_t) state.activeFgInput;
     if (config->FGInput != FGInput::NoFG && inputOptions.size() > currentInputIndex &&
@@ -6052,7 +6053,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
     }
 
     if (state.swapchainApi == API::Vulkan && config->DlssNrPresent.value_or_default() &&
-        config->DlssNrEnabled.value_or_default() && config->NrBackend.value_or_default() == "daniel" &&
+        config->DlssNrEnabled.value_or_default() && DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel &&
         state.activeFgInput == FGInput::Upscaler &&
         state.activeFgOutput == FGOutput::XeFG)
     {

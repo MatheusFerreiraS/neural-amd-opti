@@ -1050,7 +1050,9 @@ bool GraphicsRestartNeeded(UINT activePasses)
 }
 std::string Status()
 {
-    if (AmdPresentExperimental::IsTarget())
+    // The final image's status only while it is the path that runs: danielblnc, no upscaler.
+    if (AmdPresentExperimental::IsTarget() && !State::Instance().currentFeature &&
+        DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel)
         return AmdPresentExperimental::Status();
     {
         std::lock_guard l(messageMutex);

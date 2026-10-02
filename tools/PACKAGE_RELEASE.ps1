@@ -190,6 +190,9 @@ $ini = [regex]::Replace($ini, '(?ms)^\[DlssNr\].*?(?=^\[|\z)', @"
 ; Unsafe dirty insert stays off (AmdGraphicsUnsafe=0).
 Enabled=false
 RunBeforeSR=true
+; danielblnc on the final D3D11, D3D12 or Vulkan image of a game without an upscaler, HUD included.
+; Off by default; Vulkan needs it on before the game starts.
+PresentWithoutUpscaler=false
 ; NR runtime: daniel (dlssnr_amd_pass1-3.dll and dlssnr_on_amd_weights.bin), lmxxf
 ; (LmxxfNrRuntime.dll, lmxxf-modules\, shaders\ and native-game-tiled-assets\) or mochizuki
 ; (MochizukiNrRuntime.dll and its dlssnr-amd\ folder). Restart after changing.
@@ -285,8 +288,9 @@ AmdGraphicsWait=1
 AmdGraphicsUnsafe=0
 AmdNeuralLighting=true
 AmdNeuralLightingStrength=0.5
-AmdStabilizerStrength=0
-AmdStabilizerThreshold=2
+; auto: 0 and 2 with an upscaler, 0.8 and 4 on the final image (PresentWithoutUpscaler).
+AmdStabilizerStrength=auto
+AmdStabilizerThreshold=auto
 ; RenoDX composition after the runtime, every runtime: off by default (RenoIntensity 0-2, RenoGuard
 ; 1-8x, RenoColour 0-1, RenoChromaClamp 0.25-2 stops, RenoPedestal takes off the black lift).
 RenoComposition=false

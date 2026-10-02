@@ -303,8 +303,13 @@ bool XeFG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQu
     {
         LOG_DEBUG("Creating swapchain context for the first time");
 
+        // Final-image NR on D3D11 presents through a D3D12 device of its own, which is not currentD3D12Device.
         Microsoft::WRL::ComPtr<ID3D12Device> queueDevice;
-        if (FAILED(cmdQueue->GetDevice(IID_PPV_ARGS(&queueDevice))))
+        if (!Config::Instance()->DlssNrPresent.value_or_default())
+            queueDevice = State::Instance().currentD3D12Device;
+        else if (FAILED(cmdQueue->GetDevice(IID_PPV_ARGS(&queueDevice))))
+            return false;
+        if (queueDevice == nullptr)
             return false;
 
         CreateSwapchainContext(queueDevice.Get());
@@ -507,8 +512,13 @@ bool XeFG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
 
     if (_swapChainContext == nullptr)
     {
+        // Final-image NR on D3D11 presents through a D3D12 device of its own, which is not currentD3D12Device.
         Microsoft::WRL::ComPtr<ID3D12Device> queueDevice;
-        if (FAILED(cmdQueue->GetDevice(IID_PPV_ARGS(&queueDevice))))
+        if (!Config::Instance()->DlssNrPresent.value_or_default())
+            queueDevice = State::Instance().currentD3D12Device;
+        else if (FAILED(cmdQueue->GetDevice(IID_PPV_ARGS(&queueDevice))))
+            return false;
+        if (queueDevice == nullptr)
             return false;
 
         CreateSwapchainContext(queueDevice.Get());

@@ -1,6 +1,7 @@
 #pragma once
 #include "AmdPreSr.h"
 #include "ResidualStabilizer.h"
+#include "StallWatch.h"
 #include <Config.h>
 #include <Logger.h>
 #include <wrl/client.h>
@@ -29,7 +30,7 @@ inline bool IsTarget()
 {
     return Config::Instance()->DlssNrPresent.value_or_default();
 }
-inline std::string status = "Final-image NR: waiting for a D3D11 or D3D12 frame";
+inline std::string status = "Final-image NR: waiting for a D3D11, D3D12 or Vulkan frame";
 inline std::mutex mutex;
 inline void Check(HRESULT h)
 {
@@ -391,6 +392,18 @@ struct Context
         if (stopped)
             return false;
         lastFlowValid = false;
+        // One job the GPU held for seconds stands NR down until the game restarts, as on the upscaler path.
+        auto& stall = stallwatch::Watch::Get();
+        stall.limitMs.store(
+            static_cast<UINT64>(std::max(0, Config::Instance()->AmdStallStandDownMs.value_or_default())));
+        if (const UINT64 held = stall.Tripped())
+        {
+            stopped = true;
+            status = "Final-image NR: off until the game restarts. The GPU held one NR job for " +
+                     std::to_string(held) + " ms; AmdStallStandDownMs=0 turns this off.";
+            LOG_WARN("{}", status);
+            return false;
+        }
         if (!WaitForFrame())
         {
             stopped = true;
@@ -502,6 +515,8 @@ struct Context
         settings.passes = std::clamp(settings.passes, 1u, 3u);
         settings.modelScale = std::clamp(settings.modelScale, 0.5f, 1.f);
         settings.fixedSeed = true;
+        // No RenoDX composition here, so Effect strength stays the runtime's own strength.
+        settings.strength = std::clamp(Config::Instance()->AmdEffectStrength.value_or_default(), 0.f, 2.f);
         const auto before = backend->RecordedFrames();
         auto result = backend->Record(cmd.Get(), f, settings);
         const bool modified = result && backend->RecordedFrames() != before;
@@ -949,7 +964,7 @@ struct Bridge11
     void FrameTexture(ID3D11Texture2D* back, ID3D11Device* device, const std::filesystem::path& directory,
                       AmdPreSr::Settings settings, bool captureDepth)
     {
-        if (stopped)
+        if (stopped || (engine && engine->stopped))
             return;
         if (!game)
             Start(device);
@@ -1024,7 +1039,7 @@ inline bool RenderTexture11(ID3D11Texture2D* texture, ID3D11Device* device,
         if (!bridge11)
             bridge11 = new Bridge11;
         bridge11->FrameTexture(texture, device, directory, settings, false);
-        return !bridge11->stopped;
+        return !bridge11->stopped && !(bridge11->engine && bridge11->engine->stopped);
     }
     catch (const std::exception& e)
     {

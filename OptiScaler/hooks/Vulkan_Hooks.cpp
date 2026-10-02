@@ -63,7 +63,8 @@ static void HookDevice(VkDevice InDevice)
 
     o_QueuePresentKHR = (PFN_vkQueuePresentKHR) (vkGetDeviceProcAddr(InDevice, "vkQueuePresentKHR"));
     o_CreateSwapchainKHR = (PFN_vkCreateSwapchainKHR) (vkGetDeviceProcAddr(InDevice, "vkCreateSwapchainKHR"));
-    o_DestroySwapchainKHR = (PFN_vkDestroySwapchainKHR) (vkGetDeviceProcAddr(InDevice, "vkDestroySwapchainKHR"));
+    if (Config::Instance()->DlssNrPresent.value_or_default())
+        o_DestroySwapchainKHR = (PFN_vkDestroySwapchainKHR) (vkGetDeviceProcAddr(InDevice, "vkDestroySwapchainKHR"));
 
     if (o_CreateSwapchainKHR)
     {
@@ -254,7 +255,8 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
             }
         }
 
-        if (!DlssNr::VkExt::ListHas(localCreteInfo.ppEnabledExtensionNames,
+        if (Config::Instance()->DlssNrPresent.value_or_default() &&
+            !DlssNr::VkExt::ListHas(localCreteInfo.ppEnabledExtensionNames,
                                     localCreteInfo.enabledExtensionCount,
                                     VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME) &&
             DlssNr::VkExt::Contains(supported, VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME))
@@ -281,7 +283,8 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
 
     auto result = o_vkCreateDevice(physicalDevice, &localCreteInfo, pAllocator, pDevice);
 
-    if (result == VK_SUCCESS && !State::Instance().vulkanSkipHooks)
+    if (result == VK_SUCCESS && !State::Instance().vulkanSkipHooks &&
+        (Config::Instance()->OverlayMenu.value_or_default() || Config::Instance()->DlssNrPresent.value_or_default()))
     {
         _PD = physicalDevice;
         _device = *pDevice;
@@ -400,7 +403,7 @@ static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPres
         return VK_ERROR_DEVICE_LOST;
 
     // render menu if needed
-    if (!MenuOverlayVk::QueuePresent(queue, &localPresentInfo))
+    if (Config::Instance()->OverlayMenu.value_or_default() && !MenuOverlayVk::QueuePresent(queue, &localPresentInfo))
     {
         LOG_ERROR("QueuePresent: false!");
         return VK_ERROR_OUT_OF_DATE_KHR;
@@ -430,8 +433,8 @@ static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateI
         return o_CreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
 
     VkSwapchainCreateInfoKHR requested = *pCreateInfo;
-    // Transfer usage must be present before the user can enable NR from the menu.
-    if (!State::Instance().vulkanSkipHooks && _PD)
+    // Final-image NR copies the image in and out, so its swapchains need transfer usage.
+    if (Config::Instance()->DlssNrPresent.value_or_default() && !State::Instance().vulkanSkipHooks && _PD)
     {
         VkSurfaceCapabilitiesKHR capabilities {};
         if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_PD, pCreateInfo->surface, &capabilities) == VK_SUCCESS)
@@ -504,9 +507,11 @@ static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateI
         _device = device;
         LOG_DEBUG("_device captured: {0:X}", (UINT64) _device);
 
-        AmdVkPresent::Created(_instance, _PD, device, _hwnd, _nrGraphicsFamily, *pSwapchain, requested);
+        if (Config::Instance()->DlssNrPresent.value_or_default())
+            AmdVkPresent::Created(_instance, _PD, device, _hwnd, _nrGraphicsFamily, *pSwapchain, requested);
 
-        MenuOverlayVk::CreateSwapchain(device, _PD, _instance, _hwnd, pCreateInfo, pAllocator, pSwapchain);
+        if (Config::Instance()->OverlayMenu.value_or_default())
+            MenuOverlayVk::CreateSwapchain(device, _PD, _instance, _hwnd, pCreateInfo, pAllocator, pSwapchain);
     }
 
     LOG_FUNC_RESULT(result);

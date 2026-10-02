@@ -132,6 +132,11 @@ struct AmdLayout
     // about 13% faster on RX 9000), 0 = reference (NVIDIA's own arithmetic). The runtime copies it
     // into the engine on every job, so it can change while the game runs. 0 = not mapped.
     std::uint32_t quality = 0;
+    // 0.4.1 and later, ints in the engine object: the evaluation count the pre-block kernel takes as
+    // its noise seed (Record zeroes it after the warm-up job, the launch bumps it after every job),
+    // and the count on which the worker reads the pre-block back for its one-time self-check. The
+    // final-image path pins the seed at 0 and moves the self-check out of reach once a job has run,
+    // as the ReShade add-on's FixedSeed does. 0 = not mapped.
     std::uint32_t seedCounter = 0;
     std::uint32_t seedSelfCheck = 0;
 };
@@ -597,6 +602,8 @@ inline constexpr AmdLayout kAmd051 {
     .toneLift = 0xb9a90,
     .useGameExposure = 0xb9a94,
     .quality = 0xb9a95,
+    .seedCounter = 0xb8c8c,
+    .seedSelfCheck = 0xb8d54,
 };
 
 // 0.6.0 version.dll (SHA 195c4a89), an early build danielblnc gives his supporters, not distributed
@@ -664,6 +671,8 @@ inline constexpr AmdLayout kAmd060 {
     .toneLift = 0xbeb24,
     .useGameExposure = 0xbeb28,
     .quality = 0xbeb29,
+    .seedCounter = 0xbdcec,
+    .seedSelfCheck = 0xbddc8,
 };
 
 inline constexpr const AmdLayout* kAmdLayouts[] = { &kAmd0217, &kAmd03,  &kAmd031, &kAmd040, &kAmd041,

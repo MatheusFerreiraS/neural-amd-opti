@@ -12,6 +12,9 @@ call :BuildAndRun shader_dx12_srv
 if not "%errorlevel%"=="0" exit /b 1
 call :BuildAndRun shader_dx11_ownership
 if not "%errorlevel%"=="0" exit /b 1
+rem The final image's optical-flow densify shader, as PresentExperimental.h compiles it at run time.
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\check_optical_flow.ps1
+if not "%errorlevel%"=="0" exit /b 1
 exit /b 0
 
 :BuildAndRun
