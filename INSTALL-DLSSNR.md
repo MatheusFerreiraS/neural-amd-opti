@@ -210,8 +210,7 @@ The full OptiScaler menu (Insert) is drawn on the D3D9 device. With the
 final-image settings above, each frame crosses from D3D9 to D3D12 through system
 memory, because a D3D9 device cannot share a texture with D3D12. NR runs there and
 the result is copied back before the D3D9 Present. The copies cost about 1.5 ms
-per frame at 1280x720 on an RX 9070 XT, on top of the network. The backbuffer
-must be unmultisampled for NR on this route.
+per frame at 1280x720 on an RX 9070 XT, on top of the network.
 
 With the XeFG settings from the D3D11 section, a D3D12 XeFG swapchain takes over
 the game window at the first frame and the D3D9 Present is skipped; the menu is

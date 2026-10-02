@@ -126,6 +126,7 @@ struct Bridge
     bool multisampled = false;
 
     // staging: a render target for MSAA resolve or format conversion, and the target of the copy back.
+    ComPtr<IDirect3DTexture9> stagingTexture;
     ComPtr<IDirect3DSurface9> staging, readSys, writeSys;
 
     ID3D12Device* device12 = nullptr;
@@ -273,6 +274,7 @@ struct Bridge
             Wait();
 
         staging.Reset();
+        stagingTexture.Reset();
         readSys.Reset();
         writeSys.Reset();
         upload.Reset();
@@ -298,8 +300,9 @@ struct Bridge
         upload =
             Buffer(device12, D3D12_HEAP_TYPE_UPLOAD, UINT64(pitch) * desc.Height, D3D12_RESOURCE_STATE_GENERIC_READ);
 
-        if (FAILED(game->CreateRenderTarget(desc.Width, desc.Height, copyFormat, D3DMULTISAMPLE_NONE, 0, FALSE,
-                                            &staging, nullptr)) ||
+        if (FAILED(game->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, copyFormat, D3DPOOL_DEFAULT,
+                                       &stagingTexture, nullptr)) ||
+            FAILED(stagingTexture->GetSurfaceLevel(0, &staging)) ||
             FAILED(game->CreateOffscreenPlainSurface(desc.Width, desc.Height, copyFormat, D3DPOOL_SYSTEMMEM, &readSys,
                                                      nullptr)) ||
             upload == nullptr || FAILED(upload->Map(0, nullptr, reinterpret_cast<void**>(&uploaded))))
@@ -376,6 +379,71 @@ struct Bridge
         return true;
     }
 
+    // A multisampled backbuffer takes no StretchRect from a plain surface, so the frame is drawn over it.
+    bool DrawOver(IDirect3DSurface9* back)
+    {
+        IDirect3DStateBlock9* saved = nullptr;
+
+        if (FAILED(game->CreateStateBlock(D3DSBT_ALL, &saved)))
+            return false;
+
+        IDirect3DSurface9* target = nullptr;
+        IDirect3DSurface9* depth = nullptr;
+        game->GetRenderTarget(0, &target);
+        game->GetDepthStencilSurface(&depth);
+        game->SetRenderTarget(0, back);
+        game->SetDepthStencilSurface(nullptr);
+        game->SetVertexShader(nullptr);
+        game->SetPixelShader(nullptr);
+        game->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+        game->SetTexture(0, stagingTexture.Get());
+        game->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+        game->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+        game->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+        game->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+        game->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+        game->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+        game->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+        game->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+        game->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+        game->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+        game->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, FALSE);
+
+        for (const D3DRENDERSTATETYPE off :
+             { D3DRS_ZENABLE, D3DRS_ZWRITEENABLE, D3DRS_ALPHABLENDENABLE, D3DRS_ALPHATESTENABLE, D3DRS_LIGHTING,
+               D3DRS_FOGENABLE, D3DRS_STENCILENABLE, D3DRS_SCISSORTESTENABLE, D3DRS_SRGBWRITEENABLE,
+               D3DRS_CLIPPLANEENABLE })
+            game->SetRenderState(off, FALSE);
+
+        game->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        game->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+        game->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+
+        const D3DVIEWPORT9 viewport { 0, 0, width, height, 0.0f, 1.0f };
+        const float right = float(width) - 0.5f, bottom = float(height) - 0.5f;
+        const float quad[4][6] = { { -0.5f, -0.5f, 0, 1, 0, 0 },
+                                   { right, -0.5f, 0, 1, 1, 0 },
+                                   { -0.5f, bottom, 0, 1, 0, 1 },
+                                   { right, bottom, 0, 1, 1, 1 } };
+        game->SetViewport(&viewport);
+        const bool drawn = SUCCEEDED(game->BeginScene()) &&
+                           SUCCEEDED(game->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(quad[0])));
+        game->EndScene();
+
+        game->SetRenderTarget(0, target);
+        game->SetDepthStencilSurface(depth);
+
+        if (target != nullptr)
+            target->Release();
+
+        if (depth != nullptr)
+            depth->Release();
+
+        saved->Apply();
+        saved->Release();
+        return drawn;
+    }
+
     // Without frame generation the network works on a texture of its own and the result goes back to D3D9.
     bool NeuralInPlace(IDirect3DSurface9* back)
     {
@@ -428,8 +496,10 @@ struct Bridge
 
         writeSys->UnlockRect();
 
-        const bool written = SUCCEEDED(game->UpdateSurface(writeSys.Get(), nullptr, staging.Get(), nullptr)) &&
-                             SUCCEEDED(game->StretchRect(staging.Get(), nullptr, back, nullptr, D3DTEXF_NONE));
+        const bool written =
+            SUCCEEDED(game->UpdateSurface(writeSys.Get(), nullptr, staging.Get(), nullptr)) &&
+            (multisampled ? DrawOver(back)
+                          : SUCCEEDED(game->StretchRect(staging.Get(), nullptr, back, nullptr, D3DTEXF_NONE)));
         spentBack += Util::MillisecondsNow() - start;
         return written;
     }
@@ -701,24 +771,12 @@ struct Bridge
 
         if (NrWanted() && EnsureD3D12(device) && Size(desc))
         {
-            if (multisampled)
-            {
-                static bool said = false;
+            const auto start = Util::MillisecondsNow();
+            const bool captured = Capture(back.Get());
+            spentCapture += Util::MillisecondsNow() - start;
 
-                if (!said)
-                    LOG_WARN("D3D9 bridge: NR needs a backbuffer without MSAA");
-
-                said = true;
-            }
-            else
-            {
-                const auto start = Util::MillisecondsNow();
-                const bool captured = Capture(back.Get());
-                spentCapture += Util::MillisecondsNow() - start;
-
-                if (captured)
-                    NeuralInPlace(back.Get());
-            }
+            if (captured)
+                NeuralInPlace(back.Get());
         }
 
         const auto start = Util::MillisecondsNow();
