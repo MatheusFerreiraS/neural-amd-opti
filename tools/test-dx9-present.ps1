@@ -5,6 +5,8 @@ param(
     [string]$Runtime = "exports\dx9-smoke\runtime",
     [string]$XeFG = "..\..\opti\dist\OptiScaler-0.4.9-amd-nr\OptiScaler",
     [string]$Lock = "",
+    # Added to every case's OptiScaler.ini, for one-off comparisons: "[Section]~Key=value~..."
+    [string]$ExtraIni = "",
     [int]$TimeoutSeconds = 240
 )
 $ErrorActionPreference = "Stop"
@@ -89,6 +91,11 @@ $cases = @(
     @{ Name = "timing-fg"; Args = @("--borderless", "--size", "1920x1080"); Fg = $true; Frames = 930
        Script = "150:mark=fg-moving,270:still,280:mark=fg-still,400:still,410:cpu=8,420:mark=fg-cpu8,540:fg," +
                 "550:mark=nr-only-cpu8,670:cpu=0,680:mark=nr-only-moving,800:nr,810:mark=off-moving"
+       Log = @("D3D9 bridge frame \d+: XeFG presenter, NR true at scale [0-9.]+, FG true") },
+    @{ Name = "timing-fg-nopacing"; Args = @("--borderless", "--size", "1920x1080"); Fg = $true; Frames = 930
+       Ini = "[XeFG]`r`nExtraPacing=false`r`n"
+       Script = "150:mark=fg-moving,270:still,280:mark=fg-still,400:still,410:cpu=8,420:mark=fg-cpu8,540:fg," +
+                "550:mark=nr-only-cpu8,670:cpu=0,680:mark=nr-only-moving,800:nr,810:mark=off-moving"
        Log = @("D3D9 bridge frame \d+: XeFG presenter, NR true at scale [0-9.]+, FG true") }
 )
 if ($Case) { $cases = @($cases | Where-Object { $_.Name -eq $Case }) }
@@ -122,7 +129,7 @@ foreach ($c in $cases) {
     }
     Set-Content -Path (Join-Path $dir "OptiScaler.ini") -Encoding ascii -Value (
         "[DlssNr]`r`nEnabled=true`r`nPresentWithoutUpscaler=$(if ($c.Present) { $c.Present } else { 'true' })`r`n" +
-        "NrBackend=daniel`r`n" + $fgSection + $c.Ini +
+        "NrBackend=daniel`r`n" + $fgSection + $c.Ini + ($ExtraIni -replace '~', "`r`n") + "`r`n" +
         "[Log]`r`nLogToFile=true`r`nLogLevel=2`r`nSingleFile=true`r`n")
 
     $arguments = @($c.Args) + @("--frames", $c.Frames, "--shots", "`"$dir`"", "--script", "`"$($c.Script)`"")

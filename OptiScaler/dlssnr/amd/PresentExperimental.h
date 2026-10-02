@@ -77,6 +77,8 @@ struct Context
     UINT width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     bool stopped = false;
+    // Keep the frame's backbuffer until the next frame or a resize instead of waiting for the network here.
+    bool deferRelease = false;
     bool WaitForFrame()
     {
         const auto completed = fence->GetCompletedValue();
@@ -541,7 +543,8 @@ struct Context
         queue->ExecuteCommandLists(1, lists);
         backend->Submitted(queue.Get(), 1, lists);
         Check(queue->Signal(fence.Get(), ++serial));
-        ReleaseBackBuffer();
+        if (!deferRelease)
+            ReleaseBackBuffer();
         if (!stopped)
             status = std::string("Final-image NR (") + (flowValid ? "FidelityFX Optical Flow" :
                 flowFailed ? "synthetic guides; Optical Flow unavailable" : "Optical Flow warming up") +
@@ -672,7 +675,7 @@ inline void Report(std::string message)
     status = std::move(message);
 }
 inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::filesystem::path& directory,
-                   AmdPreSr::Settings s, Guides* guides = nullptr)
+                   AmdPreSr::Settings s, Guides* guides = nullptr, bool deferRelease = false)
 {
     std::lock_guard g(mutex);
     if (!queue)
@@ -692,6 +695,7 @@ inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::fil
         }
         ComPtr<ID3D12Resource> b;
         Check(swap->GetBuffer(swap->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&b)));
+        context->deferRelease = deferRelease;
         context->Frame(b.Get(), D3D12_RESOURCE_STATE_PRESENT, directory, s);
         if (guides && !context->stopped && context->lastFlowValid)
         {

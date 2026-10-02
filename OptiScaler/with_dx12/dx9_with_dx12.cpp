@@ -634,8 +634,11 @@ struct Bridge
         start = Util::MillisecondsNow();
 
         AmdPresentExperimental::Guides guides;
-        const bool ready = NrWanted() && AmdPresentExperimental::Render(
-                                             swap.Get(), queue12, Util::DllPath().parent_path(), NrSettings(), &guides);
+        // The network runs while XeFG paces this Present instead of before it: the queue orders the two, and the
+        // next frame waits for the network before it reuses anything.
+        const bool ready =
+            NrWanted() && AmdPresentExperimental::Render(swap.Get(), queue12, Util::DllPath().parent_path(),
+                                                         NrSettings(), &guides, true);
         FeedFrameGeneration(device12, width, height, ready, guides);
         spentNeural += Util::MillisecondsNow() - start;
 
