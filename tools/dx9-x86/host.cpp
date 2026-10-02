@@ -48,6 +48,7 @@ struct Host
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<IDXGISwapChain1> swap;
+    bool tearing = false;
     ComPtr<ID3D11Texture2D> shared;
     ComPtr<ID3D11Query> copied;
     Handle section;
@@ -88,6 +89,9 @@ struct Host
             Log("window %08X does not belong to the game (%lu)", hello.window, owner);
             return false;
         }
+        // OptiScaler's menu reads the cursor on this thread against the game's window; the same DPI
+        // awareness as that window gives it the coordinates the game's back buffer is laid out in.
+        SetThreadDpiAwarenessContext(GetWindowDpiAwarenessContext(window));
         if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory))))
             return false;
         ComPtr<IDXGIFactory4> factory4;
@@ -156,13 +160,29 @@ struct Host
             desc.BufferCount = 2;
             desc.Scaling = DXGI_SCALING_STRETCH;
             desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-            const HRESULT hr = factory->CreateSwapChainForHwnd(device.Get(), window, &desc, nullptr, nullptr, &swap);
+            // Without tearing a windowed flip swap chain waits for the display even at interval 0, which
+            // would cap a game that asked for no vsync at the refresh rate.
+            ComPtr<IDXGIFactory5> factory5;
+            BOOL allowed = FALSE;
+            tearing = SUCCEEDED(factory.As(&factory5)) &&
+                      SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowed,
+                                                              sizeof(allowed))) &&
+                      allowed;
+            desc.Flags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+            // The game side's child window, made for this host alone.
+            const HWND surface = reinterpret_cast<HWND>(static_cast<uintptr_t>(request.window));
+            if (!IsWindow(surface) || GetAncestor(surface, GA_ROOT) != GetAncestor(window, GA_ROOT))
+            {
+                Log("window %08X is not a child of the game's window", request.window);
+                return false;
+            }
+            const HRESULT hr = factory->CreateSwapChainForHwnd(device.Get(), surface, &desc, nullptr, nullptr, &swap);
             if (FAILED(hr))
             {
                 Log("CreateSwapChainForHwnd failed %08lX", hr);
                 return false;
             }
-            factory->MakeWindowAssociation(window, DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER);
+            factory->MakeWindowAssociation(surface, DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER);
         }
         else
         {
@@ -200,7 +220,8 @@ struct Host
                 context->UpdateSubresource(back.Get(), 0, nullptr, view, build.pitch, 0);
             context->End(copied.Get());
         }
-        const HRESULT hr = swap->Present(frame.syncInterval, 0);
+        const HRESULT hr =
+            swap->Present(frame.syncInterval, tearing && !frame.syncInterval ? DXGI_PRESENT_ALLOW_TEARING : 0);
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG)
         {
             const HRESULT reason = device->GetDeviceRemovedReason();
@@ -283,6 +304,10 @@ int wmain(int argc, wchar_t** argv)
     const DWORD gamePid = static_cast<DWORD>(_wtoi(argv[2]));
     Host host;
     host.game.reset(OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, gamePid));
+    // The last session's OptiScaler.log is kept beside the new one, so a host that failed can be read
+    // after the next has started.
+    MoveFileExW((folder / L"OptiScaler.log").c_str(), (folder / L"OptiScaler.previous.log").c_str(),
+                MOVEFILE_REPLACE_EXISTING);
     // OptiScaler hooks the dxgi.dll and d3d11.dll this program already imports, as it does in a game.
     const HMODULE opti = LoadLibraryW((folder / L"OptiScaler.dll").c_str());
     Log("host %lu for game %lu, OptiScaler.dll %s", GetCurrentProcessId(), gamePid, opti ? "loaded" : "missing");

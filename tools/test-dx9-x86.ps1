@@ -65,6 +65,7 @@ function Run-Case([string]$name, [string[]]$ini, [string[]]$arguments, [scriptbl
     if ($process.ExitCode -ne 0) { $problems += "exit $($process.ExitCode)" }
     if ($check) { $problems += @(& $check $text | Where-Object { $_ }) }
     $results[$name] = if ($problems.Count) { 'FAIL (' + ($problems -join '; ') + ')' } else { 'PASS' }
+    if ($text -match 'ms_per_frame=([0-9.]+)') { $results[$name] += " ($($Matches[1]) ms per frame)" }
     Write-Host "== $name : $($results[$name])"
     Write-Host $text
 }
@@ -103,25 +104,53 @@ try {
     Run-Case 'nr' $nr (@('--frames', '500', '--expect-bridged', '--key-at', '250', '0x65', '--key-at', '350', '0x65') + $screenArg) {
         param($text)
         $done = Count 'amd_presr.log' 'Completed AMD pre-SR passes'
-        if ($done -lt 100) { "only $done NR frames completed" }
+        if ($done -lt 5) { "fewer than 240 NR frames completed ($done log lines)" }
     }
     $fg = $nr + @('[FrameGen]', 'Enabled=true', 'FGInput=upscaler', 'FGOutput=xefg', '[XeFG]', 'InterpolationCount=2')
-    Run-Case 'nr-fg' $fg (@('--frames', '900', '--expect-bridged', '--expect-fg', '--key-at', '300', '0x23',
-            '--key-at', '400', '0x23', '--reset-at', '550', '1600x900') + $screenArg) {
+    # At the display's rate (--vsync), so the frames after the Reset span the host restart that
+    # XeFG's refused resize costs.
+    Run-Case 'nr-fg' $fg (@('--frames', '1300', '--vsync', '--expect-bridged', '--expect-fg', '--key-at', '300',
+            '0x23', '--key-at', '400', '0x23', '--reset-at', '550', '1600x900') + $screenArg) {
         param($text)
         if ((Count 'OptiScaler.log' 'Created Dx11wDx12SC') -eq 0) { 'no Dx11wDx12 swap chain' }
         if ((Count 'OptiScaler.log' 'XeFG swapchain created') -eq 0) { 'no XeFG swap chain' }
         $done = Count 'amd_presr.log' 'Completed AMD pre-SR passes'
-        if ($done -lt 100) { "only $done NR frames completed" }
+        if ($done -lt 5) { "fewer than 240 NR frames completed ($done log lines)" }
+    }
+    # The archived bridge froze the picture when NR and frame generation were both turned off: turn
+    # both off and sample the screen afterwards.
+    Run-Case 'nr-fg-off' $fg (@('--frames', '500', '--expect-bridged', '--key-at', '300', '0x23', '--key-at', '320',
+            '0x65') + $screenArg) {
+        param($text)
+        if ((Count 'OptiScaler.log' 'setting DlssNrEnabled to false') -eq 0) { 'NR was not turned off' }
+        if ((Count 'OptiScaler.log' 'setting FGEnabled to false') -eq 0) { 'frame generation was not turned off' }
     }
     Run-Case 'menu' $nr @('--frames', '300', '--menu-at', '100') {
         param($text)
         if ($text -match 'SKIP menu') { 'skipped: the test window could not take the foreground' }
     }
-    Run-Case 'restart' $fg @('--frames', '600', '--kill-host-at', '200') {
+    Run-Case 'reset' $nr (@('--frames', '400', '--expect-bridged', '--reset-at', '200', '1600x900') + $screenArg) {
+        param($text)
+        if ($text -notmatch 'hostStarts=1 ') { 'the host was restarted for a resize without frame generation' }
+    }
+    Run-Case 'restart-nr' $nr @('--frames', '900', '--vsync', '--work', '10', '--kill-host-at', '200') {
         param($text)
         if ((Count 'dx9-x86.log' 'host 2 connected') -eq 0) { 'no second host' }
     }
+    Run-Case 'restart' $fg @('--frames', '900', '--vsync', '--work', '10', '--kill-host-at', '200') {
+        param($text)
+        if ((Count 'dx9-x86.log' 'host 2 connected') -eq 0) { 'no second host' }
+    }
+    # Frame time at 1920x1080 with 8 ms of game CPU per frame: native, the bridge, NR, each pipelined
+    # and waiting for the host at every Present. Reported, not judged.
+    $timing = @('--size', '1920x1080', '--frames', '300', '--work', '8')
+    Run-Case 'time-native' @() (@('--native') + $timing) $null
+    Run-Case 'time-bridge' @() ($timing + @('--expect-bridged')) $null
+    Run-Case 'time-bridge-sync' @('[Dx9X86]', 'Pipelined=false') ($timing + @('--expect-bridged')) $null
+    Run-Case 'time-nr' $nr ($timing + @('--expect-bridged')) $null
+    Run-Case 'time-nr-sync' ($nr + @('[Dx9X86]', 'Pipelined=false')) ($timing + @('--expect-bridged')) $null
+    Run-Case 'time-nr-ex' $nr ($timing + @('--ex', '--expect-bridged')) $null
+    Run-Case 'time-nr-fg' $fg ($timing + @('--expect-bridged')) $null
 }
 finally {
     Remove-Item $lock -Force -Recurse -ErrorAction SilentlyContinue
@@ -130,7 +159,7 @@ finally {
 Write-Host ''
 $failed = 0
 foreach ($entry in $results.GetEnumerator()) {
-    Write-Host ("{0,-14} {1}" -f $entry.Key, $entry.Value)
-    if ($entry.Value -ne 'PASS') { $failed++ }
+    Write-Host ("{0,-18} {1}" -f $entry.Key, $entry.Value)
+    if ($entry.Value -notlike 'PASS*') { $failed++ }
 }
 exit [int]($failed -ne 0)

@@ -14,6 +14,7 @@
 //   --reset-at F WxH     Reset the device to a new size at frame F
 //   --kill-host-at F     end the host process at frame F; the proxy must start another
 //   --screen             fail when the window's pixels on screen stop changing
+//   --work MS            spend MS milliseconds of CPU on each frame, as a game would
 //   --timeout S          give up after S seconds (default 120)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -165,6 +166,7 @@ int main(int argc, char** argv)
 {
     bool ex = false, native = false, vsync = false, expectBridged = false, expectFg = false, screen = false;
     int frames = 240, menuAt = -1, resetAt = -1, killAt = -1, timeout = 120;
+    double work = 0;
     UINT width = 1280, height = 720, resetWidth = 0, resetHeight = 0;
     std::vector<std::pair<int, WORD>> keys;
     for (int i = 1; i < argc; ++i)
@@ -187,6 +189,8 @@ int main(int argc, char** argv)
             frames = atoi(next());
         else if (a == "--timeout")
             timeout = atoi(next());
+        else if (a == "--work")
+            work = atof(next());
         else if (a == "--size")
             sscanf_s(next(), "%ux%u", &width, &height);
         else if (a == "--menu-at")
@@ -297,6 +301,27 @@ int main(int argc, char** argv)
     long mouseWhileMenu = 0;
     bool menuOpenNow = false;
     unsigned bridgedAtReset = 0;
+    // The proxy starts its host on a thread of its own and presents natively until the host is up, so
+    // present until it is: the frames counted below are then the bridge's.
+    dx9wire::ProxyStatus warm {};
+    if (!native)
+    {
+        const ULONGLONG until = GetTickCount64() + 60000;
+        int warmFrames = 0;
+        while ((warm = Status()).bridged == 0 && !warm.disabled && GetTickCount64() < until)
+        {
+            MSG msg;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+                DispatchMessageW(&msg);
+            Draw(device, width, height, warmFrames++);
+            ex ? deviceEx->PresentEx(nullptr, nullptr, nullptr, nullptr, 0)
+               : device->Present(nullptr, nullptr, nullptr, nullptr);
+        }
+        printf("warm-up: %d frames until the host presented\n", warmFrames);
+    }
+    LARGE_INTEGER started {}, ended {}, rate {};
+    QueryPerformanceFrequency(&rate);
+    QueryPerformanceCounter(&started);
     for (int frame = 0; frame < frames; ++frame)
     {
         MSG msg;
@@ -363,6 +388,11 @@ int main(int argc, char** argv)
             printf("reset to %ux%u at frame %d\n", width, height, frame);
         }
         Draw(device, width, height, frame);
+        LARGE_INTEGER spin {}, now {};
+        QueryPerformanceCounter(&spin);
+        do
+            QueryPerformanceCounter(&now);
+        while (1000.0 * double(now.QuadPart - spin.QuadPart) / double(rate.QuadPart) < work);
         const HRESULT hr = ex ? deviceEx->PresentEx(nullptr, nullptr, nullptr, nullptr, 0)
                               : device->Present(nullptr, nullptr, nullptr, nullptr);
         if (FAILED(hr))
@@ -378,6 +408,8 @@ int main(int argc, char** argv)
         }
     }
 
+    QueryPerformanceCounter(&ended);
+    const double msPerFrame = 1000.0 * double(ended.QuadPart - started.QuadPart) / double(rate.QuadPart) / frames;
     const auto s = Status();
     const bool covered = samples[0] == CLR_INVALID || samples[1] == CLR_INVALID;
     const bool screenMoves = !covered && samples[0] != samples[1];
@@ -385,20 +417,22 @@ int main(int argc, char** argv)
            "menuFrames=%u blockedInput=%u\n",
            s.bridged, s.native, s.hostStarts, s.faults, s.disabled, s.transport, s.width, s.height, s.state,
            s.menuFrames, s.blockedInput);
-    printf("screen=%s samples=%06lX,%06lX foreground=%d keysSent=%u keysSkipped=%u\n",
+    printf("screen=%s samples=%06lX,%06lX foreground=%d keysSent=%u keysSkipped=%u ms_per_frame=%.2f\n",
            covered       ? "covered"
            : screenMoves ? "ok"
                          : "unchanged",
-           samples[0], samples[1], front ? 1 : 0, keysSent, keysSkipped);
+           samples[0], samples[1], front ? 1 : 0, keysSent, keysSkipped, msPerFrame);
 
     int failed = 0;
     if (screen && !screenMoves)
         failed = Fail("the window's pixels on screen did not change between samples");
-    if (expectBridged && (s.bridged + 8 < unsigned(frames) - (killAt >= 0 ? 8 : 0) || s.disabled))
+    // A Reset or an ended host may cost a host restart, presented natively meanwhile.
+    const unsigned allowance = 8 + (killAt >= 0 || resetAt >= 0 ? 300 : 0);
+    if (expectBridged && (s.bridged - warm.bridged + allowance < unsigned(frames) || s.disabled))
         failed = Fail("frames were not presented by the host");
     if (expectFg && !(s.state & dx9wire::StateFrameGen))
         failed = Fail("frame generation was not active at the end");
-    if (resetAt >= 0 && (s.width != resetWidth || s.height != resetHeight || s.bridged < bridgedAtReset + 20))
+    if (resetAt >= 0 && (s.width != resetWidth || s.height != resetHeight || s.bridged < bridgedAtReset + 100))
         failed = Fail("the bridge did not carry on at the new size after Reset");
     if (killAt >= 0)
     {

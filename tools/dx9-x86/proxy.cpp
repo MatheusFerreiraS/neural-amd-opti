@@ -93,15 +93,31 @@ bool Replace(void** slot, void* replacement, void** original)
     return true;
 }
 
-int Setting(const wchar_t* key, int fallback)
+// [Dx9X86] in OptiScaler.ini beside the host: true, false, 1 or 0; anything else is the default.
+bool Setting(const wchar_t* key, bool fallback)
 {
-    return GetPrivateProfileIntW(L"Dx9X86", key, fallback, (hostFolder / L"OptiScaler.ini").c_str());
+    wchar_t value[16] {};
+    GetPrivateProfileStringW(L"Dx9X86", key, L"", value, 16, (hostFolder / L"OptiScaler.ini").c_str());
+    if (!_wcsicmp(value, L"true") || !wcscmp(value, L"1"))
+        return true;
+    if (!_wcsicmp(value, L"false") || !wcscmp(value, L"0"))
+        return false;
+    return fallback;
 }
+
+// The host presents into a child window of the game's window, never into the game's window itself.
+// A flip swap chain whose process ends without releasing it leaves its window unable to take another
+// one (measured: E_ACCESSDENIED ten seconds after the presenting process was ended), and the game's
+// own Present no longer shows there either. A lost host then only costs its child window: it is
+// destroyed, the game's Present shows again, and the next host gets a new one. The child is made on
+// the game window's thread, which pumps its messages; it takes no input (disabled, and transparent to
+// hit testing), so the mouse and keys still reach the game's window.
+const wchar_t* const originalProc = L"OptiScalerDx9X86Proc";
+UINT surfaceRequest = 0;
+HWND surface = nullptr;
 
 // Input the game must not see while OptiScaler's menu is open. The host reads the mouse and keys
 // itself; the game's window procedure and its cursor calls are what is held back here.
-WNDPROC gameProc = nullptr;
-HWND inputWindow = nullptr;
 POINT heldCursor {};
 decltype(&GetCursorPos) realGetCursorPos = GetCursorPos;
 decltype(&SetCursorPos) realSetCursorPos = SetCursorPos;
@@ -111,15 +127,66 @@ bool GameInput(UINT message)
     return (message >= WM_MOUSEFIRST && message <= WM_MOUSELAST) || message == WM_INPUT || message == WM_KEYDOWN ||
            message == WM_KEYUP || message == WM_CHAR || message == WM_DEADCHAR || message == WM_UNICHAR;
 }
-LRESULT CALLBACK InputProc(HWND window, UINT message, WPARAM w, LPARAM l)
+LRESULT CALLBACK SurfaceProc(HWND window, UINT message, WPARAM w, LPARAM l)
 {
+    return message == WM_NCHITTEST ? HTTRANSPARENT : DefWindowProcW(window, message, w, l);
+}
+HWND MakeSurface(HWND parent)
+{
+    static const ATOM type = []
+    {
+        WNDCLASSW kind {};
+        kind.lpfnWndProc = SurfaceProc;
+        kind.hInstance = self;
+        kind.lpszClassName = L"OptiScalerDx9X86Surface";
+        return RegisterClassW(&kind);
+    }();
+    RECT client {};
+    GetClientRect(parent, &client);
+    return CreateWindowExW(WS_EX_NOPARENTNOTIFY, MAKEINTATOM(type), L"",
+                           WS_CHILD | WS_VISIBLE | WS_DISABLED | WS_CLIPSIBLINGS, 0, 0, client.right, client.bottom,
+                           parent, nullptr, self, nullptr);
+}
+LRESULT CALLBACK GameProc(HWND window, UINT message, WPARAM w, LPARAM l)
+{
+    if (message == surfaceRequest && surfaceRequest)
+    {
+        if (w)
+            return reinterpret_cast<LRESULT>(MakeSurface(window));
+        DestroyWindow(reinterpret_cast<HWND>(l));
+        return 0;
+    }
+    if (message == WM_SIZE && surface && GetParent(surface) == window)
+        MoveWindow(surface, 0, 0, LOWORD(l), HIWORD(l), FALSE);
     if (menuOpen && GameInput(message))
     {
         ++status.blockedInput;
         return message == WM_INPUT ? DefWindowProcW(window, message, w, l) : 0;
     }
-    return IsWindowUnicode(window) ? CallWindowProcW(gameProc, window, message, w, l)
-                                   : CallWindowProcA(gameProc, window, message, w, l);
+    const auto previous = reinterpret_cast<WNDPROC>(GetPropW(window, originalProc));
+    return IsWindowUnicode(window) ? CallWindowProcW(previous, window, message, w, l)
+                                   : CallWindowProcA(previous, window, message, w, l);
+}
+void Wrap(HWND window)
+{
+    if (!window || GetPropW(window, originalProc))
+        return;
+    const bool unicode = IsWindowUnicode(window);
+    SetPropW(window, originalProc,
+             reinterpret_cast<HANDLE>(unicode ? GetWindowLongPtrW(window, GWLP_WNDPROC)
+                                              : GetWindowLongPtrA(window, GWLP_WNDPROC)));
+    unicode ? SetWindowLongPtrW(window, GWLP_WNDPROC, LONG_PTR(GameProc))
+            : SetWindowLongPtrA(window, GWLP_WNDPROC, LONG_PTR(GameProc));
+}
+// Makes (make) or destroys (arg) the host's child window on the game window's own thread.
+HWND OnWindowThread(HWND window, bool make, HWND arg = nullptr)
+{
+    if (GetWindowThreadProcessId(window, nullptr) == GetCurrentThreadId())
+        return reinterpret_cast<HWND>(SendMessageW(window, surfaceRequest, make, LPARAM(arg)));
+    DWORD_PTR result = 0;
+    return SendMessageTimeoutW(window, surfaceRequest, make, LPARAM(arg), SMTO_ABORTIFHUNG, 2000, &result)
+               ? reinterpret_cast<HWND>(result)
+               : nullptr;
 }
 BOOL WINAPI HeldGetCursorPos(LPPOINT point)
 {
@@ -158,21 +225,23 @@ void PatchImports(HMODULE module)
     }
 }
 
-void HoldGameInput(HWND window)
+void WrapGame(HWND window, HWND focus)
 {
-    if (inputWindow || !window)
+    static bool patched = false;
+    if (!surfaceRequest)
+        surfaceRequest = RegisterWindowMessageW(L"OptiScalerDx9X86Surface");
+    Wrap(window);
+    Wrap(focus);
+    if (patched)
         return;
-    inputWindow = window;
-    gameProc = reinterpret_cast<WNDPROC>(IsWindowUnicode(window)
-                                             ? SetWindowLongPtrW(window, GWLP_WNDPROC, LONG_PTR(InputProc))
-                                             : SetWindowLongPtrA(window, GWLP_WNDPROC, LONG_PTR(InputProc)));
+    patched = true;
     HMODULE modules[1024] {};
     DWORD bytes = 0;
     if (K32EnumProcessModules(GetCurrentProcess(), modules, sizeof(modules), &bytes))
         for (DWORD i = 0; i < bytes / sizeof(HMODULE) && i < 1024; ++i)
             if (modules[i] != self)
                 PatchImports(modules[i]);
-    Log("holding the game's input while the menu is open (window procedure %s)", gameProc ? "wrapped" : "not wrapped");
+    Log("game window wrapped: the menu holds the game's input, the host presents into a child window");
 }
 
 bool AdapterLuid(IDirect3DDevice9* device, LUID& luid)
@@ -206,17 +275,27 @@ bool AdapterLuid(IDirect3DDevice9* device, LUID& luid)
 struct Host
 {
     Handle pipe, process, job;
+    // An ended host and its job, until it has left: the next host waits for it (Retire).
+    Handle retired, retiredJob;
 
+    // Closing the pipe asks the host to release its swap chain and leave.
     void Stop()
     {
         pipe.reset();
-        if (process && WaitForSingleObject(process.value, 0) == WAIT_TIMEOUT)
+        if (process)
         {
-            TerminateProcess(process.value, 7);
-            WaitForSingleObject(process.value, IpcTimeoutMs);
+            retired.reset(process.value);
+            retiredJob.reset(job.value);
+            process.value = job.value = nullptr;
         }
-        process.reset();
-        job.reset();
+    }
+    // A host that has not left within five seconds is ended.
+    void Retire()
+    {
+        if (retired && WaitForSingleObject(retired.value, 5000) == WAIT_TIMEOUT)
+            TerminateProcess(retired.value, 7);
+        retired.reset();
+        retiredJob.reset();
     }
 
     bool Start(const LUID& luid, HWND window)
@@ -324,26 +403,52 @@ struct Bridge
     HWND window = nullptr;
     UINT syncInterval = 1;
     uint64_t generation = 0, frame = 0;
-    bool built = false, disabled = false;
+    bool built = false, disabled = false, pipelined = true;
+    // A frame posted to the host whose answer is collected at the next Present (or before anything
+    // else uses the pipe), so the game renders its next frame while the host presents this one.
+    uint64_t pending = 0;
+    // The host starts on its own thread while the game presents natively, then takes the window.
+    enum class Link
+    {
+        Down,
+        Starting,
+        Up
+    } link = Link::Down;
+    Handle starter;
+    LUID startLuid {};
+    HWND focus = nullptr;
+    // Failures in a row. A host that presented 600 frames before it failed starts the count again, so
+    // only a host that keeps failing early leaves the session native.
+    uint32_t strikes = 0;
+    uint64_t sinceStart = 0;
     ULONGLONG retryAt = 0;
 
-    void Fault(const char* why)
+    void Fault(const char* why, bool retryNow = false)
     {
         Log("host lost (%s); this frame is presented natively", why);
         host.Stop();
+        if (surface)
+            OnWindowThread(window, false, surface);
+        surface = nullptr;
+        link = Link::Down;
         built = false;
+        pending = 0;
         menuOpen = false;
-        if (++status.faults > 3)
+        ++status.faults;
+        strikes = sinceStart >= 600 ? 1 : strikes + 1;
+        sinceStart = 0;
+        if (strikes > 3)
         {
             disabled = true;
             status.disabled = 1;
-            Log("host failed %u times; the game presents natively for the rest of the session", status.faults);
+            Log("host failed %u times in a row; the game presents natively for the rest of the session", strikes);
         }
-        retryAt = GetTickCount64() + 1000ull * status.faults;
+        retryAt = GetTickCount64() + (retryNow ? 0 : 1000ull * strikes);
     }
 
     void Drop()
     {
+        Answer();
         if (built)
         {
             Ack ack;
@@ -364,12 +469,41 @@ struct Bridge
             FAILED(chain->GetPresentParameters(&params)) || !AdapterLuid(game, luid))
             return false;
         window = params.hDeviceWindow ? params.hDeviceWindow : creation.hFocusWindow;
+        focus = creation.hFocusWindow ? creation.hFocusWindow : window;
+        WrapGame(window, focus);
+        startLuid = luid;
         ++status.hostStarts;
-        if (!host.Start(luid, window))
-            return false;
-        Log("host %u connected for window %p", status.hostStarts, window);
-        HoldGameInput(creation.hFocusWindow ? creation.hFocusWindow : window);
-        return true;
+        starter.reset(CreateThread(
+            nullptr, 0,
+            [](LPVOID context) -> DWORD
+            {
+                auto bridge = static_cast<Bridge*>(context);
+                bridge->host.Retire();
+                return bridge->host.Start(bridge->startLuid, bridge->window) ? 1 : 0;
+            },
+            this, 0, nullptr));
+        return static_cast<bool>(starter);
+    }
+
+    // Up once the host answered its Hello; until then the game presents natively.
+    bool Started()
+    {
+        if (link == Link::Starting && WaitForSingleObject(starter.value, 0) == WAIT_OBJECT_0)
+        {
+            DWORD started = 0;
+            GetExitCodeThread(starter.value, &started);
+            starter.reset();
+            if (!started)
+            {
+                Fault("start");
+                return false;
+            }
+            link = Link::Up;
+            sinceStart = 0;
+            pipelined = Setting(L"Pipelined", true);
+            Log("host %u connected for window %p", status.hostStarts, window);
+        }
+        return link == Link::Up;
     }
 
     bool Ensure(IDirect3DDevice9* game, const D3DSURFACE_DESC& desc)
@@ -385,7 +519,7 @@ struct Bridge
         if (stage.width != desc.Width || stage.height != desc.Height || stage.format != desc.Format || !stage.texture)
         {
             stage.Release();
-            const bool cpu = Setting(L"SharedMemory", 0) != 0;
+            const bool cpu = Setting(L"SharedMemory", false);
             if (cpu ||
                 FAILED(game->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8,
                                            D3DPOOL_DEFAULT, &stage.texture, &stage.shared)) ||
@@ -411,8 +545,14 @@ struct Bridge
             stage.height = desc.Height;
             stage.format = desc.Format;
         }
+        if (!surface && !(surface = OnWindowThread(window, true)))
+        {
+            Log("no child window could be made in the game's window");
+            return false;
+        }
         dx9wire::Build request;
         request.generation = ++generation;
+        request.window = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(surface));
         request.width = stage.width;
         request.height = stage.height;
         request.format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -435,7 +575,8 @@ struct Bridge
         status.width = stage.width;
         status.height = stage.height;
         Ack ack;
-        if (!Request(host.pipe.value, host.process.value, Kind::Build, &request, sizeof(request), ack))
+        // The host makes its swap chain here, and OptiScaler with it the frame generation swap chain.
+        if (!Request(host.pipe.value, host.process.value, Kind::Build, &request, sizeof(request), ack, 30000))
         {
             Fault("no answer to a build");
             return false;
@@ -483,9 +624,13 @@ struct Bridge
         if (disabled || !back)
             return false;
         D3DSURFACE_DESC desc {};
-        if (FAILED(back->GetDesc(&desc)) || desc.Width < 64 || desc.Height < 64)
+        if (FAILED(back->GetDesc(&desc)))
             return false;
-        if (!host.process)
+        // A provisional buffer (The Sims 4 shows 16x16 first). Once the host owns the window its last
+        // frame stays up rather than D3D9 presenting under it.
+        if (desc.Width < 64 || desc.Height < 64)
+            return link == Link::Up;
+        if (link == Link::Down)
         {
             if (GetTickCount64() < retryAt)
                 return false;
@@ -494,15 +639,47 @@ struct Bridge
                 Fault("start");
                 return false;
             }
+            link = Link::Starting;
         }
-        if (!Ensure(game, desc) || !Capture(game, back))
+        if (!Started() || !Answer())
             return false;
+        if (!Ensure(game, desc))
+        {
+            // A host that cannot resize its swap chain (XeFG refuses while anything holds a back
+            // buffer) is replaced by a new one at the new size straight away.
+            if (link == Link::Up)
+                Fault("the host could not take the new back buffer", true);
+            return false;
+        }
+        if (!Capture(game, back))
+        {
+            Fault("the frame could not be handed over");
+            return false;
+        }
         dx9wire::Frame request;
         request.generation = generation;
         request.id = ++frame;
         request.syncInterval = syncInterval;
+        if (!Post(host.pipe.value, host.process.value, Kind::Frame, &request, sizeof(request)))
+        {
+            Fault("the host stopped reading");
+            return false;
+        }
+        pending = frame;
+        return pipelined || Answer();
+    }
+
+    // Collects the answer to the frame in flight; false when the host failed it.
+    bool Answer()
+    {
+        if (!pending)
+            return true;
+        const uint64_t id = pending;
+        pending = 0;
         Ack ack;
-        if (!Request(host.pipe.value, host.process.value, Kind::Frame, &request, sizeof(request), ack))
+        // Long: the host's first frames load the NR runtime and frame generation, and a runtime job can
+        // hold the GPU for seconds; ending the host for that would cost more than the wait.
+        if (!Collect(host.pipe.value, host.process.value, Kind::Frame, ack, 30000))
         {
             Fault("no answer to a frame");
             return false;
@@ -513,13 +690,17 @@ struct Bridge
             Fault("device lost");
             return false;
         }
-        if (ack.result != Result::Presented || ack.frame != frame)
+        if (ack.result != Result::Presented || ack.frame != id)
+        {
+            Fault("the host could not present");
             return false;
+        }
         status.state = ack.state;
         if ((ack.state & StateMenu) && !menuOpen)
             realGetCursorPos(&heldCursor);
         menuOpen = (ack.state & StateMenu) != 0;
         status.menuFrames += menuOpen ? 1 : 0;
+        ++sinceStart;
         if (++status.bridged == 1)
             Log("first frame presented by the host");
         return true;
@@ -530,14 +711,18 @@ Bridge& bridge = *new Bridge;
 
 thread_local bool inPresent = false;
 
-// Runs the bridge for one Present; false means present natively.
-bool Bridged(IDirect3DDevice9* game, IDirect3DSwapChain9* chain)
+// Runs the bridge for one Present of the device's own swap chain to its own window; false means
+// present natively.
+bool Bridged(IDirect3DDevice9* game, IDirect3DSwapChain9* chain, HWND target)
 {
     if (inPresent)
         return false;
     std::lock_guard guard(lock);
     ComPtr<IDirect3DSwapChain9> implicit;
-    if (chain && (FAILED(game->GetSwapChain(0, &implicit)) || implicit.Get() != chain))
+    D3DPRESENT_PARAMETERS params {};
+    if (FAILED(game->GetSwapChain(0, &implicit)) || (chain && implicit.Get() != chain) ||
+        (target && SUCCEEDED(implicit->GetPresentParameters(&params)) && params.hDeviceWindow &&
+         target != params.hDeviceWindow))
         return false;
     ComPtr<IDirect3DSurface9> back;
     if (FAILED(game->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &back)))
@@ -553,7 +738,7 @@ bool Bridged(IDirect3DDevice9* game, IDirect3DSwapChain9* chain)
 HRESULT STDMETHODCALLTYPE HookPresent(IDirect3DDevice9* device, const RECT* source, const RECT* dest, HWND window,
                                       const RGNDATA* dirty)
 {
-    if (Bridged(device, nullptr))
+    if (Bridged(device, nullptr, window))
         return S_OK;
     const bool outer = !inPresent;
     inPresent = true;
@@ -564,7 +749,7 @@ HRESULT STDMETHODCALLTYPE HookPresent(IDirect3DDevice9* device, const RECT* sour
 HRESULT STDMETHODCALLTYPE HookPresentEx(IDirect3DDevice9Ex* device, const RECT* source, const RECT* dest, HWND window,
                                         const RGNDATA* dirty, DWORD flags)
 {
-    if (!(flags & D3DPRESENT_DONOTFLIP) && Bridged(device, nullptr))
+    if (!(flags & D3DPRESENT_DONOTFLIP) && Bridged(device, nullptr, window))
         return S_OK;
     const bool outer = !inPresent;
     inPresent = true;
@@ -576,7 +761,7 @@ HRESULT STDMETHODCALLTYPE HookChain(IDirect3DSwapChain9* chain, const RECT* sour
                                     const RGNDATA* dirty, DWORD flags)
 {
     ComPtr<IDirect3DDevice9> device;
-    if (!inPresent && SUCCEEDED(chain->GetDevice(&device)) && Bridged(device.Get(), chain))
+    if (!inPresent && SUCCEEDED(chain->GetDevice(&device)) && Bridged(device.Get(), chain, window))
         return S_OK;
     const bool outer = !inPresent;
     inPresent = true;
@@ -591,7 +776,7 @@ void Prepare(D3DPRESENT_PARAMETERS* params)
 {
     if (!params)
         return;
-    if (!params->Windowed && Setting(L"ForceWindowed", 1))
+    if (!params->Windowed && Setting(L"ForceWindowed", true))
     {
         params->Windowed = TRUE;
         params->FullScreen_RefreshRateInHz = 0;
@@ -663,7 +848,7 @@ HRESULT STDMETHODCALLTYPE HookCreateEx(IDirect3D9Ex* api, UINT adapter, D3DDEVTY
 void HookApi(IDirect3D9* api)
 {
     std::lock_guard guard(lock);
-    if (!Setting(L"Enabled", 1))
+    if (!Setting(L"Enabled", true))
         return;
     auto table = *reinterpret_cast<void***>(api);
     Replace(&table[16], reinterpret_cast<void*>(HookCreate), reinterpret_cast<void**>(&create9));

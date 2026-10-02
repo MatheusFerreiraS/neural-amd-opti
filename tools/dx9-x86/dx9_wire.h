@@ -52,13 +52,14 @@ struct Hello
     int32_t luidHigh = 0;
 };
 // handle: a D3D9 shared handle (sign-extended on the host) or the section handle duplicated
-// into the host. pitch is the row pitch of the section.
+// into the host. pitch is the row pitch of the section. window: the game side's child window the
+// host presents into.
 struct Build
 {
     uint64_t generation = 0, handle = 0;
     uint32_t width = 0, height = 0, format = 0, pitch = 0;
     Transport transport = Transport::SharedTexture;
-    uint32_t reserved = 0;
+    uint32_t window = 0;
 };
 struct Frame
 {
@@ -176,15 +177,24 @@ inline bool Receive(HANDLE p, HANDLE peer, void* b, uint32_t n, DWORD t = IpcTim
 {
     return Transfer(p, peer, b, n, false, t);
 }
-inline bool Request(HANDLE p, HANDLE peer, Kind kind, const void* body, uint32_t bytes, Ack& ack,
-                    DWORD timeoutMs = IpcTimeoutMs)
+// A request is a post and the collection of its answer. The game side may post a frame, let the game
+// run, and collect the answer at its next Present; it collects before anything else uses the pipe.
+inline bool Post(HANDLE p, HANDLE peer, Kind kind, const void* body, uint32_t bytes, DWORD timeoutMs = IpcTimeoutMs)
 {
     Header h;
     h.kind = kind;
     h.bytes = bytes;
     return ValidHeader(h) && Send(p, peer, &h, sizeof(h), timeoutMs) &&
-           (!bytes || Send(p, peer, body, bytes, timeoutMs)) && Receive(p, peer, &ack, sizeof(ack), timeoutMs) &&
-           ack.header.magic == Magic && ack.header.version == Version && ack.header.kind == kind &&
-           ack.header.bytes == sizeof(Ack) - sizeof(Header);
+           (!bytes || Send(p, peer, body, bytes, timeoutMs));
+}
+inline bool Collect(HANDLE p, HANDLE peer, Kind kind, Ack& ack, DWORD timeoutMs = IpcTimeoutMs)
+{
+    return Receive(p, peer, &ack, sizeof(ack), timeoutMs) && ack.header.magic == Magic &&
+           ack.header.version == Version && ack.header.kind == kind && ack.header.bytes == sizeof(Ack) - sizeof(Header);
+}
+inline bool Request(HANDLE p, HANDLE peer, Kind kind, const void* body, uint32_t bytes, Ack& ack,
+                    DWORD timeoutMs = IpcTimeoutMs)
+{
+    return Post(p, peer, kind, body, bytes, timeoutMs) && Collect(p, peer, kind, ack, timeoutMs);
 }
 } // namespace dx9wire
