@@ -25,9 +25,11 @@ foreach ($file in @($opti, (Join-Path $Runtime "dlssnr_amd_pass1.dll"), (Join-Pa
 $nrScript = "90:mark=nr-on,150:motion=nr-on,170:menu,190:shot=menu-open,200:menu,215:shot=menu-closed," +
             "230:nr,240:mark=nr-off,300:motion=nr-off,310:nr,320:mark=nr-on-again,380:reset=1600x900," +
             "390:mark=after-reset,450:motion=after-reset,460:shot=after-reset"
-# With FG, the open menu's model scale slider (at 380,395 in the 1280x720 window) is dragged to the left end.
+# With FG, the open menu's model scale slider (at 380,395 in the 1280x720 window) is dragged to the left end, then
+# the menu's Frame Generation section (its sidebar button at 337,241) is opened: neither may stop generation.
 $fgScript = "150:mark=fg-on,200:motion=fg-on,220:menu,232:shot=fg-menu-open,235:press=380x395,241:release," +
-            "246:shot=fg-scale-set,250:menu,265:shot=fg-menu-closed,280:fg,290:mark=fg-off,330:motion=fg-off," +
+            "244:shot=fg-scale-set,246:press=337x241,249:release,256:shot=fg-section,262:menu," +
+            "270:shot=fg-menu-closed,280:fg,290:mark=fg-off,330:motion=fg-off," +
             "340:fg,350:mark=fg-on-again,420:motion=fg-on-again,430:nr,440:mark=nr-off,480:motion=nr-off,490:nr," +
             "500:mark=nr-on,580:motion=nr-on,650:reset=1600x900,660:mark=after-reset,760:motion=after-reset," +
             "765:shot=fg-after-reset,780:minimize,820:restore,840:menu,850:shot=fg-menu-after-restore,860:menu," +
@@ -44,6 +46,9 @@ $fgLog = @("OptiScaler working as d3d9.dll", "D3D9 device hooks installed", "D3D
            "D3D9 bridge frame 601: XeFG presenter, NR true at scale 0.[5-9]\d, FG true, XeFG last present [2-9] frames",
            "Reset.*: 0, 1600x900", "XeFG presenter 1280x720 -> 1600x900: 0", "D3D9 bridge frame 8[4-9]\d: menu open")
 
+# Generation stays on through the scale change and the visit to the Frame Generation section.
+$fgNotLog = @("D3D9 bridge frame 2[0-7]\d: frame generation off")
+
 $cases = @(
     # Final image off (the default): the D3D9 route only draws the menu, no D3D12 device.
     @{ Name = "menu-only"; Args = @(); Fg = $false; Present = "false"; Frames = 260; Script = "170:menu,190:shot=menu-only,200:menu"
@@ -54,9 +59,9 @@ $cases = @(
     @{ Name = "ex-nr"; Args = @("--ex"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
     @{ Name = "chain-nr"; Args = @("--chain"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
     @{ Name = "msaa-nr"; Args = @("--msaa"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
-    @{ Name = "classic-fg"; Args = @(); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog },
-    @{ Name = "ex-fg"; Args = @("--ex"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog },
-    @{ Name = "msaa-fg"; Args = @("--msaa"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog },
+    @{ Name = "classic-fg"; Args = @(); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
+    @{ Name = "ex-fg"; Args = @("--ex"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
+    @{ Name = "msaa-fg"; Args = @("--msaa"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog; NotLog = $fgNotLog },
     # Thousands of generated frames in a row (the 32-bit bridge lost its D3D12 device after about 2000), with two
     # generated frames per rendered frame.
     @{ Name = "soak-fg"; Args = @(); Fg = $true; Frames = 6000; Ini = "[XeFG]`r`nInterpolationCount=2`r`n"
