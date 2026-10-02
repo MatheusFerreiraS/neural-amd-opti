@@ -14,6 +14,8 @@ binary whose size and SHA-256 it names:
   * every option with a [DlssNrOnAmd] key is the store that follows that key in the INI reader;
   * every other data field is reached by the pinned instruction sites in ANCHORS (opcode bytes,
     containing function and, where it matters, the call that follows);
+  * seedCounter is the int Record zeroes at its pinned site, and seedSelfCheck the engine member the
+    worker's one compare against seedCounter's engine member reads (SEED_SITES);
   * the bootstrap entry's call bytes, thread start, prologue and CreateThread import match.
 
 Header-level checks make sure every table except 0.2.17 (no binary at hand) gives each non-zero
@@ -50,8 +52,13 @@ INI_KEYS = {
 }
 # Fields the checks in check_layout pin by what the code does with them (besides INI_KEYS).
 BEHAVIOUR_CHECKED = {"enabled", "nativeFailure", "initDone", "trampoline"}
-SEED_OFFSETS = {"0.4.1": (0x3c, 0x104), "0.4.2": (0x3c, 0x104),
-                "0.4.3": (0x3c, 0x104), "0.5.0": (0x4c, 0x114)}
+# The noise seed pair: (Record's `mov dword [rip+seedCounter], 0` after the warm-up job, the worker's
+# `mov r32, [engine+seedCounter]; cmp r32, [engine+seedSelfCheck]`, the only such pair in .text). The
+# compare is the one the ReShade add-on's runtime_offsets.h cites (0x35142 on 0.4.1, 0x3bdd8 on 0.6.0).
+SEED_SITES = {
+    "0.4.1": (0x172c6, 0x35142), "0.4.2": (0x176e1, 0x372d3), "0.4.3": (0x17e91, 0x37f03),
+    "0.5.0": (0x17ce1, 0x37f65), "0.5.1": (0x17ce1, 0x38a07), "0.6.0": (0x19d37, 0x3bdd8),
+}
 
 # Pinned reference sites for every other data field: (field, site RVA, opcode bytes before the
 # rip disp32, bytes after it, layout function the site must lie in or None, layout function the
@@ -571,6 +578,7 @@ def check_layout(image, layout, bootstrap, start_bytes, check):
         check(stored, f"[DlssNrOnAmd] {key} is stored at {member} {field:#x}")
 
     check_anchors(image, layout, check)
+    check_seed(image, layout, check)
 
     if bootstrap is None:
         check(False, "bootstrap isolation entry exists")
@@ -588,9 +596,44 @@ def check_layout(image, layout, bootstrap, start_bytes, check):
 def unpinned_fields(layout):
     """Non-zero data fields that no INI store, behaviour check or pinned site covers."""
     covered = set(INI_KEYS.values()) | BEHAVIOUR_CHECKED | {a[0] for a in ANCHORS.get(layout["name"], [])}
-    if layout["name"] in SEED_OFFSETS:
+    if layout["name"] in SEED_SITES:
         covered |= {"seedCounter", "seedSelfCheck"}
     return sorted(n for n, v in layout["fields"].items() if v and n not in NOT_DATA and n not in covered)
+
+
+def seed_compares(image, counter, self_check):
+    """Sites of `[rex] mov r32, [base+disp8]; [rex] cmp r32, [base+disp32]` with these displacements."""
+    m, (text_va, text_size) = image.img, image.sections[".text"]
+    for at in image.find_all(bytes([0x8B]), text_va, text_va + text_size - 12):
+        rex = m[at - 1] if 0x40 <= m[at - 1] <= 0x4F else None
+        load = at + 1
+        cmp_at = load + 2 + (1 if rex is not None else 0)
+        if rex is not None and m[cmp_at - 1] != rex:
+            continue
+        if m[load] & 0xC0 != 0x40 or m[load] & 7 == 4 or m[load + 1] != counter or m[cmp_at] != 0x3B:
+            continue
+        modrm = m[cmp_at + 1]
+        if modrm & 0xC0 != 0x80 or modrm & 0x3F != m[load] & 0x3F:
+            continue
+        if struct.unpack_from("<i", m, cmp_at + 2)[0] == self_check:
+            yield at - (1 if rex is not None else 0)
+
+
+def check_seed(image, layout, check):
+    f = layout["fields"]
+    sites = SEED_SITES.get(layout["name"])
+    if not sites:
+        check(not f["seedCounter"] and not f["seedSelfCheck"], "no seed fields without pinned sites")
+        return
+    zero, compare = sites
+    end = zero + 10
+    check(image.img[zero:zero + 2] == bytes.fromhex("c7 05") and image.img[end - 4:end] == bytes(4)
+          and image.rip(zero, 6) + 4 == f["seedCounter"] and f["record"] <= zero < image.funcs.get(f["record"], 0),
+          f"seedCounter {f['seedCounter']:#x}: Record zeroes it at {zero:#x}")
+    counter, self_check = f["seedCounter"] - f["engine"], f["seedSelfCheck"] - f["engine"]
+    found = list(seed_compares(image, counter, self_check)) if 0 < counter < 0x80 else []
+    check(found == [compare], f"seedSelfCheck {f['seedSelfCheck']:#x}: the worker compares engine+{counter:#x} "
+          f"with engine+{self_check:#x} only at {compare:#x}" + (f" -- found {[hex(a) for a in found]}" if found != [compare] else ""))
 
 
 def check_anchors(image, layout, check):
@@ -635,12 +678,8 @@ def main(argv):
     check(sorted(bootstraps) == sorted(layouts), "every table has one bootstrap entry")
     for var, layout in layouts.items():
         check(len(layout["fields"]) == len(members) - 3, f"{var}: {len(layout['fields'])} fields parsed")
-        seed = SEED_OFFSETS.get(layout["name"])
-        if seed:
-            f = layout["fields"]
-            check((f["seedCounter"], f["seedSelfCheck"]) ==
-                  (f["engine"] + seed[0], f["engine"] + seed[1]),
-                  f"{var}: pinned seed offsets relative to engine")
+        f = layout["fields"]
+        check(bool(f["seedCounter"]) == bool(f["seedSelfCheck"]), f"{var}: seed fields mapped as a pair")
         if layout["name"] in NO_BINARY:
             print(f"  note {var}: no {layout['name']} binary at hand, its data fields have no pinned site")
             continue
