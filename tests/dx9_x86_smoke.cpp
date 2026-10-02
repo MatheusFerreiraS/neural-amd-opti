@@ -69,10 +69,10 @@ bool Foreground(HWND window)
     return GetForegroundWindow() == window;
 }
 
-// Keys go out only while this window is in front, so nothing reaches another program.
+// Keys go out only while this window is in front (it asks to be), so nothing reaches another program.
 bool Key(HWND window, WORD vk, bool up)
 {
-    if (GetForegroundWindow() != window)
+    if (!Foreground(window))
         return false;
     INPUT input {};
     input.type = INPUT_KEYBOARD;
@@ -87,7 +87,7 @@ bool Key(HWND window, WORD vk, bool up)
 
 bool MoveMouse(HWND window, int x, int y)
 {
-    if (GetForegroundWindow() != window)
+    if (!Foreground(window))
         return false;
     POINT point { x, y };
     ClientToScreen(window, &point);

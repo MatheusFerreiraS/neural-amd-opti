@@ -42,8 +42,16 @@ function Count([string]$log, [string]$text) {
 
 $results = [ordered]@{}
 $screen = $false
+# A case that needs keys runs again (twice at most) when another program held the foreground.
 function Run-Case([string]$name, [string[]]$ini, [string[]]$arguments, [scriptblock]$check) {
     if ($Only.Count -and $Only -notcontains $name) { return }
+    for ($try = 0; $try -lt 3; $try++) {
+        Run-Once $name $ini $arguments $check
+        if ($results[$name] -notlike '*skipped*') { return }
+        Write-Host "${name}: the test window was not in front; running it again"
+    }
+}
+function Run-Once([string]$name, [string[]]$ini, [string[]]$arguments, [scriptblock]$check) {
     Write-Ini $ini
     Clear-Logs
     $out = Join-Path $stage "$name.out.txt"
@@ -64,6 +72,7 @@ function Run-Case([string]$name, [string[]]$ini, [string[]]$arguments, [scriptbl
     $problems = @()
     if ($process.ExitCode -ne 0) { $problems += "exit $($process.ExitCode)" }
     if ($check) { $problems += @(& $check $text | Where-Object { $_ }) }
+    if ($text -match 'SKIP ') { $problems += 'skipped: the test window could not take the foreground' }
     $results[$name] = if ($problems.Count) { 'FAIL (' + ($problems -join '; ') + ')' } else { 'PASS' }
     if ($text -match 'ms_per_frame=([0-9.]+)') { $results[$name] += " ($($Matches[1]) ms per frame)" }
     Write-Host "== $name : $($results[$name])"
@@ -105,6 +114,7 @@ try {
         param($text)
         $done = Count 'amd_presr.log' 'Completed AMD pre-SR passes'
         if ($done -lt 5) { "fewer than 240 NR frames completed ($done log lines)" }
+        if ((Count 'OptiScaler.log' 'setting DlssNrEnabled to false') -eq 0) { 'NR was not turned off' }
     }
     $fg = $nr + @('[FrameGen]', 'Enabled=true', 'FGInput=upscaler', 'FGOutput=xefg', '[XeFG]', 'InterpolationCount=2')
     # At the display's rate (--vsync), so the frames after the Reset span the host restart that
@@ -125,10 +135,7 @@ try {
         if ((Count 'OptiScaler.log' 'setting DlssNrEnabled to false') -eq 0) { 'NR was not turned off' }
         if ((Count 'OptiScaler.log' 'setting FGEnabled to false') -eq 0) { 'frame generation was not turned off' }
     }
-    Run-Case 'menu' $nr @('--frames', '300', '--menu-at', '100') {
-        param($text)
-        if ($text -match 'SKIP menu') { 'skipped: the test window could not take the foreground' }
-    }
+    Run-Case 'menu' $nr @('--frames', '300', '--menu-at', '100') $null
     Run-Case 'reset' $nr (@('--frames', '400', '--expect-bridged', '--reset-at', '200', '1600x900') + $screenArg) {
         param($text)
         if ($text -notmatch 'hostStarts=1 ') { 'the host was restarted for a resize without frame generation' }
