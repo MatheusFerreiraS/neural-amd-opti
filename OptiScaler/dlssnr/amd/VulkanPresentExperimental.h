@@ -8,4 +8,6 @@ void Created(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice devi
              uint32_t graphicsFamily, VkSwapchainKHR swapchain, const VkSwapchainCreateInfoKHR& description);
 void Destroyed(VkDevice device, VkSwapchainKHR swapchain);
 bool Process(VkQueue queue, VkPresentInfoKHR& present);
+// After OptiScaler's overlay is drawn: XeFG presents that image with the generated frames.
+bool PresentGenerated(VkPresentInfoKHR& present);
 }

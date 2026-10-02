@@ -19,6 +19,9 @@
 
 #include <mutex>
 #include <chrono>
+#include <atomic>
+#include <future>
+#include <thread>
 #include <vector>
 #include <algorithm>
 
@@ -27,12 +30,81 @@ namespace AmdVkPresent
 using Microsoft::WRL::ComPtr;
 namespace
 {
+// Set while the XeFG window is shown, read without the bridge lock on every present.
+std::atomic<bool> fgLive = false;
+
 LRESULT CALLBACK FgWindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
 {
     if (message == WM_NCHITTEST) return HTTRANSPARENT;
-    if (message == WM_MOUSEACTIVATE) return MA_ACTIVATE;
+    if (message == WM_MOUSEACTIVATE)
+        return MA_NOACTIVATE;
+    if (message == WM_DESTROY)
+        PostQuitMessage(0);
     return DefWindowProcW(window, message, wparam, lparam);
 }
+
+// The XeFG output window is a disabled child of the game window, so mouse input falls through to the
+// game and it can never take focus. A child window shares the input queue of its parent's thread;
+// it gets a thread of its own that pumps its messages, because the game's present thread often
+// never does and its pending messages would then hold back all input of the game window.
+struct FgWindow
+{
+    HWND window = nullptr;
+    std::thread thread;
+
+    bool Create(HWND parent, uint32_t width, uint32_t height)
+    {
+        static const bool registered = []
+        {
+            WNDCLASSW type {};
+            type.lpfnWndProc = FgWindowProc;
+            type.hInstance = GetModuleHandleW(nullptr);
+            type.lpszClassName = L"OptiScalerVulkanXeFG";
+            return RegisterClassW(&type) != 0;
+        }();
+        if (!registered)
+            return false;
+        auto created = std::make_shared<std::promise<HWND>>();
+        auto result = created->get_future();
+        thread = std::thread(
+            [created, parent, width, height]
+            {
+                HWND window = CreateWindowExW(WS_EX_NOPARENTNOTIFY, L"OptiScalerVulkanXeFG", L"",
+                                              WS_CHILD | WS_VISIBLE | WS_DISABLED, 0, 0, width, height, parent, nullptr,
+                                              GetModuleHandleW(nullptr), nullptr);
+                if (!window)
+                    LOG_ERROR("Vulkan XeFG: child window failed ({})", GetLastError());
+                created->set_value(window);
+                MSG message;
+                while (window && GetMessageW(&message, nullptr, 0, 0) > 0)
+                    DispatchMessageW(&message);
+            });
+        if (result.wait_for(std::chrono::seconds(2)) != std::future_status::ready)
+        {
+            LOG_ERROR("Vulkan XeFG: child window creation did not finish");
+            thread.detach();
+            return false;
+        }
+        window = result.get();
+        return window != nullptr;
+    }
+
+    void Destroy()
+    {
+        if (window)
+            PostMessageW(window, WM_CLOSE, 0, 0);
+        window = nullptr;
+        if (!thread.joinable())
+            return;
+        if (WaitForSingleObject(thread.native_handle(), 2000) == WAIT_OBJECT_0)
+            thread.join();
+        else
+        {
+            LOG_WARN("Vulkan XeFG: child window thread did not exit");
+            thread.detach();
+        }
+    }
+};
 
 struct FgPresenter
 {
@@ -42,6 +114,7 @@ struct FgPresenter
             LOG_WARN("Vulkan XeFG SDK: {}", message);
     }
 
+    FgWindow output;
     HWND window = nullptr;
     xefg_swapchain_handle_t context = nullptr;
     xell_context_handle_t xell = nullptr;
@@ -49,6 +122,7 @@ struct FgPresenter
     ComPtr<ID3D12CommandAllocator> allocator;
     ComPtr<ID3D12GraphicsCommandList> command;
     ComPtr<ID3D12Fence> fence;
+    ComPtr<ID3D12Resource> hudless;
     uint64_t serial = 0;
     uint32_t frameId = 0;
     int interpolated = 0;
@@ -61,12 +135,8 @@ struct FgPresenter
     void Show(bool show)
     {
         if (!window) return;
-        const int command = show ? SW_SHOWNA : SW_HIDE;
-        if (GetWindowThreadProcessId(window, nullptr) == GetCurrentThreadId())
-            ShowWindow(window, command);
-        else
-            ShowWindowAsync(window, command);
-        visible = show;
+        ShowWindowAsync(window, show ? SW_SHOWNA : SW_HIDE);
+        visible = fgLive = show;
     }
 
     void Pause()
@@ -82,15 +152,18 @@ struct FgPresenter
     void Release()
     {
         Pause();
-        command.Reset(); allocator.Reset(); fence.Reset(); swap.Reset();
+        command.Reset();
+        allocator.Reset();
+        fence.Reset();
+        swap.Reset();
+        hudless.Reset();
         if (context)
             XeFGProxy::Destroy()(context);
         context = nullptr;
         if (xell)
             XeLLProxy::DestroyContext()(xell);
         xell = nullptr;
-        if (window && !DestroyWindow(window))
-            PostMessageW(window, WM_CLOSE, 0, 0);
+        output.Destroy();
         window = nullptr;
         frameId = serial = 0;
         interpolated = maximum = 0;
@@ -109,23 +182,9 @@ struct FgPresenter
             !XeFGProxy::TagFrameConstants() || !XeFGProxy::SetPresentId() ||
             !XeFGProxy::SetEnabled() || !XeFGProxy::GetLastPresentStatus())
             return false;
-        static const wchar_t className[] = L"OptiScalerVulkanXeFG";
-        static bool registered = [] {
-            WNDCLASSW type {};
-            type.lpfnWndProc = FgWindowProc;
-            type.hInstance = GetModuleHandleW(nullptr);
-            type.lpszClassName = className;
-            return RegisterClassW(&type) != 0;
-        }();
-        if (!registered) return false;
-        window = CreateWindowExW(WS_EX_TRANSPARENT, className, L"",
-                                 WS_CHILD | WS_VISIBLE, 0, 0, width, height, parent, nullptr,
-                                 GetModuleHandleW(nullptr), nullptr);
-        if (!window)
-        {
-            LOG_ERROR("Vulkan XeFG: child window failed ({})", GetLastError());
+        if (!output.Create(parent, width, height))
             return false;
-        }
+        window = output.window;
         visible = true;
         const auto created = XeFGProxy::D3D12CreateContext()(device, &context);
         if (created != XEFG_SWAPCHAIN_RESULT_SUCCESS)
@@ -177,6 +236,7 @@ struct FgPresenter
         description.Scaling = DXGI_SCALING_STRETCH;
         xefg_swapchain_d3d12_init_params_t parameters {};
         parameters.maxInterpolatedFrames = properties.maxSupportedInterpolations;
+        parameters.uiMode = XEFG_SWAPCHAIN_UI_MODE_BACKBUFFER_HUDLESS;
         ComPtr<IDXGIFactory2> factory;
         const auto factoryResult = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
         if (FAILED(factoryResult))
@@ -200,11 +260,29 @@ struct FgPresenter
                 return false;
             }
         }
-        if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) ||
+        // The back buffer carries OptiScaler's menu and overlays and the hudless copy only the game, so
+        // XeFG interpolates the game and lays the overlay unwarped over every generated frame.
+        if (XeFGProxy::SetUiCompositionState())
+        {
+            const auto composition =
+                XeFGProxy::SetUiCompositionState()(context, XEFG_SWAPCHAIN_UI_COMPOSITION_STATE_ENABLED);
+            if (composition != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+                LOG_WARN("Vulkan XeFG: UI composition unavailable ({})", (int) composition);
+        }
+        D3D12_HEAP_PROPERTIES heap { D3D12_HEAP_TYPE_DEFAULT };
+        D3D12_RESOURCE_DESC hudlessDesc {};
+        hudlessDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        hudlessDesc.Width = width;
+        hudlessDesc.Height = height;
+        hudlessDesc.DepthOrArraySize = hudlessDesc.MipLevels = 1;
+        hudlessDesc.Format = format;
+        hudlessDesc.SampleDesc.Count = 1;
+        if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &hudlessDesc,
+                                                   D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&hudless))) ||
+            FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) ||
             FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
                                              IID_PPV_ARGS(&command))) ||
-            FAILED(command->Close()) ||
-            FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+            FAILED(command->Close()) || FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
             return false;
         const DWORD parentThread = GetWindowThreadProcessId(parent, nullptr);
         LOG_INFO("Vulkan XeFG presenter created at {}x{}, maximum {} interpolations; parent thread {}, presenter thread {}",
@@ -212,7 +290,8 @@ struct FgPresenter
         return true;
     }
 
-    bool Present(ID3D12Resource* colour, const AmdPresentExperimental::Guides& guides,
+    // `overlaid` is the final image with OptiScaler's overlay drawn on it, `colour` the same image without.
+    bool Present(ID3D12Resource* overlaid, ID3D12Resource* colour, const AmdPresentExperimental::Guides& guides,
                  ID3D12CommandQueue* queue)
     {
         if (!swap || !guides.motion || !guides.depth) return false;
@@ -230,9 +309,14 @@ struct FgPresenter
             return false;
         AmdPresentExperimental::Transition(command.Get(), back.Get(), D3D12_RESOURCE_STATE_PRESENT,
                                             D3D12_RESOURCE_STATE_COPY_DEST);
-        command->CopyResource(back.Get(), colour);
+        command->CopyResource(back.Get(), overlaid);
         AmdPresentExperimental::Transition(command.Get(), back.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
                                             D3D12_RESOURCE_STATE_PRESENT);
+        AmdPresentExperimental::Transition(command.Get(), hudless.Get(), D3D12_RESOURCE_STATE_COMMON,
+                                           D3D12_RESOURCE_STATE_COPY_DEST);
+        command->CopyResource(hudless.Get(), colour);
+        AmdPresentExperimental::Transition(command.Get(), hudless.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                           D3D12_RESOURCE_STATE_COMMON);
         if (FAILED(command->Close())) return false;
         ID3D12CommandList* lists[] { command.Get() };
         queue->ExecuteCommandLists(1, lists);
@@ -258,7 +342,7 @@ struct FgPresenter
                    XEFG_SWAPCHAIN_RESULT_SUCCESS;
         };
         if (!tag(XEFG_SWAPCHAIN_RES_MOTION_VECTOR, guides.motion.Get()) ||
-            !tag(XEFG_SWAPCHAIN_RES_DEPTH, guides.depth.Get()))
+            !tag(XEFG_SWAPCHAIN_RES_DEPTH, guides.depth.Get()) || !tag(XEFG_SWAPCHAIN_RES_HUDLESS_COLOR, hudless.Get()))
             return false;
         xefg_swapchain_frame_constant_data_t constants {};
         for (int i : { 0, 5, 10, 15 })
@@ -311,8 +395,10 @@ struct Bridge
     HWND hwnd = nullptr;
     FgPresenter fg;
     bool fgFailed = false;
+    std::atomic<bool> fgPending = false;
+    uint32_t fgImage = 0;
     std::vector<VkImage> images;
-    std::vector<VkSemaphore> ready;
+    std::vector<VkSemaphore> ready, overlaid;
     VkCommandPool pool = VK_NULL_HANDLE;
     VkCommandBuffer command = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
@@ -324,11 +410,12 @@ struct Bridge
     bool submitted = false;
     bool gpuInterop = false;
     bool sharedInitialized = false;
-    VkImage sharedImage = VK_NULL_HANDLE;
-    VkDeviceMemory sharedMemory = VK_NULL_HANDLE;
+    VkImage sharedImage = VK_NULL_HANDLE, overlayImage = VK_NULL_HANDLE;
+    VkDeviceMemory sharedMemory = VK_NULL_HANDLE, overlayMemory = VK_NULL_HANDLE;
+    bool overlayInitialized = false;
     ComPtr<ID3D12Device> d12;
     ComPtr<ID3D12CommandQueue> queue12;
-    ComPtr<ID3D12Resource> shared12;
+    ComPtr<ID3D12Resource> shared12, overlay12;
     AmdPresentExperimental::Guides fgGuides;
     ComPtr<ID3D11Device> d11;
     ComPtr<ID3D11DeviceContext> immediate;
@@ -342,21 +429,32 @@ struct Bridge
         if (shared12)
             AmdPresentExperimental::BeforeResize();
         shared12.Reset();
+        overlay12.Reset();
         fgGuides = {};
-        if (sharedImage) vkDestroyImage(device, sharedImage, nullptr);
-        if (sharedMemory) vkFreeMemory(device, sharedMemory, nullptr);
-        sharedImage = VK_NULL_HANDLE; sharedMemory = VK_NULL_HANDLE;
-        gpuInterop = sharedInitialized = false;
+        for (auto image : { sharedImage, overlayImage })
+            if (image)
+                vkDestroyImage(device, image, nullptr);
+        for (auto memory : { sharedMemory, overlayMemory })
+            if (memory)
+                vkFreeMemory(device, memory, nullptr);
+        sharedImage = overlayImage = VK_NULL_HANDLE;
+        sharedMemory = overlayMemory = VK_NULL_HANDLE;
+        gpuInterop = sharedInitialized = overlayInitialized = fgPending = false;
         if (mapped) vkUnmapMemory(device, memory);
         mapped = nullptr;
         if (buffer) vkDestroyBuffer(device, buffer, nullptr);
         if (memory) vkFreeMemory(device, memory, nullptr);
         for (auto s : ready) if (s) vkDestroySemaphore(device, s, nullptr);
+        for (auto s : overlaid)
+            if (s)
+                vkDestroySemaphore(device, s, nullptr);
         if (fence) vkDestroyFence(device, fence, nullptr);
         if (pool) vkDestroyCommandPool(device, pool, nullptr);
         buffer = VK_NULL_HANDLE; memory = VK_NULL_HANDLE; fence = VK_NULL_HANDLE;
         pool = VK_NULL_HANDLE; command = VK_NULL_HANDLE;
-        ready.clear(); images.clear();
+        ready.clear();
+        overlaid.clear();
+        images.clear();
         readback.Reset(); colour.Reset();
         swapchain = VK_NULL_HANDLE; queue = VK_NULL_HANDLE; submitted = false;
         copyAllowed = false; stopped = false;
@@ -426,9 +524,7 @@ struct Bridge
 
     bool InitInterop()
     {
-        auto getHandleProperties = reinterpret_cast<PFN_vkGetMemoryWin32HandlePropertiesKHR>(
-            vkGetDeviceProcAddr(device, "vkGetMemoryWin32HandlePropertiesKHR"));
-        if (!getHandleProperties)
+        if (!vkGetDeviceProcAddr(device, "vkGetMemoryWin32HandlePropertiesKHR"))
             return false;
         if (!d12)
         {
@@ -459,7 +555,14 @@ struct Bridge
             queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
             if (FAILED(d12->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue12)))) return false;
         }
+        return CreateShared(sharedImage, sharedMemory, shared12);
+    }
 
+    // A D3D12 texture of the swapchain size, imported into Vulkan as `target`.
+    bool CreateShared(VkImage& target, VkDeviceMemory& targetMemory, ComPtr<ID3D12Resource>& target12)
+    {
+        auto getHandleProperties = reinterpret_cast<PFN_vkGetMemoryWin32HandlePropertiesKHR>(
+            vkGetDeviceProcAddr(device, "vkGetMemoryWin32HandlePropertiesKHR"));
         const bool bgra = format == VK_FORMAT_B8G8R8A8_UNORM || format == VK_FORMAT_B8G8R8A8_SRGB;
         D3D12_HEAP_PROPERTIES heapProperties {};
         heapProperties.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -533,9 +636,9 @@ struct Bridge
             if (memory) vkFreeMemory(device, memory, nullptr);
             return false;
         }
-        sharedImage = image;
-        sharedMemory = memory;
-        shared12 = candidate;
+        target = image;
+        targetMemory = memory;
+        target12 = candidate;
         return true;
     }
 
@@ -562,9 +665,13 @@ struct Bridge
         VkFenceCreateInfo fenceInfo { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
         if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) return false;
         ready.resize(images.size(), VK_NULL_HANDLE);
+        overlaid.resize(images.size(), VK_NULL_HANDLE);
         VkSemaphoreCreateInfo semaphoreInfo { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
         for (auto& s : ready)
             if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &s) != VK_SUCCESS) return false;
+        for (auto& s : overlaid)
+            if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &s) != VK_SUCCESS)
+                return false;
         if (InitInterop())
         {
             gpuInterop = true;
@@ -625,9 +732,9 @@ struct Bridge
         return vkBeginCommandBuffer(command, &begin) == VK_SUCCESS;
     }
 
-    void SharedBarrier(VkImageLayout before, VkImageLayout after, uint32_t sourceFamily,
-                       uint32_t targetFamily, VkAccessFlags sourceAccess, VkAccessFlags targetAccess,
-                       VkPipelineStageFlags sourceStage, VkPipelineStageFlags targetStage)
+    void SharedBarrier(VkImageLayout before, VkImageLayout after, uint32_t sourceFamily, uint32_t targetFamily,
+                       VkAccessFlags sourceAccess, VkAccessFlags targetAccess, VkPipelineStageFlags sourceStage,
+                       VkPipelineStageFlags targetStage, VkImage image = VK_NULL_HANDLE)
     {
         VkImageMemoryBarrier barrier { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
         barrier.srcAccessMask = sourceAccess;
@@ -636,7 +743,7 @@ struct Bridge
         barrier.newLayout = after;
         barrier.srcQueueFamilyIndex = sourceFamily;
         barrier.dstQueueFamilyIndex = targetFamily;
-        barrier.image = sharedImage;
+        barrier.image = image ? image : sharedImage;
         barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         barrier.subresourceRange.levelCount = barrier.subresourceRange.layerCount = 1;
         vkCmdPipelineBarrier(command, sourceStage, targetStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
@@ -694,39 +801,33 @@ struct Bridge
         const bool wantFg = Config::Instance()->FGEnabled.value_or_default() &&
             State::Instance().activeFgInput == FGInput::Upscaler &&
             State::Instance().activeFgOutput == FGOutput::XeFG;
-        const bool menuOpen = MenuCommon::IsVisible();
         const HWND root = GetAncestor(hwnd, GA_ROOT);
         const HWND foreground = GetForegroundWindow();
         const bool background = root && IsWindowVisible(root) && foreground &&
             GetAncestor(foreground, GA_ROOT) != root;
-        if (!wantFg || menuOpen || background)
+        if (!wantFg || background)
         {
             if (fg.window && (fg.enabled || fg.visible))
             {
                 fg.Pause();
-                if (menuOpen)
-                    LOG_INFO("Vulkan XeFG paused while OptiScaler menu is open");
-                else if (background)
-                    LOG_INFO("Vulkan XeFG paused while game window is in background");
+                LOG_INFO("Vulkan XeFG paused while {}",
+                         !wantFg ? "frame generation is off" : "game window is in background");
             }
             if (!wantFg)
                 fgFailed = false;
         }
-        if (wantFg && !menuOpen && !background && !fgFailed && fgGuides.motion && fgGuides.depth)
+        if (wantFg && !background && !fgFailed && fgGuides.motion && fgGuides.depth)
         {
-            if (!fg.window && !fg.Create(hwnd, d12.Get(), queue12.Get(), extent.width, extent.height,
-                                         shared12->GetDesc().Format))
+            if ((!overlay12 && !CreateShared(overlayImage, overlayMemory, overlay12)) ||
+                (!fg.window &&
+                 !fg.Create(hwnd, d12.Get(), queue12.Get(), extent.width, extent.height, shared12->GetDesc().Format)))
             {
                 fg.Release();
                 fgFailed = true;
                 LOG_ERROR("Vulkan XeFG: D3D12 presenter initialization failed");
             }
-            if (fg.window && !fg.Present(shared12.Get(), fgGuides, queue12.Get()))
-            {
-                fg.Release();
-                fgFailed = true;
-                LOG_ERROR("Vulkan XeFG: presentation failed; NR will continue");
-            }
+            fgPending = fg.window != nullptr;
+            fgImage = imageIndex;
         }
         else if (fg.window && !fgGuides.motion)
             fg.Pause();
@@ -752,6 +853,61 @@ struct Bridge
         submitted = true;
         present.waitSemaphoreCount = 1;
         present.pWaitSemaphores = &ready[imageIndex];
+        return true;
+    }
+
+    // Runs once OptiScaler's overlay is in the swapchain image: hands that image to XeFG as the back
+    // buffer and the NR output, still in shared12, as the hudless colour.
+    bool PresentGenerated(VkPresentInfoKHR& present)
+    {
+        fgPending = false;
+        const uint32_t imageIndex = present.pImageIndices[0];
+        if (imageIndex != fgImage || !Begin())
+            return false;
+        auto image = images[imageIndex];
+        ImageBarrier(command, image, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0,
+                     VK_ACCESS_TRANSFER_READ_BIT);
+        SharedBarrier(overlayInitialized ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_EXTERNAL, family, 0,
+                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      overlayImage);
+        VkImageCopy region {};
+        region.srcSubresource.aspectMask = region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.srcSubresource.layerCount = region.dstSubresource.layerCount = 1;
+        region.extent = { extent.width, extent.height, 1 };
+        vkCmdCopyImage(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, overlayImage,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        SharedBarrier(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, family, VK_QUEUE_FAMILY_EXTERNAL,
+                      VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, overlayImage);
+        ImageBarrier(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                     VK_ACCESS_TRANSFER_READ_BIT, 0);
+        if (vkEndCommandBuffer(command) != VK_SUCCESS)
+            return false;
+        std::vector<VkPipelineStageFlags> waitStages(present.waitSemaphoreCount, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkSubmitInfo submit { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+        submit.waitSemaphoreCount = present.waitSemaphoreCount;
+        submit.pWaitSemaphores = present.pWaitSemaphores;
+        submit.pWaitDstStageMask = waitStages.empty() ? nullptr : waitStages.data();
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &command;
+        submit.signalSemaphoreCount = 1;
+        submit.pSignalSemaphores = &overlaid[imageIndex];
+        if (vkQueueSubmit(queue, 1, &submit, fence) != VK_SUCCESS)
+            return false;
+        submitted = true;
+        present.waitSemaphoreCount = 1;
+        present.pWaitSemaphores = &overlaid[imageIndex];
+        if (vkWaitForFences(device, 1, &fence, VK_TRUE, 4'000'000'000ull) != VK_SUCCESS)
+            return false;
+        submitted = false;
+        overlayInitialized = true;
+        if (!fg.Present(overlay12.Get(), shared12.Get(), fgGuides, queue12.Get()))
+        {
+            fg.Release();
+            fgFailed = true;
+            LOG_ERROR("Vulkan XeFG: presentation failed; NR will continue");
+        }
         return true;
     }
 
@@ -884,7 +1040,16 @@ bool Process(VkQueue queue, VkPresentInfoKHR& present)
     if (!config->DlssNrEnabled.value_or_default() || !config->DlssNrPresent.value_or_default() ||
         config->NrBackend.value_or_default() != "daniel" || present.swapchainCount != 1 ||
         State::Instance().swapchainApi != API::Vulkan)
+    {
+        // XeFG shows the last frame it was given until it is paused.
+        if (fgLive)
+        {
+            std::lock_guard lock(mutex);
+            bridge.fg.Pause();
+            LOG_INFO("Vulkan XeFG paused while final-image NR is off");
+        }
         return true;
+    }
     static std::once_flag logged;
     std::call_once(logged, [&] {
         LOG_INFO("Vulkan final-image bridge: enabled {}, final image {}, backend {}, API {}",
@@ -892,7 +1057,13 @@ bool Process(VkQueue queue, VkPresentInfoKHR& present)
                  config->NrBackend.value_or_default(), (int) State::Instance().swapchainApi);
     });
     std::lock_guard lock(mutex);
-    if (bridge.swapchain != present.pSwapchains[0] || bridge.stopped) return true;
+    bridge.fgPending = false;
+    if (bridge.swapchain != present.pSwapchains[0] || bridge.stopped)
+    {
+        if (bridge.fg.enabled || bridge.fg.visible)
+            bridge.fg.Pause();
+        return true;
+    }
     bridge.queue = queue;
     if (!bridge.pool && !bridge.InitVulkan())
     {
@@ -924,5 +1095,20 @@ bool Process(VkQueue queue, VkPresentInfoKHR& present)
                  bridge.gpuInterop ? "shared D3D12 image" : "host readback");
     });
     return true;
+}
+
+bool PresentGenerated(VkPresentInfoKHR& present)
+{
+    if (!bridge.fgPending)
+        return true;
+    std::lock_guard lock(mutex);
+    if (!bridge.fgPending || bridge.swapchain != present.pSwapchains[0])
+        return true;
+    if (bridge.PresentGenerated(present))
+        return true;
+    bridge.stopped = true;
+    bridge.fg.Release();
+    AmdPresentExperimental::Report("Vulkan NR: copy or synchronization failed; restart required");
+    return false;
 }
 } // namespace AmdVkPresent

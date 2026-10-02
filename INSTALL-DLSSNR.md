@@ -159,7 +159,11 @@ The current route requires an unmultisampled RGBA8 or BGRA8 backbuffer; OpenGL,
 DXVK D3D11 and HDR swapchains are not supported. Native Vulkan final-image NR
 uses a Vulkan-to-D3D12 shared image when supported, with host readback as fallback.
 The swapchain must support transfer source and destination usage.
-XeFG/MFG is still unavailable for native Vulkan presentation; the bundled XeFG SDK exposes a D3D12 swapchain.
+On native Vulkan, XeFG/MFG presents through a D3D12 swapchain in a child window over the
+game: set FG Input to OptiFG and FG Output to XeFG, then tick Frame Generation (Vulkan XeFG)
+Active or press the FG key. The OptiScaler menu and overlays stay visible and usable over the
+generated frames. XeFG pauses while the game window is in the background and while NR or
+frame generation is off.
 The first six frames after a reset use zero motion while the estimator warms up.
 Its scene-change score resets neural history before a cut frame runs. The noise
 seed is fixed on supported AMD runtime versions (0.4.1 through 0.5.0). On D3D11,

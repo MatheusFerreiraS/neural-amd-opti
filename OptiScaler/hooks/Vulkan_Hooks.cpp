@@ -406,6 +406,9 @@ static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPres
         return VK_ERROR_OUT_OF_DATE_KHR;
     }
 
+    if (!AmdVkPresent::PresentGenerated(localPresentInfo))
+        return VK_ERROR_DEVICE_LOST;
+
     ReflexHooks::update(false, true);
 
     // original call

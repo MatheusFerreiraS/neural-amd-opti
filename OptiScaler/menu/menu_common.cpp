@@ -1483,8 +1483,11 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
         {
             inputFG = false;
 
+            const bool vulkanFinalImage =
+                state.swapchainApi == API::Vulkan && config->DlssNrPresent.value_or_default() &&
+                state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::XeFG;
             if (state.activeFgInput != FGInput::NoFG && state.activeFgOutput != FGOutput::NoFG &&
-                (state.currentFGSwapchain != nullptr || state.activeFgInput == FGInput::NvngxFG))
+                (state.currentFGSwapchain != nullptr || state.activeFgInput == FGInput::NvngxFG || vulkanFinalImage))
             {
                 config->FGEnabled = !config->FGEnabled.value_or_default();
                 LOG_DEBUG("FG toggle key pressed, setting FGEnabled to {}", config->FGEnabled.value_or_default());
@@ -6060,8 +6063,6 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         bool enabled = config->FGEnabled.value_or_default();
         if (ImGui::Checkbox("Active##VulkanXeFG", &enabled))
             config->FGEnabled = enabled;
-        if (enabled)
-            ImGui::TextDisabled("Close this menu to display generated frames.");
         int count = config->FGXeFGInterpolationCount.value_or(2);
         if (ImGui::SliderInt("Interpolated frames##VulkanXeFG", &count, 1, 4,
                              "%d", ImGuiSliderFlags_AlwaysClamp))
