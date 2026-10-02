@@ -57,10 +57,11 @@ $cases = @(
     @{ Name = "classic-fg"; Args = @(); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog },
     @{ Name = "ex-fg"; Args = @("--ex"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog },
     @{ Name = "msaa-fg"; Args = @("--msaa"); Fg = $true; Frames = 910; Script = $fgScript; Log = $fgLog },
-    # Thousands of generated frames in a row: the 32-bit bridge lost its D3D12 device after about 2000.
-    @{ Name = "soak-fg"; Args = @(); Fg = $true; Frames = 6000
+    # Thousands of generated frames in a row (the 32-bit bridge lost its D3D12 device after about 2000), with two
+    # generated frames per rendered frame.
+    @{ Name = "soak-fg"; Args = @(); Fg = $true; Frames = 6000; Ini = "[XeFG]`r`nInterpolationCount=2`r`n"
        Script = "1000:motion=soak-1000,3000:motion=soak-3000,5900:motion=soak-5900"
-       Log = @("D3D9 bridge frame 5701: XeFG presenter, NR true at scale 1.00, FG true, XeFG last present [2-9] frames") },
+       Log = @("D3D9 bridge frame 5701: XeFG presenter, NR true at scale 1.00, FG true, XeFG last present 3 frames") },
     # Frame times at 1920x1080 borderless with the scene moving and still, NR or FG on and off.
     @{ Name = "timing-nr"; Args = @("--borderless", "--size", "1920x1080"); Fg = $false; Frames = 600
        Script = "100:mark=nr-moving,220:still,230:mark=nr-still,350:still,360:nr,370:mark=off-moving,480:still,490:mark=off-still"
@@ -100,7 +101,7 @@ foreach ($c in $cases) {
     }
     Set-Content -Path (Join-Path $dir "OptiScaler.ini") -Encoding ascii -Value (
         "[DlssNr]`r`nEnabled=true`r`nPresentWithoutUpscaler=$(if ($c.Present) { $c.Present } else { 'true' })`r`n" +
-        "NrBackend=daniel`r`n" + $fgSection +
+        "NrBackend=daniel`r`n" + $fgSection + $c.Ini +
         "[Log]`r`nLogToFile=true`r`nLogLevel=2`r`nSingleFile=true`r`n")
 
     $arguments = @($c.Args) + @("--frames", $c.Frames, "--shots", "`"$dir`"", "--script", "`"$($c.Script)`"")
