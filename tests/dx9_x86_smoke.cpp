@@ -7,6 +7,7 @@
 //   --size WxH           back buffer and client size (default 1280x720)
 //   --vsync              present interval one (default immediate)
 //   --native             load the system d3d9.dll
+//   --window-thread      the window on its own thread, blocked while the main thread renders
 //   --expect-bridged     every frame but the first few must be presented by the host
 //   --expect-fg          OptiScaler must report frame generation active at the end
 //   --menu-at F          press the menu key (Insert) at F, move the mouse over the window, press it again
@@ -60,6 +61,9 @@ bool Foreground(HWND window)
     const HWND current = GetForegroundWindow();
     if (current == window)
         return true;
+    // Bringing forward a window of a blocked thread would wait for it.
+    if (GetWindowThreadProcessId(window, nullptr) != GetCurrentThreadId())
+        return false;
     // With no foreground window at all (one just closed) any process may take the foreground.
     if (!current)
         return SetForegroundWindow(window) && GetForegroundWindow() == window;
@@ -158,6 +162,57 @@ bool Shot(HWND window, const char* path)
     return saved;
 }
 
+HWND MakeWindow(UINT width, UINT height)
+{
+    WNDCLASSW type {};
+    type.lpfnWndProc = Proc;
+    type.hInstance = GetModuleHandleW(nullptr);
+    type.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    type.lpszClassName = L"OptiDx9X86Smoke";
+    RegisterClassW(&type);
+    RECT rect { 0, 0, LONG(width), LONG(height) };
+    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+    const int left = std::max(0, GetSystemMetrics(SM_CXSCREEN) - int(rect.right - rect.left) - 40);
+    HWND window =
+        CreateWindowExW(WS_EX_TOPMOST, type.lpszClassName, L"OptiScaler DX9 x86 smoke", WS_OVERLAPPEDWINDOW, left, 40,
+                        rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, type.hInstance, nullptr);
+    if (window)
+    {
+        ShowWindow(window, SW_SHOW);
+        UpdateWindow(window);
+        // On the window's own thread: from another one, bringing it forward waits for this thread.
+        Foreground(window);
+    }
+    return window;
+}
+
+// --window-thread: the window lives on a thread of its own that pumps its messages once a frame and
+// is otherwise blocked waiting for the rendering thread, as an engine with a separate render thread
+// can be. Nothing may make the Present wait for that thread.
+struct WindowThread
+{
+    UINT width, height;
+    HANDLE go = nullptr, pumped = nullptr;
+    HWND window = nullptr;
+};
+DWORD WINAPI WindowLoop(LPVOID context)
+{
+    auto pump = static_cast<WindowThread*>(context);
+    pump->window = MakeWindow(pump->width, pump->height);
+    SetEvent(pump->pumped);
+    for (;;)
+    {
+        WaitForSingleObject(pump->go, INFINITE);
+        MSG msg;
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        SetEvent(pump->pumped);
+    }
+}
+
 DWORD HostProcess()
 {
     DWORD found = 0;
@@ -210,7 +265,8 @@ DWORD WINAPI Watchdog(LPVOID seconds)
 
 int main(int argc, char** argv)
 {
-    bool ex = false, native = false, vsync = false, expectBridged = false, expectFg = false, screen = false;
+    bool ex = false, native = false, vsync = false, windowThread = false, expectBridged = false, expectFg = false,
+         screen = false;
     int frames = 240, menuAt = -1, resetAt = -1, killAt = -1, timeout = 120, shotAt = -1;
     const char* shotPath = nullptr;
     double work = 0;
@@ -229,6 +285,8 @@ int main(int argc, char** argv)
             ex = true;
         else if (a == "--native")
             native = true;
+        else if (a == "--window-thread")
+            windowThread = true;
         else if (a == "--vsync")
             vsync = true;
         else if (a == "--expect-bridged")
@@ -305,23 +363,37 @@ int main(int argc, char** argv)
         return s;
     };
 
-    WNDCLASSW type {};
-    type.lpfnWndProc = Proc;
-    type.hInstance = GetModuleHandleW(nullptr);
-    type.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    type.lpszClassName = L"OptiDx9X86Smoke";
-    RegisterClassW(&type);
-    RECT rect { 0, 0, LONG(width), LONG(height) };
-    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
-    const int left = std::max(0, GetSystemMetrics(SM_CXSCREEN) - int(rect.right - rect.left) - 40);
-    HWND window =
-        CreateWindowExW(WS_EX_TOPMOST, type.lpszClassName, L"OptiScaler DX9 x86 smoke", WS_OVERLAPPEDWINDOW, left, 40,
-                        rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, type.hInstance, nullptr);
+    WindowThread pump { width, height };
+    HWND window = nullptr;
+    if (windowThread)
+    {
+        pump.go = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        pump.pumped = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        CreateThread(nullptr, 0, WindowLoop, &pump, 0, nullptr);
+        WaitForSingleObject(pump.pumped, INFINITE);
+        window = pump.window;
+    }
+    else
+        window = MakeWindow(width, height);
     if (!window)
         return Fail("window");
-    ShowWindow(window, SW_SHOW);
-    UpdateWindow(window);
-    const bool front = Foreground(window);
+    // One turn of the window's messages, on the window's thread when it has its own.
+    auto Pump = [&]
+    {
+        if (windowThread)
+        {
+            SetEvent(pump.go);
+            WaitForSingleObject(pump.pumped, INFINITE);
+            return;
+        }
+        MSG msg;
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    };
+    const bool front = GetForegroundWindow() == window;
 
     IDirect3D9* api = nullptr;
     IDirect3D9Ex* apiEx = nullptr;
@@ -377,9 +449,7 @@ int main(int argc, char** argv)
         int warmFrames = 0;
         while ((warm = Status()).bridged == 0 && !warm.disabled && GetTickCount64() < until)
         {
-            MSG msg;
-            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
-                DispatchMessageW(&msg);
+            Pump();
             Draw(device, width, height, warmFrames++);
             ex ? deviceEx->PresentEx(nullptr, nullptr, nullptr, nullptr, 0)
                : device->Present(nullptr, nullptr, nullptr, nullptr);
@@ -391,12 +461,7 @@ int main(int argc, char** argv)
     QueryPerformanceCounter(&started);
     for (int frame = 0; frame < frames; ++frame)
     {
-        MSG msg;
-        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
-        {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
+        Pump();
         // A drag: the cursor to the start, a relative nudge there and back (a menu reading another
         // process's window follows a mouse by its relative moves, from where the cursor was), button
         // down, twelve relative steps, button up; one event a frame, as OptiScaler reads the mouse once a
@@ -468,7 +533,8 @@ int main(int argc, char** argv)
             height = resetHeight;
             RECT r { 0, 0, LONG(width), LONG(height) };
             AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-            SetWindowPos(window, nullptr, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER);
+            SetWindowPos(window, nullptr, 0, 0, r.right - r.left, r.bottom - r.top,
+                         SWP_NOMOVE | SWP_NOZORDER | (windowThread ? SWP_ASYNCWINDOWPOS : 0));
             params.BackBufferWidth = width;
             params.BackBufferHeight = height;
             const HRESULT hr = ex ? deviceEx->ResetEx(&params, nullptr) : device->Reset(&params);
@@ -551,7 +617,8 @@ int main(int argc, char** argv)
 
     device->Release();
     api->Release();
-    DestroyWindow(window);
+    if (!windowThread)
+        DestroyWindow(window);
     if (!failed)
         printf("PASS\n");
     fflush(stdout);

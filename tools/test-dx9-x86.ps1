@@ -124,6 +124,17 @@ try {
         if ($done -lt 5) { "fewer than 240 NR frames completed ($done log lines)" }
         if ((Count 'OptiScaler.log' 'setting DlssNrEnabled to false') -eq 0) { 'NR was not turned off' }
     }
+    # The window on a thread that is blocked while the game renders and presents (an engine with a render
+    # thread): the child window must still come, and a lost host must still be replaced.
+    Run-Case 'window-thread' $nr (@('--ex', '--window-thread', '--frames', '300', '--expect-bridged') + $screenArg) {
+        param($text)
+        if ((Count 'amd_presr.log' 'Completed AMD pre-SR passes') -lt 3) { 'NR did not run' }
+    }
+    Run-Case 'window-thread-restart' $nr @('--window-thread', '--frames', '900', '--vsync', '--work', '10', '--kill-host-at',
+        '200') {
+        param($text)
+        if ((Count 'dx9-x86.log' 'host 2 connected') -eq 0) { 'no second host' }
+    }
     $fg = $nr + @('[FrameGen]', 'Enabled=true', 'FGInput=upscaler', 'FGOutput=xefg', '[XeFG]', 'InterpolationCount=2')
     # At the display's rate (--vsync), so the frames after the Reset span the host restart that
     # XeFG's refused resize costs.

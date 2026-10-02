@@ -26,7 +26,10 @@ that ends without releasing it leaves its window unable to take any other flip s
 longer shows there either: the picture stays frozen while the game runs on. So the proxy makes a
 child window covering the game's client area, on the game window's own thread, and the host presents
 into that. The child takes no input (it is disabled and transparent to hit testing), so the mouse and
-keys still reach the game's window, and it follows the game window's size.
+keys still reach the game's window, and it follows the game window's size. It is asked for, and ended,
+with posted messages: an engine that renders on a thread of its own may keep its window thread waiting
+for that very thread, so the Present never waits for the window thread (the game presents natively for
+the frame or two until the child exists).
 
 When the host does not answer, reports its device lost, refuses a new back buffer size or dies, the
 proxy closes the pipe (the host releases its swap chain and leaves; one still there after five
@@ -116,6 +119,7 @@ Logs, all in `OptiScaler64`: `dx9-x86.log` (game side), `dx9-host.log` (host), `
 with a runtime and XeFG, and runs `tests\dx9_x86_smoke.cpp` through every case under the GPU lock:
 native D3D9, the bridge on D3D9 and D3D9Ex, the memory transport, NR with its toggle key, NR with
 XeFG with the frame generation key and a device Reset to a new size, NR and frame generation both
-turned off, the menu with mouse input held from the game, a Reset without frame generation, the host
+turned off, the menu with mouse input held from the game, a Reset without frame generation, the window
+on a thread that is blocked while the game renders (with and without a host replacement), the host
 ended mid-run with and without frame generation, the final-image Model scale dragged in the menu with
 XeFG on, and frame times at 1920x1080.

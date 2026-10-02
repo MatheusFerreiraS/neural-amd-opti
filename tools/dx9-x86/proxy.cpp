@@ -111,10 +111,13 @@ bool Setting(const wchar_t* key, bool fallback)
 // own Present no longer shows there either. A lost host then only costs its child window: it is
 // destroyed, the game's Present shows again, and the next host gets a new one. The child is made on
 // the game window's thread, which pumps its messages; it takes no input (disabled, and transparent to
-// hit testing), so the mouse and keys still reach the game's window.
+// hit testing), so the mouse and keys still reach the game's window. It is asked for and ended with
+// posted messages: an engine that renders on its own thread may hold its window thread waiting for
+// that very thread, so the Present never waits for the window thread.
 const wchar_t* const originalProc = L"OptiScalerDx9X86Proc";
+const wchar_t* const surfaceClass = L"OptiScalerDx9X86Surface";
 UINT surfaceRequest = 0;
-HWND surface = nullptr;
+std::atomic<HWND> madeSurface { nullptr };
 
 // Input the game must not see while OptiScaler's menu is open. The host reads the mouse and keys
 // itself; the game's window procedure and its cursor calls are what is held back here.
@@ -138,7 +141,7 @@ HWND MakeSurface(HWND parent)
         WNDCLASSW kind {};
         kind.lpfnWndProc = SurfaceProc;
         kind.hInstance = self;
-        kind.lpszClassName = L"OptiScalerDx9X86Surface";
+        kind.lpszClassName = surfaceClass;
         return RegisterClassW(&kind);
     }();
     RECT client {};
@@ -152,12 +155,15 @@ LRESULT CALLBACK GameProc(HWND window, UINT message, WPARAM w, LPARAM l)
     if (message == surfaceRequest && surfaceRequest)
     {
         if (w)
-            return reinterpret_cast<LRESULT>(MakeSurface(window));
-        DestroyWindow(reinterpret_cast<HWND>(l));
+            madeSurface = MakeSurface(window);
+        else
+            DestroyWindow(reinterpret_cast<HWND>(l));
         return 0;
     }
-    if (message == WM_SIZE && surface && GetParent(surface) == window)
-        MoveWindow(surface, 0, 0, LOWORD(l), HIWORD(l), FALSE);
+    if (message == WM_SIZE)
+        for (HWND child = FindWindowExW(window, nullptr, surfaceClass, nullptr); child;
+             child = FindWindowExW(window, child, surfaceClass, nullptr))
+            MoveWindow(child, 0, 0, LOWORD(l), HIWORD(l), FALSE);
     if (menuOpen && GameInput(message))
     {
         ++status.blockedInput;
@@ -177,16 +183,6 @@ void Wrap(HWND window)
                                               : GetWindowLongPtrA(window, GWLP_WNDPROC)));
     unicode ? SetWindowLongPtrW(window, GWLP_WNDPROC, LONG_PTR(GameProc))
             : SetWindowLongPtrA(window, GWLP_WNDPROC, LONG_PTR(GameProc));
-}
-// Makes (make) or destroys (arg) the host's child window on the game window's own thread.
-HWND OnWindowThread(HWND window, bool make, HWND arg = nullptr)
-{
-    if (GetWindowThreadProcessId(window, nullptr) == GetCurrentThreadId())
-        return reinterpret_cast<HWND>(SendMessageW(window, surfaceRequest, make, LPARAM(arg)));
-    DWORD_PTR result = 0;
-    return SendMessageTimeoutW(window, surfaceRequest, make, LPARAM(arg), SMTO_ABORTIFHUNG, 2000, &result)
-               ? reinterpret_cast<HWND>(result)
-               : nullptr;
 }
 BOOL WINAPI HeldGetCursorPos(LPPOINT point)
 {
@@ -417,6 +413,9 @@ struct Bridge
     Handle starter;
     LUID startLuid {};
     HWND focus = nullptr;
+    // This host's child window, and whether one has been asked of the game window's thread.
+    HWND surface = nullptr;
+    bool surfaceAsked = false;
     // Failures in a row. A host that presented 600 frames before it failed starts the count again, so
     // only a host that keeps failing early leaves the session native.
     uint32_t strikes = 0;
@@ -428,7 +427,7 @@ struct Bridge
         Log("host lost (%s); this frame is presented natively", why);
         host.Stop();
         if (surface)
-            OnWindowThread(window, false, surface);
+            PostMessageW(window, surfaceRequest, 0, LPARAM(surface));
         surface = nullptr;
         link = Link::Down;
         built = false;
@@ -545,11 +544,6 @@ struct Bridge
             stage.height = desc.Height;
             stage.format = desc.Format;
         }
-        if (!surface && !(surface = OnWindowThread(window, true)))
-        {
-            Log("no child window could be made in the game's window");
-            return false;
-        }
         dx9wire::Build request;
         request.generation = ++generation;
         request.window = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(surface));
@@ -643,6 +637,14 @@ struct Bridge
         }
         if (!Started() || !Answer())
             return false;
+        // The child window comes from the game window's thread; until it has made one, present natively.
+        if (!surface && !(surface = madeSurface.exchange(nullptr)))
+        {
+            if (!surfaceAsked)
+                surfaceAsked = PostMessageW(window, surfaceRequest, 1, 0) != FALSE;
+            return false;
+        }
+        surfaceAsked = false;
         if (!Ensure(game, desc))
         {
             // A host that cannot resize its swap chain (XeFG refuses while anything holds a back
