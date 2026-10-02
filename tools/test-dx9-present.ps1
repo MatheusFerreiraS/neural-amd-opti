@@ -56,6 +56,12 @@ $cases = @(
                "D3D9 bridge frame 1: D3D9 present, NR false")
        NotLog = @("D3D9 bridge: D3D12 device") },
     @{ Name = "classic-nr"; Args = @(); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
+    # With the scene still, the screen with NR differs from the screen without it, and two frames without NR match.
+    @{ Name = "nr-visible"; Args = @(); Fg = $false; Frames = 200
+       Script = "60:still,140:shot=nr-on,150:nr,165:shot=nr-off,170:diff=nr-off,175:diff=nr-on,180:nr"
+       Log = @("D3D9 bridge frame 1: D3D9 present, NR true")
+       Out = @("diff nr-off: [0-9.]+ of the pixels changed, mean difference 0\.[0-4]",
+               "diff nr-on: [0-9.]+ of the pixels changed, mean difference (?:[1-9]|0\.[5-9])") },
     @{ Name = "ex-nr"; Args = @("--ex"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
     @{ Name = "chain-nr"; Args = @("--chain"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
     @{ Name = "msaa-nr"; Args = @("--msaa"); Fg = $false; Frames = 470; Script = $nrScript; Log = $nrLog },
@@ -145,6 +151,7 @@ foreach ($c in $cases) {
     if ($stdout -notmatch "DONE 0 present failures") { $problems += "present failures" }
     foreach ($pattern in $c.Log) { if ($log -notmatch $pattern) { $problems += "log lacks: $pattern" } }
     foreach ($pattern in $c.NotLog) { if ($log -match $pattern) { $problems += "log has: $pattern" } }
+    foreach ($pattern in $c.Out) { if ($stdout -notmatch $pattern) { $problems += "output lacks: $pattern" } }
     foreach ($line in ($stdout -split "`r?`n" | Where-Object { $_ -match "^motion (\S+): ([0-9.]+)" })) {
         $null = $line -match "^motion (\S+): ([0-9.]+)"
         if ([double]$Matches[2] -lt 0.02) { $problems += "frozen on screen: $line" }
@@ -152,7 +159,7 @@ foreach ($c in $cases) {
     if ($log -match "\[error\].*D3D9") { $problems += "D3D9 error in the log" }
 
     Write-Host "== $($c.Name): $(if ($problems.Count) { 'FAIL' } else { 'PASS' })"
-    $stdout -split "`r?`n" | Where-Object { $_ -match "^(phase|motion|shot|reset)" } | ForEach-Object { Write-Host "   $_" }
+    $stdout -split "`r?`n" | Where-Object { $_ -match "^(phase|motion|shot|reset|diff)" } | ForEach-Object { Write-Host "   $_" }
     foreach ($p in $problems) { Write-Host "   $p" }
     if ($problems.Count) { $failed += $c.Name }
 }

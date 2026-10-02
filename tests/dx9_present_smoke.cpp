@@ -7,7 +7,7 @@
 // Actions: menu (Insert), nr (Numpad 5), fg (End), still (stops or restarts the scrolling), press=XxY (moves the
 // cursor there and holds the left button), release, minimize, restore, window2 (presents into a new window from then
 // on, as a game that recreates its window), cpu=ms (busy CPU work per frame), reset=WxH, shot=name, motion=name,
-// mark=name.
+// diff=name (compares the screen with an earlier shot), mark=name.
 #define NOMINMAX
 #include <windows.h>
 #include <d3d9.h>
@@ -323,7 +323,7 @@ int main(int argc, char** argv)
                 : ex         ? "PresentEx"
                              : "Present");
 
-    std::map<std::string, Shot> pending;
+    std::map<std::string, Shot> pending, taken;
     std::multimap<int, std::string> motions;
     std::string phase = "start";
     LARGE_INTEGER frequency, phaseStart, previous;
@@ -407,6 +407,19 @@ int main(int argc, char** argv)
                 const Shot shot = Capture();
                 Save(shot, shots + "\\" + action.substr(5) + ".bmp");
                 std::printf("shot %s: mean %.1f\n", action.substr(5).c_str(), Mean(shot));
+                taken[action.substr(5)] = shot;
+            }
+            else if (action.rfind("diff=", 0) == 0)
+            {
+                const Shot& before = taken[action.substr(5)];
+                const Shot now = Capture();
+                double sum = 0;
+
+                for (size_t i = 0; i < now.pixels.size() && now.pixels.size() == before.pixels.size(); ++i)
+                    sum += std::abs(int(now.pixels[i]) - int(before.pixels[i]));
+
+                std::printf("diff %s: %.3f of the pixels changed, mean difference %.2f\n", action.substr(5).c_str(),
+                            Changed(before, now), now.pixels.empty() ? 0.0 : sum / now.pixels.size());
             }
             else if (action.rfind("motion=", 0) == 0)
             {
