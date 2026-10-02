@@ -33,6 +33,7 @@
 #include <hooks/D3D11_Hooks.h>
 #include <hooks/D3D12_Hooks.h>
 #include <hooks/Vulkan_Hooks.h>
+#include <hooks/GL_Hooks.h>
 #include <hooks/Ntdll_Hooks.h>
 #include <hooks/Kernel_Hooks.h>
 #include <hooks/Gdi32_Hooks.h>
@@ -626,6 +627,65 @@ static void CheckWorkingMode()
             break;
         }
 
+        // opengl32.dll
+        if (lCaseFilename == "opengl32.dll")
+        {
+            do
+            {
+                auto pluginFilePath = pluginPath / L"opengl32.dll";
+                originalModule = NtdllProxy::LoadLibraryExW_Ldr(pluginFilePath.wstring().c_str(), NULL, 0);
+
+                if (originalModule != nullptr)
+                {
+                    if (!_passThruMode)
+                        LOG_INFO("OptiScaler working as opengl32.dll, original dll loaded from plugin folder");
+
+                    break;
+                }
+
+                originalModule = NtdllProxy::LoadLibraryExW_Ldr(L"opengl32-original.dll", NULL, 0);
+
+                if (originalModule != nullptr)
+                {
+                    if (!_passThruMode)
+                        LOG_INFO("OptiScaler working as opengl32.dll, opengl32-original.dll loaded");
+
+                    break;
+                }
+
+                // By full path: opengl32.dll is not a known DLL, so loading it by name can return this module.
+                wchar_t systemPath[MAX_PATH] {};
+                if (GetSystemDirectoryW(systemPath, MAX_PATH) != 0)
+                {
+                    auto systemFilePath = std::filesystem::path(systemPath) / L"opengl32.dll";
+                    originalModule = NtdllProxy::LoadLibraryExW_Ldr(systemFilePath.wstring().c_str(), NULL, 0);
+                }
+
+                if (originalModule != nullptr && !_passThruMode)
+                    LOG_INFO("OptiScaler working as opengl32.dll, system dll loaded");
+
+            } while (false);
+
+            if (originalModule != nullptr)
+            {
+                dllNames.push_back("opengl32.dll");
+                dllNames.push_back("opengl32");
+                dllNamesW.push_back(L"opengl32.dll");
+                dllNamesW.push_back(L"opengl32");
+
+                opengl32.LoadOriginalLibrary(originalModule);
+
+                modeFound = true;
+            }
+            else
+            {
+                if (!_passThruMode)
+                    LOG_ERROR("OptiScaler can't find original opengl32.dll!");
+            }
+
+            break;
+        }
+
         // winhttp.dll
         if (lCaseFilename == "winhttp.dll")
         {
@@ -946,6 +1006,10 @@ static void CheckWorkingMode()
         LOG_DEBUG("Hooking vulkan-1.dll");
         VulkanHooks::Hook(vulkanModule);
     }
+
+    // OpenGL, on the opengl32.dll route only
+    if (opengl32.dll != nullptr)
+        GLHooks::Hook(opengl32.dll);
 
     // NVAPI
     // Doesn't seem to like GetModuleHandle for some reason, so call our load to make sure

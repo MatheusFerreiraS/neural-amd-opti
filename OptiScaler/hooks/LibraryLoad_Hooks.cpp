@@ -67,6 +67,26 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
             return nullptr; // not handled: preserve the original loader/unlocker's path
     }
 
+    // Before the path checks below, which touch the file system: some callers load this dll every frame.
+    if ((State::Instance().workingMode != WorkingMode::Dxgi || !State::Instance().skipDxgiLoadChecks) &&
+        CheckDllNameW(&libName, &dllNamesW))
+    {
+        if (!State::Instance().ServeOriginal())
+        {
+            // The OpenGL driver asks for opengl32 several times per present; once is enough in the log.
+            static std::atomic_bool openglLogged = false;
+            if (!normalizedPath.contains(L"opengl32") || !openglLogged.exchange(true))
+                LOG_INFO("{} call, returning this dll!", libNameA);
+
+            return dllModule;
+        }
+        else
+        {
+            LOG_INFO("{} call, ServeOriginal active returning original dll!", libNameA);
+            return originalModule;
+        }
+    }
+
     std::filesystem::path localSlPath(Config::Instance()->MainDllPath.value());
     localSlPath = localSlPath / L"streamline"; // Hardcoded streamline folder
     auto normalizedLocalSlPath = localSlPath.lexically_normal();
@@ -90,21 +110,6 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
         // loadCount++;
 
         return dllModule;
-    }
-
-    if ((State::Instance().workingMode != WorkingMode::Dxgi || !State::Instance().skipDxgiLoadChecks) &&
-        CheckDllNameW(&libName, &dllNamesW))
-    {
-        if (!State::Instance().ServeOriginal())
-        {
-            LOG_INFO("{} call, returning this dll!", libNameA);
-            return dllModule;
-        }
-        else
-        {
-            LOG_INFO("{} call, ServeOriginal active returning original dll!", libNameA);
-            return originalModule;
-        }
     }
 
     // nvngx_dlss
