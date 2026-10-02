@@ -12,11 +12,19 @@
 // another one on the same window), cpu=ms (busy CPU work per frame), reset=WxH, fullscreen (a Reset into exclusive
 // fullscreen at the desktop size), windowed (a Reset back to the window), remove12=ms (another thread puts the
 // process's D3D12 device, the one OptiScaler made, into the removed state after ms), shot=name, motion=name,
-// diff=name (compares the screen with an earlier shot), mark=name.
+// diff=name (compares the screen with an earlier shot), mark=name, dual (a second device on the same window presents
+// after the first one every frame from then on), wndproc (prints the module of the window's WndProc), input (sends a
+// key press and a mouse move to the window and prints how many of them reached its WndProc), bool=Field=0|1,
+// int=Field=N, float=Field=X and unset=Field (write one of OptiScaler's Config fields, as the menu does), tab=N (the
+// menu section), hold and unhold (take and drop a reference to the D3D9 bridge's presenter buffer, which makes the
+// ResizeBuffers of a plain DXGI presenter fail meanwhile; XeFG's swapchain resizes anyway, and an unhold after that
+// crashes). The Config, tab, hold and unhold actions read OptiScaler.pdb beside d3d9.dll.
 #define NOMINMAX
 #include <windows.h>
 #include <d3d9.h>
 #include <d3d12.h>
+#include <dbghelp.h>
+#include <dxgi.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -48,13 +56,156 @@ HWND window = nullptr;
 HWND presentTo = nullptr;
 bool quit = false;
 bool borderless = false;
+int seen = 0;
 
 LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM w, LPARAM l)
 {
     if (message == WM_CLOSE || message == WM_DESTROY)
         quit = true;
 
+    // The messages of the input action.
+    if (((message == WM_KEYDOWN || message == WM_KEYUP) && w == 'J') ||
+        (message == WM_MOUSEMOVE && l == MAKELPARAM(7, 9)))
+        ++seen;
+
     return DefWindowProcW(hwnd, message, w, l);
+}
+
+// OptiScaler's Config and menu section through its PDB, the values the menu writes, and the D3D9 bridge's presenter.
+struct Opti
+{
+    DWORD64 base = 0;
+    BYTE* config = nullptr;
+    ULONG configType = 0;
+
+    bool Load(HMODULE module)
+    {
+        if (config != nullptr)
+            return true;
+
+        wchar_t path[MAX_PATH] {};
+        GetModuleFileNameW(module, path, MAX_PATH);
+        std::wstring folder(path);
+        folder = folder.substr(0, folder.find_last_of(L"\\/"));
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+        SYMBOL_INFOW type {};
+        type.SizeOfStruct = sizeof(type);
+
+        if (!SymInitializeW(GetCurrentProcess(), folder.c_str(), FALSE) ||
+            (base = SymLoadModuleExW(GetCurrentProcess(), nullptr, path, nullptr, (DWORD64) module, 0, nullptr, 0)) ==
+                0 ||
+            !SymGetTypeFromNameW(GetCurrentProcess(), base, L"Config", &type) || Address(L"Config::_config") == nullptr)
+            return false;
+
+        configType = type.TypeIndex;
+        config = *static_cast<BYTE**>(Address(L"Config::_config"));
+        return config != nullptr;
+    }
+
+    void* Address(const wchar_t* name)
+    {
+        std::vector<BYTE> storage(sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(wchar_t));
+        auto symbol = reinterpret_cast<SYMBOL_INFOW*>(storage.data());
+        symbol->SizeOfStruct = sizeof(SYMBOL_INFOW);
+        symbol->MaxNameLen = MAX_SYM_NAME;
+        return SymFromNameW(GetCurrentProcess(), name, symbol) ? reinterpret_cast<void*>(symbol->Address) : nullptr;
+    }
+
+    // A CustomOptional<T> starts with its std::optional<T>: the value, then the engaged flag.
+    BYTE* Field(const std::wstring& name) { return Member(config, configType, name); }
+
+    // Bridge::swap in with_dx12\dx9_with_dx12.cpp, a ComPtr, which holds the pointer alone.
+    IDXGISwapChain* Presenter()
+    {
+        auto bridge = static_cast<BYTE**>(Address(L"bridge"));
+        SYMBOL_INFOW type {};
+        type.SizeOfStruct = sizeof(type);
+
+        if (bridge == nullptr || *bridge == nullptr ||
+            !SymGetTypeFromNameW(GetCurrentProcess(), base, L"`anonymous-namespace'::Bridge", &type))
+            return nullptr;
+
+        BYTE* swap = Member(*bridge, type.TypeIndex, L"swap");
+        return swap != nullptr ? *reinterpret_cast<IDXGISwapChain**>(swap) : nullptr;
+    }
+
+    BYTE* Member(BYTE* object, ULONG objectType, const std::wstring& name)
+    {
+        DWORD count = 0;
+        SymGetTypeInfo(GetCurrentProcess(), base, objectType, TI_GET_CHILDRENCOUNT, &count);
+        std::vector<BYTE> storage(sizeof(TI_FINDCHILDREN_PARAMS) + count * sizeof(ULONG));
+        auto children = reinterpret_cast<TI_FINDCHILDREN_PARAMS*>(storage.data());
+        children->Count = count;
+        SymGetTypeInfo(GetCurrentProcess(), base, objectType, TI_FINDCHILDREN, children);
+
+        for (DWORD i = 0; i < count; ++i)
+        {
+            WCHAR* childName = nullptr;
+            DWORD offset = 0;
+
+            if (!SymGetTypeInfo(GetCurrentProcess(), base, children->ChildId[i], TI_GET_SYMNAME, &childName))
+                continue;
+
+            const bool match = name == childName;
+            LocalFree(childName);
+
+            if (match && SymGetTypeInfo(GetCurrentProcess(), base, children->ChildId[i], TI_GET_OFFSET, &offset))
+                return object + offset;
+        }
+
+        return nullptr;
+    }
+} opti;
+
+// bool=Field=0|1, int=Field=N, float=Field=X, unset=Field (a field holding 4 bytes) or tab=N.
+bool SetOpti(HMODULE module, const std::string& action)
+{
+    if (!opti.Load(module))
+        return false;
+
+    const size_t kind = action.find('='), equals = action.find('=', kind + 1);
+    const std::string verb = action.substr(0, kind);
+    const std::string name =
+        action.substr(kind + 1, equals == std::string::npos ? std::string::npos : equals - kind - 1);
+    const int value = equals == std::string::npos ? 0 : std::atoi(action.c_str() + equals + 1);
+
+    if (verb == "tab")
+    {
+        auto tab = static_cast<int*>(opti.Address(L"selectedTab"));
+
+        if (tab != nullptr)
+            *tab = std::atoi(name.c_str());
+
+        return tab != nullptr;
+    }
+
+    BYTE* field = opti.Field(std::wstring(name.begin(), name.end()));
+
+    if (field == nullptr)
+        return false;
+
+    if (verb == "bool")
+    {
+        field[0] = value != 0;
+        field[1] = 1;
+    }
+    else if (verb == "int")
+    {
+        std::memcpy(field, &value, sizeof(value));
+        field[sizeof(value)] = 1;
+    }
+    else if (verb == "float")
+    {
+        const float number = float(std::atof(action.c_str() + equals + 1));
+        std::memcpy(field, &number, sizeof(number));
+        field[sizeof(number)] = 1;
+    }
+    else if (verb == "unset")
+        field[sizeof(int)] = 0;
+    else
+        return false;
+
+    return true;
 }
 
 // A left-button press or release as a mouse would send it, and whether the desktop took it. OptiScaler drops the
@@ -361,6 +512,8 @@ int main(int argc, char** argv)
 
     IDirect3DDevice9* device = nullptr;
     IDirect3DDevice9Ex* deviceEx = nullptr;
+    IDirect3DDevice9* second = nullptr;
+    ID3D12Resource* held = nullptr;
     auto create = [&]
     {
         const HRESULT created =
@@ -432,6 +585,70 @@ int main(int argc, char** argv)
                 cpuWork = std::atof(action.c_str() + 4);
             else if (action == "still")
                 still = !still;
+            else if (action == "dual")
+            {
+                IDirect3DDevice9* keep = device;
+                IDirect3DDevice9Ex* keepEx = deviceEx;
+                result = create();
+                second = device;
+                device = keep;
+                deviceEx = keepEx;
+                std::printf("dual: second device %08X\n", unsigned(result));
+            }
+            else if (action == "hold" || action == "unhold")
+            {
+                IDXGISwapChain* presenter = opti.Load(d3d9) ? opti.Presenter() : nullptr;
+
+                if (action == "hold" && (presenter == nullptr || FAILED(presenter->GetBuffer(0, IID_PPV_ARGS(&held)))))
+                {
+                    std::printf("FAIL: no presenter buffer to hold\n");
+                    return 7;
+                }
+
+                if (action == "unhold" && held != nullptr)
+                {
+                    held->Release();
+                    held = nullptr;
+                }
+            }
+            else if (action == "wndproc")
+            {
+                HMODULE owner = nullptr;
+                GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCWSTR>(GetWindowLongPtrW(window, GWLP_WNDPROC)), &owner);
+                wchar_t name[MAX_PATH] = L"?";
+
+                if (owner != nullptr)
+                    GetModuleFileNameW(owner, name, MAX_PATH);
+
+                std::printf("wndproc: %s (%ls)\n",
+                            owner == d3d9                        ? "OptiScaler"
+                            : owner == GetModuleHandleW(nullptr) ? "the game"
+                                                                 : "another module",
+                            name);
+            }
+            else if (action == "input")
+            {
+                // Sent, not posted: these reach the window's WndProc chain only. With the menu open and the window
+                // focused, OptiScaler's WndProc keeps them from the game.
+                const LPARAM scan = LPARAM(MapVirtualKeyW('J', MAPVK_VK_TO_VSC)) << 16;
+                seen = 0;
+                SendMessageW(window, WM_KEYDOWN, 'J', 1 | scan);
+                SendMessageW(window, WM_MOUSEMOVE, 0, MAKELPARAM(7, 9));
+                SendMessageW(window, WM_KEYUP, 'J', 1 | scan | (LPARAM(3) << 30));
+                std::printf("input: the game saw %d of 3 (foreground %s)\n", seen,
+                            GetForegroundWindow() == window ? "yes" : "no");
+            }
+            else if (action.rfind("bool=", 0) == 0 || action.rfind("int=", 0) == 0 || action.rfind("float=", 0) == 0 ||
+                     action.rfind("unset=", 0) == 0 || action.rfind("tab=", 0) == 0)
+            {
+                if (!SetOpti(d3d9, action))
+                {
+                    std::printf("FAIL: %s (OptiScaler.pdb beside d3d9.dll?)\n", action.c_str());
+                    return 7;
+                }
+            }
             else if (action == "window2")
             {
                 presentTo = CreateWindowExW(WS_EX_TOPMOST, L"OptiDx9Smoke", L"Opti D3D9 smoke 2",
@@ -596,6 +813,15 @@ int main(int argc, char** argv)
         if (FAILED(result) && ++failures < 5)
             std::printf("present %d failed: %08X\n", frame, unsigned(result));
 
+        if (second != nullptr)
+        {
+            Draw(second, scene + 37, width, height);
+            const HRESULT other = second->Present(nullptr, nullptr, presentTo, nullptr);
+
+            if (FAILED(other) && ++failures < 5)
+                std::printf("second present %d failed: %08X\n", frame, unsigned(other));
+        }
+
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
         worst = std::max(worst, 1000.0 * double(now.QuadPart - previous.QuadPart) / double(frequency.QuadPart));
@@ -604,6 +830,10 @@ int main(int argc, char** argv)
     }
 
     endPhase("end");
+
+    if (second != nullptr)
+        second->Release();
+
     device->Release();
     api->Release();
     DestroyWindow(window);
