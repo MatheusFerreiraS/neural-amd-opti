@@ -4,7 +4,8 @@ rem draws with the Insert key; in nr mode final-image NR runs, in fg mode XeFG p
 rem Builds the app with the x64 MSVC tools, stages exports\release-local\OptiScaler.dll and runs it
 rem under the GPU lock. nr and fg need a danielblnc runtime folder (dlssnr_amd_pass1.dll and
 rem dlssnr_on_amd_weights.bin); fg also needs libxess_fg.dll and libxell.dll in it.
-rem   tools\test-gl-present.cmd [menu^|nr^|fg] [runtime folder]
+rem threaded renders on a thread that never pumps messages while the window thread moves the window.
+rem   tools\test-gl-present.cmd [menu^|nr^|fg] [runtime folder] [threaded]
 setlocal
 cd /d "%~dp0.."
 for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_ROOT=%%I"

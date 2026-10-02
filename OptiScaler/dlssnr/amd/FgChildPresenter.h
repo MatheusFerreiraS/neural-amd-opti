@@ -15,9 +15,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <thread>
 
-// XeFG for routes whose game does not present through DXGI (Vulkan, OpenGL): a D3D12 swapchain in a
-// child window covering the game's client area, fed with the final-image NR colour and its
+// XeFG for a game that does not present through DXGI, used by the OpenGL route: a D3D12 swapchain in
+// a child window covering the game's client area, fed with the final-image NR colour and its
 // optical-flow guides.
 namespace AmdPresentExperimental
 {
@@ -106,6 +110,69 @@ struct FgPresenter
         previous = {};
     }
 
+    static constexpr wchar_t kClassName[] = L"OptiScalerXeFG";
+
+    // Disabled, so the parent gets the mouse over it, and without WM_PARENTNOTIFY, which would be
+    // sent to the parent's thread and wait for it.
+    static HWND NewChild(HWND parent, uint32_t width, uint32_t height)
+    {
+        return CreateWindowExW(WS_EX_TRANSPARENT | WS_EX_NOPARENTNOTIFY, kClassName, L"",
+                               WS_CHILD | WS_VISIBLE | WS_DISABLED, 0, 0, width, height, parent, nullptr,
+                               GetModuleHandleW(nullptr), nullptr);
+    }
+
+    // A child window belongs to the thread that creates it, and the parent's thread sends it
+    // messages and waits for the answer, as when the game destroys its window. Many games present
+    // from a thread that never reads messages, so off the parent's thread the child gets a thread of
+    // its own that does, until the window is gone.
+    static HWND CreateChild(HWND parent, uint32_t width, uint32_t height)
+    {
+        if (GetWindowThreadProcessId(parent, nullptr) == GetCurrentThreadId())
+            return NewChild(parent, width, height);
+
+        struct Shared
+        {
+            std::mutex mutex;
+            std::condition_variable created;
+            HWND window = nullptr;
+            bool done = false, abandoned = false;
+        };
+        auto shared = std::make_shared<Shared>();
+        std::thread(
+            [shared, parent, width, height]
+            {
+                const HWND child = NewChild(parent, width, height);
+                {
+                    std::lock_guard lock(shared->mutex);
+                    if (shared->abandoned)
+                    {
+                        if (child)
+                            DestroyWindow(child);
+                        return;
+                    }
+                    shared->window = child;
+                    shared->done = true;
+                }
+                shared->created.notify_one();
+                while (child && IsWindow(child))
+                {
+                    MsgWaitForMultipleObjects(0, nullptr, FALSE, 100, QS_ALLINPUT);
+                    MSG message;
+                    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+                    {
+                        TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                }
+            })
+            .detach();
+
+        std::unique_lock lock(shared->mutex);
+        if (!shared->created.wait_for(lock, std::chrono::seconds(2), [&] { return shared->done; }))
+            shared->abandoned = true;
+        return shared->window;
+    }
+
     bool Create(HWND parent, ID3D12Device* device, ID3D12CommandQueue* queue, uint32_t width, uint32_t height,
                 DXGI_FORMAT format)
     {
@@ -114,19 +181,17 @@ struct FgPresenter
             !XeFGProxy::D3D12TagFrameResource() || !XeFGProxy::TagFrameConstants() || !XeFGProxy::SetPresentId() ||
             !XeFGProxy::SetEnabled() || !XeFGProxy::GetLastPresentStatus())
             return false;
-        static const wchar_t className[] = L"OptiScalerVulkanXeFG";
         static bool registered = []
         {
             WNDCLASSW type {};
             type.lpfnWndProc = FgWindowProc;
             type.hInstance = GetModuleHandleW(nullptr);
-            type.lpszClassName = className;
+            type.lpszClassName = kClassName;
             return RegisterClassW(&type) != 0;
         }();
         if (!registered)
             return false;
-        window = CreateWindowExW(WS_EX_TRANSPARENT, className, L"", WS_CHILD | WS_VISIBLE, 0, 0, width, height, parent,
-                                 nullptr, GetModuleHandleW(nullptr), nullptr);
+        window = CreateChild(parent, width, height);
         if (!window)
         {
             LOG_ERROR("{} XeFG: child window failed ({})", api, GetLastError());
@@ -211,8 +276,10 @@ struct FgPresenter
             FAILED(command->Close()) || FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
             return false;
         const DWORD parentThread = GetWindowThreadProcessId(parent, nullptr);
-        LOG_INFO("{} XeFG presenter created at {}x{}, maximum {} interpolations; parent thread {}, presenter thread {}",
-                 api, width, height, maximum, parentThread, GetCurrentThreadId());
+        LOG_INFO(
+            "{} XeFG presenter created at {}x{}, maximum {} interpolations; parent thread {}, presenter thread {}, "
+            "window thread {}",
+            api, width, height, maximum, parentThread, GetCurrentThreadId(), GetWindowThreadProcessId(window, nullptr));
         return true;
     }
 

@@ -1,23 +1,28 @@
 // A real OpenGL app for OptiScaler's opengl32.dll route. Run it beside OptiScaler.dll renamed
 // opengl32.dll: it links opengl32.lib, so the loader picks the proxy from the exe folder.
 //
-// It presents through gdi32's SwapBuffers like most games, posts the menu key (Insert) to open and
-// close the menu, and checks after every present that the game's context and GL state are as it
-// left them. What reached the screen is read back through DWM (PrintWindow with
-// PW_RENDERFULLCONTENT): the open menu has to leave pixels that are not the clear colour, and in nr
-// mode a red block drawn at the top right has to come back red and at the top right, which catches a
-// flip or a red/blue swap in the crossing to D3D12.
+// It presents through gdi32's SwapBuffers like most games, and calls wglSwapBuffers directly after
+// the menu key closes the menu, so the menu only closes when that call is hooked too. It posts the
+// menu key (Insert) to open and close the menu, and checks after every present that the game's context and GL state are
+// as it left them. What reached the screen is read back through DWM (PrintWindow with PW_RENDERFULLCONTENT): the open
+// menu has to leave pixels that are not the clear colour, and in nr mode a red block drawn at the top right has to come
+// back red and at the top right, which catches a flip or a red/blue swap in the crossing to D3D12.
 //
-//   gl_present_smoke.exe [frames] [menu|nr]
+//   gl_present_smoke.exe [frames] [menu|nr] [threaded]
 // Exit 0 on success, 1 on a failed check, 3 when the watchdog fires.
 
+#define NOMINMAX
 #include <windows.h>
 #include <GL/gl.h>
 #include <dwmapi.h>
 
+// Exported by opengl32.dll, not declared by the Windows headers.
+extern "C" __declspec(dllimport) BOOL WINAPI wglSwapBuffers(HDC);
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <vector>
 
 #ifndef GL_SCISSOR_TEST
@@ -39,6 +44,27 @@ static DWORD WINAPI Watchdog(void*)
     std::printf("FAIL: watchdog, the app did not finish in 120 s\n");
     std::fflush(stdout);
     ExitProcess(3);
+}
+
+// Names the module and offset of an access violation, so a crash at exit says where it was.
+static LONG CALLBACK ReportFault(EXCEPTION_POINTERS* info)
+{
+    static LONG reported = 0;
+    if (info->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && !InterlockedExchange(&reported, 1))
+    {
+        void* at = info->ExceptionRecord->ExceptionAddress;
+        HMODULE module = nullptr;
+        wchar_t name[MAX_PATH] = L"(unknown module)";
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCWSTR>(at), &module))
+            GetModuleFileNameW(module, name, MAX_PATH);
+        std::printf(
+            "access violation at %ls+0x%llX on thread %lu\n", name,
+            static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(at) - reinterpret_cast<uintptr_t>(module)),
+            GetCurrentThreadId());
+        std::fflush(stdout);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -144,42 +170,10 @@ static void Rect(float x0, float y0, float x1, float y1)
     glEnd();
 }
 
-int main(int argc, char** argv)
+// Creates the context, presents the frames and checks what reached the screen. In threaded mode
+// this runs on a thread of its own that never pumps messages, as many engines render.
+static int Render(HWND hwnd, int frames, bool nr, bool threaded, ULONGLONG launched)
 {
-    const int frames = argc > 1 ? std::atoi(argv[1]) : 300;
-    const bool nr = argc > 2 && std::strcmp(argv[2], "nr") == 0;
-    const ULONGLONG launched = GetTickCount64();
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    CreateThread(nullptr, 0, Watchdog, nullptr, 0, nullptr);
-
-    const auto module = GetModuleHandleW(nullptr);
-    WNDCLASSW type {};
-    type.style = CS_OWNDC;
-    type.lpfnWndProc = WindowProc;
-    type.hInstance = module;
-    type.hCursor = LoadCursorW(nullptr, (LPCWSTR) IDC_ARROW);
-    type.lpszClassName = L"OptiGlPresentSmoke";
-    if (!RegisterClassW(&type))
-        return Fail("RegisterClass");
-
-    RECT rect { 0, 0, kWidth, kHeight };
-    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
-    HWND hwnd = CreateWindowW(type.lpszClassName, L"Opti OpenGL smoke", WS_OVERLAPPEDWINDOW, 40, 40,
-                              rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, module, nullptr);
-    if (!hwnd)
-        return Fail("CreateWindow");
-    ShowWindow(hwnd, SW_SHOW);
-
-    // A game is the foreground window, and frame generation pauses when it is not. A process started
-    // from a script is not allowed to take the foreground, unless its input is attached to the
-    // thread that has it.
-    const DWORD foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
-    AttachThreadInput(foregroundThread, GetCurrentThreadId(), TRUE);
-    SetForegroundWindow(hwnd);
-    BringWindowToTop(hwnd);
-    AttachThreadInput(foregroundThread, GetCurrentThreadId(), FALSE);
-    std::printf("window in the foreground: %s\n", GetForegroundWindow() == hwnd ? "yes" : "no");
-
     HDC hdc = GetDC(hwnd);
     PIXELFORMATDESCRIPTOR pfd { sizeof(pfd), 1 };
     pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
@@ -227,7 +221,7 @@ int main(int argc, char** argv)
     for (int frame = 0; frame < frames; frame++)
     {
         MSG msg;
-        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+        while (!threaded && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
         {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
@@ -253,7 +247,7 @@ int main(int argc, char** argv)
             }
         }
 
-        if (!SwapBuffers(hdc))
+        if (!(frame > closeAt ? wglSwapBuffers(hdc) : SwapBuffers(hdc)))
             return Fail("SwapBuffers");
 
         if (wglGetCurrentContext() != context || wglGetCurrentDC() != hdc)
@@ -332,7 +326,119 @@ int main(int argc, char** argv)
     wglMakeCurrent(nullptr, nullptr);
     wglDeleteContext(context);
     ReleaseDC(hwnd, hdc);
-    DestroyWindow(hwnd);
+    return 0;
+}
+
+int main(int argc, char** argv)
+{
+    const int frames = argc > 1 ? std::atoi(argv[1]) : 300;
+    const bool nr = argc > 2 && std::strcmp(argv[2], "nr") == 0;
+    const bool threaded = argc > 3 && std::strcmp(argv[3], "threaded") == 0;
+    const ULONGLONG launched = GetTickCount64();
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    CreateThread(nullptr, 0, Watchdog, nullptr, 0, nullptr);
+    AddVectoredExceptionHandler(1, ReportFault);
+
+    const auto module = GetModuleHandleW(nullptr);
+    WNDCLASSW type {};
+    type.style = CS_OWNDC;
+    type.lpfnWndProc = WindowProc;
+    type.hInstance = module;
+    type.hCursor = LoadCursorW(nullptr, (LPCWSTR) IDC_ARROW);
+    type.lpszClassName = L"OptiGlPresentSmoke";
+    if (!RegisterClassW(&type))
+        return Fail("RegisterClass");
+
+    RECT rect { 0, 0, kWidth, kHeight };
+    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+    HWND hwnd = CreateWindowW(type.lpszClassName, L"Opti OpenGL smoke", WS_OVERLAPPEDWINDOW, 40, 40,
+                              rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, module, nullptr);
+    if (!hwnd)
+        return Fail("CreateWindow");
+    ShowWindow(hwnd, SW_SHOW);
+
+    // A game is the foreground window, and frame generation pauses when it is not. A process started
+    // from a script is not allowed to take the foreground, unless its input is attached to the
+    // thread that has it.
+    const DWORD foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+    AttachThreadInput(foregroundThread, GetCurrentThreadId(), TRUE);
+    SetForegroundWindow(hwnd);
+    BringWindowToTop(hwnd);
+    AttachThreadInput(foregroundThread, GetCurrentThreadId(), FALSE);
+    std::printf("window in the foreground: %s\n", GetForegroundWindow() == hwnd ? "yes" : "no");
+
+    struct Job
+    {
+        HWND hwnd;
+        int frames;
+        bool nr;
+        ULONGLONG launched;
+        HANDLE done, quit;
+        int result;
+    } job { hwnd,
+            frames,
+            nr,
+            launched,
+            CreateEventW(nullptr, TRUE, FALSE, nullptr),
+            CreateEventW(nullptr, TRUE, FALSE, nullptr),
+            1 };
+    if (!threaded)
+    {
+        job.result = Render(hwnd, frames, nr, false, launched);
+        if (job.result != 0)
+            return job.result;
+        DestroyWindow(hwnd);
+    }
+    else
+    {
+        // The render thread stays alive without pumping until the window is gone, as a game's does.
+        HANDLE thread = CreateThread(
+            nullptr, 0,
+            [](void* data) -> DWORD
+            {
+                auto& j = *static_cast<Job*>(data);
+                j.result = Render(j.hwnd, j.frames, j.nr, true, j.launched);
+                SetEvent(j.done);
+                WaitForSingleObject(j.quit, INFINITE);
+                return 0;
+            },
+            &job, 0, nullptr);
+
+        // The window thread keeps pumping, moves the window now and then and finally destroys it. A
+        // child window that belongs to a thread which does not pump blocks these, and the game with it.
+        ULONGLONG slowest = 0, lastMove = GetTickCount64();
+        int moves = 0;
+        while (MsgWaitForMultipleObjects(1, &job.done, FALSE, 50, QS_ALLINPUT) != WAIT_OBJECT_0)
+        {
+            MSG msg;
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+            {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            if (GetTickCount64() - lastMove > 1000)
+            {
+                const ULONGLONG before = GetTickCount64();
+                SetWindowPos(hwnd, nullptr, 40 + (moves % 2), 40, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                slowest = std::max(slowest, GetTickCount64() - before);
+                lastMove = GetTickCount64();
+                moves++;
+            }
+        }
+        const ULONGLONG before = GetTickCount64();
+        DestroyWindow(hwnd);
+        const ULONGLONG destroy = GetTickCount64() - before;
+        SetEvent(job.quit);
+        WaitForSingleObject(thread, INFINITE);
+        CloseHandle(thread);
+        std::printf("window moved %d times from its own thread, slowest move %llu ms, destroyed in %llu ms\n", moves,
+                    slowest, destroy);
+        if (job.result != 0)
+            return job.result;
+        if (slowest > 1000 || destroy > 1000)
+            return Fail("the window thread blocked while another thread presented");
+    }
+
     std::printf("PASS: %d frames presented\n", frames);
     std::fflush(stdout);
     return 0;

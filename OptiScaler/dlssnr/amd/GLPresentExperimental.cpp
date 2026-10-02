@@ -4,6 +4,7 @@
 #include "PresentExperimental.h"
 #include "FgChildPresenter.h"
 #include "AmdBridge.h"
+#include "../backend/Selector.h"
 
 #include <Config.h>
 #include <Logger.h>
@@ -321,7 +322,7 @@ bool Wanted()
 {
     auto config = Config::Instance();
     const bool wanted = config->DlssNrEnabled.value_or_default() && config->DlssNrPresent.value_or_default() &&
-                        config->NrBackend.value_or_default() == "daniel" && !route.stopped;
+                        !route.stopped && DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
 
     // Generated frames end with NR; the child window must not keep showing the last one.
     if (!wanted && route.fg.window && (route.fg.enabled || route.fg.visible))

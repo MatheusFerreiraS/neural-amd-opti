@@ -42,11 +42,15 @@ struct OverlayContext
     HDC gameDc = nullptr;
     uint32_t generation = 0;
     bool current = false;
+    bool failed = false;
 
     bool Enter(HDC hdc)
     {
         if (current)
             return true;
+
+        if (failed)
+            return false;
 
         gameContext = o_wglGetCurrentContext();
         gameDc = o_wglGetCurrentDC();
@@ -56,8 +60,10 @@ struct OverlayContext
             auto created = o_wglCreateContext(hdc);
             if (created == nullptr || !o_wglMakeCurrent(hdc, created))
             {
-                LOG_ERROR("OpenGL: OptiScaler context unavailable ({})", GetLastError());
+                // Without a context of its own OptiScaler stays out of OpenGL for the session.
+                LOG_ERROR("OpenGL: OptiScaler context unavailable ({}); menu and NR are off", GetLastError());
                 o_wglMakeCurrent(gameDc, gameContext);
+                failed = true;
                 return false;
             }
 

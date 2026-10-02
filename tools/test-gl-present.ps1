@@ -4,12 +4,14 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 
 $mode = if ($args.Count -gt 0) { $args[0] } else { "menu" }
 $runtime = if ($args.Count -gt 1) { $args[1] } else { "" }
+# "threaded" renders on a thread of its own, which never pumps messages, while the window thread moves the window.
+$threaded = $args.Count -gt 2 -and $args[2] -eq "threaded"
 if ($mode -notin @("menu", "nr", "fg")) { throw "mode must be menu, nr or fg" }
 if ($mode -ne "menu" -and -not (Test-Path (Join-Path $runtime "dlssnr_amd_pass1.dll"))) {
     throw "$mode needs a runtime folder with dlssnr_amd_pass1.dll and dlssnr_on_amd_weights.bin"
 }
 
-$out = [System.IO.Path]::GetFullPath("exports\gl-present\$mode")
+$out = [System.IO.Path]::GetFullPath("exports\gl-present\$mode$(if ($threaded) { "-threaded" })")
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 & cl /nologo /std:c++20 /EHsc /W4 /utf-8 tests\gl_present_smoke.cpp "/Fe$out\gl_present_smoke.exe" "/Fo$out\gl_present_smoke.obj" /link opengl32.lib gdi32.lib user32.lib dwmapi.lib
@@ -62,7 +64,7 @@ while ($true) {
 }
 try {
     $frames = if ($mode -eq "menu") { 300 } else { 900 }
-    $process = Start-Process -FilePath "$out\gl_present_smoke.exe" -ArgumentList $frames, $(if ($mode -eq "menu") { "menu" } else { "nr" }) `
+    $process = Start-Process -FilePath "$out\gl_present_smoke.exe" -ArgumentList $frames, $(if ($mode -eq "menu") { "menu" } else { "nr" }), $(if ($threaded) { "threaded" } else { "inline" }) `
         -WorkingDirectory $out -PassThru -NoNewWindow -RedirectStandardOutput "$out\stdout.txt"
     $null = $process.Handle
     if (-not $process.WaitForExit(150000)) { $process.Kill(); throw "timeout: the app did not exit in 150 s" }
