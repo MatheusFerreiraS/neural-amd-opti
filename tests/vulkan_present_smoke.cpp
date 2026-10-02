@@ -2,9 +2,13 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.h>
 #include <windows.h>
+#include <d3d11.h>
+#include <dxgi1_2.h>
+#include <wrl/client.h>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -20,18 +24,33 @@
 // work. Real keyboard and mouse input drives NR, XeFG, the menu, focus loss, minimize, resize and the
 // toggles; each step checks OptiScaler.log, the XeFG window and whether the game window still gets
 // its input. With "off" as argument it checks instead that PresentWithoutUpscaler=false leaves the
-// game, the menu and the keys alone. Exit code is the number of failed steps.
+// game, the menu and the keys alone. With "screen" the window is borderless and covers the monitor and
+// the game presents without vsync, as Detroit: Become Human was set up in the user's run ("fse" adds
+// exclusive fullscreen, "vsync" FIFO presents), and the run reads what reaches the screen through Desktop
+// Duplication: whether XeFG's generated frames are shown, with NR on and off, and the game's real frame
+// rate with NR on against NR off and with XeFG. Exit code is the number of failed steps.
 
 namespace
 {
 constexpr wchar_t kFgClass[] = L"OptiScalerVulkanXeFG";
 constexpr int kWidth = 1280, kHeight = 720;
+// The block moves this many pixels per real frame, so a generated frame shows it between two real places.
+constexpr int kStep = 12;
 
 HWND game = nullptr, other = nullptr;
 DWORD guiThread = 0;
+bool screenMode = false;
+// "screen fse": the swapchain takes exclusive fullscreen through VK_EXT_full_screen_exclusive.
+bool exclusive = false;
+// FIFO presents; "screen" without "vsync" presents with IMMEDIATE, as a game with vsync off does.
+bool vsync = true;
 std::atomic<int> mouseMoves { 0 }, keyDowns { 0 }, clicks { 0 }, frames { 0 };
 // Milliseconds of CPU work the render thread spends on each frame, to stand in for a heavy game.
 std::atomic<int> workMs { 0 };
+// Clears of a 64 MB image per frame, the game's own GPU work; and a frame-rate cap as games have.
+std::atomic<int> gpuClears { 0 }, capFps { 0 };
+// The game's GPU time per frame in microseconds, from timestamps.
+std::atomic<int> gpuMicros { 0 };
 std::atomic<bool> stopRender { false }, freeze { false }, renderFailed { false };
 int failures = 0;
 
@@ -380,6 +399,137 @@ bool MenuOverMotion(const std::vector<uint32_t>& closed, const std::vector<uint3
     return menu > 0 && menuShare < 0.03 && aroundShare > 0.05;
 }
 
+// Screen ----------------------------------------------------------------------------------------
+
+// What reached the screen over a stretch of time, read through Desktop Duplication on the row through the
+// middle of the block: desktop images, how many of them moved the block, and how many show it between two
+// of its real places, which only a generated frame does.
+struct ScreenRate
+{
+    double images = 0, moves = 0, generated = 0;
+};
+
+// Left edge of the white block in a row of BGRA pixels, or -1.
+int BlockEdge(const uint32_t* row, int width)
+{
+    auto bright = [](uint32_t pixel)
+    { return ((pixel >> 16) & 255) > 180 && ((pixel >> 8) & 255) > 180 && (pixel & 255) > 180; };
+    for (int x = 0; x + 8 < width; ++x)
+    {
+        int run = 0;
+        while (run < 8 && bright(row[x + run]))
+            ++run;
+        if (run == 8)
+            return x;
+    }
+    return -1;
+}
+
+ScreenRate WatchScreen(DWORD ms)
+{
+    using Microsoft::WRL::ComPtr;
+    ScreenRate rate;
+    ComPtr<IDXGIFactory1> factory;
+    ComPtr<IDXGIAdapter1> adapter;
+    ComPtr<IDXGIOutput1> output;
+    DXGI_OUTPUT_DESC description {};
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))))
+        return rate;
+    const HMONITOR monitor = MonitorFromWindow(game, MONITOR_DEFAULTTOPRIMARY);
+    for (UINT a = 0; !output && factory->EnumAdapters1(a, &adapter) != DXGI_ERROR_NOT_FOUND; ++a)
+    {
+        ComPtr<IDXGIOutput> candidate;
+        for (UINT o = 0; !output && adapter->EnumOutputs(o, &candidate) != DXGI_ERROR_NOT_FOUND; ++o)
+            if (SUCCEEDED(candidate->GetDesc(&description)) && description.Monitor == monitor)
+                candidate.As(&output);
+    }
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<IDXGIOutputDuplication> duplication;
+    if (!output ||
+        FAILED(D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
+                                 &device, nullptr, &context)) ||
+        FAILED(output->DuplicateOutput(device.Get(), &duplication)))
+    {
+        Print("screen: Desktop Duplication unavailable");
+        return rate;
+    }
+    const RECT client = ClientOnScreen();
+    const int left = client.left - description.DesktopCoordinates.left;
+    const int width = client.right - client.left;
+    const int y = (client.top + client.bottom) / 2 - description.DesktopCoordinates.top;
+    D3D11_TEXTURE2D_DESC rowDesc {};
+    rowDesc.Width = width;
+    rowDesc.Height = rowDesc.MipLevels = rowDesc.ArraySize = rowDesc.SampleDesc.Count = 1;
+    rowDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    rowDesc.Usage = D3D11_USAGE_STAGING;
+    rowDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ComPtr<ID3D11Texture2D> row;
+    if (FAILED(device->CreateTexture2D(&rowDesc, nullptr, &row)))
+        return rate;
+    int previous = -1;
+    for (const auto start = GetTickCount64(); GetTickCount64() - start < ms;)
+    {
+        DXGI_OUTDUPL_FRAME_INFO info {};
+        ComPtr<IDXGIResource> resource;
+        const HRESULT acquired = duplication->AcquireNextFrame(100, &info, &resource);
+        if (acquired == DXGI_ERROR_WAIT_TIMEOUT)
+            continue;
+        if (acquired == DXGI_ERROR_ACCESS_LOST)
+        {
+            duplication.Reset();
+            if (FAILED(output->DuplicateOutput(device.Get(), &duplication)))
+                break;
+            continue;
+        }
+        if (FAILED(acquired))
+            break;
+        ComPtr<ID3D11Texture2D> image;
+        D3D11_MAPPED_SUBRESOURCE mapped {};
+        if (info.LastPresentTime.QuadPart && SUCCEEDED(resource.As(&image)))
+        {
+            const D3D11_BOX box { UINT(left), UINT(y), 0, UINT(left + width), UINT(y + 1), 1 };
+            context->CopySubresourceRegion(row.Get(), 0, 0, 0, 0, image.Get(), 0, &box);
+            if (SUCCEEDED(context->Map(row.Get(), 0, D3D11_MAP_READ, 0, &mapped)))
+            {
+                const int edge = BlockEdge(static_cast<const uint32_t*>(mapped.pData), width);
+                context->Unmap(row.Get(), 0);
+                rate.images += 1;
+                if (edge >= 0)
+                {
+                    rate.moves += edge != previous;
+                    const int phase = edge % kStep;
+                    rate.generated += phase >= 2 && phase <= kStep - 2;
+                    previous = edge;
+                }
+            }
+        }
+        duplication->ReleaseFrame();
+    }
+    for (double* value : { &rate.images, &rate.moves, &rate.generated })
+        *value = *value * 1000.0 / ms;
+    return rate;
+}
+
+struct Measured
+{
+    double real = 0;
+    ScreenRate screen;
+};
+
+Measured Measure(const char* name, DWORD ms = 5000)
+{
+    const int before = frames;
+    const auto start = GetTickCount64();
+    Measured result;
+    result.screen = WatchScreen(ms);
+    result.real = (frames - before) * 1000.0 / double(GetTickCount64() - start);
+    Print("%s: %.1f real presents/s, game GPU %.1f ms; screen %.1f images/s, %.1f with the block moved, %.1f "
+          "generated",
+          name, result.real, gpuMicros / 1000.0, result.screen.images, result.screen.moves, result.screen.generated);
+    return result;
+}
+
 LRESULT CALLBACK GameProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam)
 {
     if (message == WM_MOUSEMOVE)
@@ -411,8 +561,17 @@ void Gui(HANDLE ready)
     RegisterClassW(&type);
     RECT rect { 0, 0, kWidth, kHeight };
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
-    game = CreateWindowW(type.lpszClassName, L"Opti Vulkan smoke", WS_OVERLAPPEDWINDOW, 40, 40, rect.right - rect.left,
-                         rect.bottom - rect.top, nullptr, nullptr, module, nullptr);
+    if (screenMode)
+    {
+        MONITORINFO monitor { sizeof(monitor) };
+        GetMonitorInfoW(MonitorFromPoint({ 0, 0 }, MONITOR_DEFAULTTOPRIMARY), &monitor);
+        const RECT area = monitor.rcMonitor;
+        game = CreateWindowW(type.lpszClassName, L"Opti Vulkan smoke", WS_POPUP, area.left, area.top,
+                             area.right - area.left, area.bottom - area.top, nullptr, nullptr, module, nullptr);
+    }
+    else
+        game = CreateWindowW(type.lpszClassName, L"Opti Vulkan smoke", WS_OVERLAPPEDWINDOW, 40, 40,
+                             rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, module, nullptr);
     other = CreateWindowW(type.lpszClassName, L"Opti Vulkan smoke other app", WS_OVERLAPPEDWINDOW, 200, 200, 400, 300,
                           nullptr, nullptr, module, nullptr);
     ShowWindow(game, SW_SHOW);
@@ -457,17 +616,34 @@ struct Renderer
     VkFence fence = VK_NULL_HANDLE;
     VkBuffer bar = VK_NULL_HANDLE;
     VkDeviceMemory barMemory = VK_NULL_HANDLE;
+    VkImage load = VK_NULL_HANDLE;
+    VkDeviceMemory loadMemory = VK_NULL_HANDLE;
+    VkQueryPool timestamps = VK_NULL_HANDLE;
+    float tickNs = 1.0f;
+    bool timed = false;
+    std::chrono::steady_clock::time_point nextFrame {};
     uint32_t acquireSlot = 0;
     int position = 0;
 
+    uint32_t MemoryType(uint32_t allowed, VkMemoryPropertyFlags wanted)
+    {
+        VkPhysicalDeviceMemoryProperties memory {};
+        vkGetPhysicalDeviceMemoryProperties(physical, &memory);
+        for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)
+            if ((allowed & (1u << i)) && (memory.memoryTypes[i].propertyFlags & wanted) == wanted)
+                return i;
+        return 0;
+    }
+
     bool Init()
     {
-        const char* extensions[] { VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME };
+        const char* extensions[] { VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+                                   VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME };
         VkApplicationInfo app { VK_STRUCTURE_TYPE_APPLICATION_INFO };
         app.apiVersion = VK_API_VERSION_1_1;
         VkInstanceCreateInfo instanceInfo { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
         instanceInfo.pApplicationInfo = &app;
-        instanceInfo.enabledExtensionCount = 2;
+        instanceInfo.enabledExtensionCount = exclusive ? 3 : 2;
         instanceInfo.ppEnabledExtensionNames = extensions;
         VK_CHECK(vkCreateInstance(&instanceInfo, nullptr, &instance));
         VkWin32SurfaceCreateInfoKHR surfaceInfo { VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
@@ -502,12 +678,12 @@ struct Renderer
         queueInfo.queueFamilyIndex = family;
         queueInfo.queueCount = 1;
         queueInfo.pQueuePriorities = &priority;
-        const char* swapchainExtension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+        const char* deviceExtensions[] { VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME };
         VkDeviceCreateInfo deviceInfo { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
         deviceInfo.queueCreateInfoCount = 1;
         deviceInfo.pQueueCreateInfos = &queueInfo;
-        deviceInfo.enabledExtensionCount = 1;
-        deviceInfo.ppEnabledExtensionNames = &swapchainExtension;
+        deviceInfo.enabledExtensionCount = exclusive ? 2 : 1;
+        deviceInfo.ppEnabledExtensionNames = deviceExtensions;
         VK_CHECK(vkCreateDevice(physical, &deviceInfo, nullptr, &device));
         vkGetDeviceQueue(device, family, 0, &queue);
 
@@ -540,25 +716,65 @@ struct Renderer
         VK_CHECK(vkCreateBuffer(device, &bufferInfo, nullptr, &bar));
         VkMemoryRequirements requirements {};
         vkGetBufferMemoryRequirements(device, bar, &requirements);
-        VkPhysicalDeviceMemoryProperties memory {};
-        vkGetPhysicalDeviceMemoryProperties(physical, &memory);
         VkMemoryAllocateInfo memoryInfo { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
         memoryInfo.allocationSize = requirements.size;
-        for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)
-            if ((requirements.memoryTypeBits & (1u << i)) &&
-                (memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
-                (memory.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
-            {
-                memoryInfo.memoryTypeIndex = i;
-                break;
-            }
+        memoryInfo.memoryTypeIndex = MemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         VK_CHECK(vkAllocateMemory(device, &memoryInfo, nullptr, &barMemory));
         VK_CHECK(vkBindBufferMemory(device, bar, barMemory, 0));
         void* mapped = nullptr;
         VK_CHECK(vkMapMemory(device, barMemory, 0, bufferInfo.size, 0, &mapped));
         std::memset(mapped, 0xFF, bufferInfo.size);
         vkUnmapMemory(device, barMemory);
+
+        // The game's GPU work: clears of a 2048x2048 RGBA32F image, timed with two timestamps.
+        VkImageCreateInfo loadInfo { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        loadInfo.imageType = VK_IMAGE_TYPE_2D;
+        loadInfo.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        loadInfo.extent = { 2048, 2048, 1 };
+        loadInfo.mipLevels = loadInfo.arrayLayers = 1;
+        loadInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        loadInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        VK_CHECK(vkCreateImage(device, &loadInfo, nullptr, &load));
+        vkGetImageMemoryRequirements(device, load, &requirements);
+        memoryInfo.allocationSize = requirements.size;
+        memoryInfo.memoryTypeIndex = MemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VK_CHECK(vkAllocateMemory(device, &memoryInfo, nullptr, &loadMemory));
+        VK_CHECK(vkBindImageMemory(device, load, loadMemory, 0));
+        VkQueryPoolCreateInfo queryInfo { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+        queryInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        queryInfo.queryCount = 2;
+        VK_CHECK(vkCreateQueryPool(device, &queryInfo, nullptr, &timestamps));
+        VkPhysicalDeviceProperties properties {};
+        vkGetPhysicalDeviceProperties(physical, &properties);
+        tickNs = properties.limits.timestampPeriod;
         return true;
+    }
+
+    void Load(VkCommandBuffer cmd)
+    {
+        vkCmdResetQueryPool(cmd, timestamps, 0, 2);
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
+        VkImageMemoryBarrier barrier { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = load;
+        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                             nullptr, 1, &barrier);
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        for (int i = 0; i < gpuClears; ++i)
+        {
+            const VkClearColorValue value { { float(i), 0.5f, 0.25f, 1.0f } };
+            vkCmdClearColorImage(cmd, load, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &barrier.subresourceRange);
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                                 nullptr, 1, &barrier);
+        }
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestamps, 1);
+        timed = true;
     }
 
     // Returns false on a Vulkan error; a minimized window leaves the old chain in place.
@@ -583,10 +799,31 @@ struct Renderer
         info.preTransform = caps.currentTransform;
         info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
         info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+        uint32_t modes = 0;
+        VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, &modes, nullptr));
+        std::vector<VkPresentModeKHR> available(modes);
+        VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, &modes, available.data()));
+        if (!vsync && std::find(available.begin(), available.end(), VK_PRESENT_MODE_IMMEDIATE_KHR) != available.end())
+            info.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
         info.clipped = VK_TRUE;
         info.oldSwapchain = chain;
+        VkSurfaceFullScreenExclusiveWin32InfoEXT exclusiveMonitor {
+            VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT
+        };
+        exclusiveMonitor.hmonitor = MonitorFromWindow(game, MONITOR_DEFAULTTOPRIMARY);
+        VkSurfaceFullScreenExclusiveInfoEXT exclusiveInfo { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT };
+        exclusiveInfo.pNext = &exclusiveMonitor;
+        exclusiveInfo.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT;
+        if (exclusive)
+            info.pNext = &exclusiveInfo;
         VkSwapchainKHR created = VK_NULL_HANDLE;
         VK_CHECK(vkCreateSwapchainKHR(device, &info, nullptr, &created));
+        if (exclusive)
+        {
+            auto acquire = reinterpret_cast<PFN_vkAcquireFullScreenExclusiveModeEXT>(
+                vkGetDeviceProcAddr(device, "vkAcquireFullScreenExclusiveModeEXT"));
+            Print("render: exclusive fullscreen acquire returned %d", acquire ? (int) acquire(device, created) : -1);
+        }
         if (chain)
             vkDestroySwapchainKHR(device, chain, nullptr);
         chain = created;
@@ -623,6 +860,10 @@ struct Renderer
             return Recreate();
 
         VK_CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, 5'000'000'000ull));
+        uint64_t ticks[2] {};
+        if (timed && vkGetQueryPoolResults(device, timestamps, 0, 2, sizeof(ticks), ticks, sizeof(uint64_t),
+                                           VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+            gpuMicros = int((gpuMicros * 15 + int(double(ticks[1] - ticks[0]) * tickNs / 1000.0)) / 16);
         const uint32_t slot = acquireSlot++ % acquired.size();
         uint32_t index = 0;
         auto result = vkAcquireNextImageKHR(device, chain, 5'000'000'000ull, acquired[slot], VK_NULL_HANDLE, &index);
@@ -638,6 +879,7 @@ struct Renderer
         VkCommandBufferBeginInfo begin { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         VK_CHECK(vkBeginCommandBuffer(command, &begin));
+        Load(command);
         VkImageMemoryBarrier barrier { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -651,7 +893,7 @@ struct Renderer
         vkCmdClearColorImage(command, images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &background, 1,
                              &barrier.subresourceRange);
         if (!freeze)
-            position = (position + 12) % int(extent.width - 128);
+            position = (position + kStep) % (int(extent.width - 128) / kStep * kStep);
         VkBufferImageCopy copy {};
         copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
         copy.imageOffset = { position, int(extent.height / 2) - 64, 0 };
@@ -676,6 +918,12 @@ struct Renderer
         if (workMs)
             Sleep(workMs);
         VK_CHECK(vkQueueSubmit(queue, 1, &submit, fence));
+        if (const int cap = capFps)
+        {
+            const auto now = std::chrono::steady_clock::now();
+            nextFrame = std::max(nextFrame + std::chrono::microseconds(1'000'000 / cap), now);
+            std::this_thread::sleep_until(nextFrame);
+        }
         VkPresentInfoKHR present { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
         present.waitSemaphoreCount = 1;
         present.pWaitSemaphores = &rendered[index];
@@ -708,6 +956,12 @@ struct Renderer
             vkDestroyBuffer(device, bar, nullptr);
         if (barMemory)
             vkFreeMemory(device, barMemory, nullptr);
+        if (load)
+            vkDestroyImage(device, load, nullptr);
+        if (loadMemory)
+            vkFreeMemory(device, loadMemory, nullptr);
+        if (timestamps)
+            vkDestroyQueryPool(device, timestamps, nullptr);
         if (fence)
             vkDestroyFence(device, fence, nullptr);
         if (pool)
@@ -732,21 +986,23 @@ void Render()
     renderer.Destroy();
 }
 
-// The NR key must pause XeFG and take its window off the game whatever came before it, and bring
-// both back the second time.
+// The NR key must leave XeFG generating from its guides, never a frozen window, whatever came before it,
+// and bring NR back under it the second time.
 void NrOffAndOn(const std::string& when)
 {
     auto mark = Mark();
     Key(VK_NUMPAD5);
-    const bool paused = WaitLog("Vulkan XeFG paused while final-image NR is off", mark, 3000);
-    const bool off = paused && WaitFor([] { return !FgVisible(); }, 3000) && FramesAdvance();
-    Step(("NR key turns NR off and hides XeFG " + when).c_str(), off,
-         !paused ? "no pause line"
-         : off   ? ""
-                 : "XeFG window still visible");
+    const bool off = WaitLog("Vulkan final-image bridge: NR off", mark, 3000);
+    const bool generating =
+        off && WaitPresented(Mark()) && FgVisible() && FramesAdvance() && Count("Vulkan XeFG paused", mark) == 0;
+    Step(("NR key turns NR off and XeFG keeps generating " + when).c_str(), generating,
+         !off         ? "no NR off line"
+         : generating ? ""
+                      : "XeFG stopped");
     mark = Mark();
     Key(VK_NUMPAD5);
-    Step(("NR key turns NR and XeFG back on " + when).c_str(), off && WaitPresented(mark) && FgVisible(),
+    Step(("NR key turns NR back on under XeFG " + when).c_str(),
+         off && WaitLog("Vulkan final-image bridge: NR on", mark, 3000) && WaitPresented(mark) && FgVisible(),
          off ? "" : "NR was never off");
 }
 
@@ -880,6 +1136,84 @@ void FinalImageOn(std::thread& render)
     }
 }
 
+// Borderless window over the whole monitor (with "fse" in exclusive fullscreen). A game held at 25 real
+// frames a second leaves room on a 60 Hz screen for generated frames: with XeFG on most images on screen must
+// show the block between two real places, with NR on and with NR off; with XeFG off none may. A game with CPU
+// and GPU work of its own and no cap must keep most of its real frame rate with NR on.
+void ScreenRun()
+{
+    Step("NR through the shared D3D12 image", WaitLog("D3D12 shared GPU image active", 0, 60000) &&
+                                                  WaitLog("first frame processed using shared D3D12 image", 0, 60000));
+    Step("XeFG presents generated frames (3x)", WaitPresented(0, 60000) && FgVisible());
+    Sleep(1500);
+    auto shown = [](const Measured& m)
+    { return m.screen.moves >= 1.6 * m.real && m.screen.generated >= 0.4 * m.screen.moves; };
+    const auto fgNr = Measure("NR and XeFG, 25 real fps");
+    // The FPS overlay (ShowFps in the runner's INI) is in this capture, for a person to read.
+    SaveCapture(Capture(), "capture-screen-xefg.bmp");
+    Step("generated frames reach the screen with NR on", shown(fgNr));
+
+    auto mark = Mark();
+    Key(VK_END);
+    const bool fgOff = WaitLog("Vulkan XeFG paused while frame generation is off", mark, 3000) &&
+                       WaitFor([] { return !FgVisible(); }, 3000);
+    Step("FG key turns XeFG off", fgOff);
+    Sleep(800);
+    const auto nrOnly = Measure("NR only, 25 real fps");
+    Step("without XeFG only real frames reach the screen", nrOnly.screen.generated <= 0.1 * nrOnly.screen.moves &&
+                                                               nrOnly.screen.moves <= 1.2 * nrOnly.real &&
+                                                               nrOnly.screen.moves >= 0.8 * nrOnly.real);
+
+    // About 8 ms of CPU and 4 ms of GPU work a frame and a 60 fps cap, as Detroit has: the game alone runs at 60.
+    // NR waited for on the CPU every frame adds its whole time to the CPU's.
+    capFps = vsync ? 0 : 60;
+    workMs = 8;
+    gpuClears = 130;
+    Sleep(2000);
+    const auto nrOn = Measure("NR only, game with CPU and GPU work");
+    mark = Mark();
+    Key(VK_NUMPAD5);
+    Step("NR key turns NR off", WaitLog("Vulkan final-image bridge: NR off", mark, 3000));
+    const auto nrOff = Measure("NR off, same game");
+    char rates[96];
+    std::snprintf(rates, sizeof(rates), "%.1f real fps with NR, %.1f without", nrOn.real, nrOff.real);
+    Step("NR keeps most of the game's real frame rate", fgOff && nrOn.real >= 0.85 * nrOff.real, rates);
+
+    capFps = 25;
+    workMs = 0;
+    gpuClears = 0;
+    mark = Mark();
+    Key(VK_END);
+    const bool fgOn = WaitPresented(mark) && FgVisible();
+    Step("FG key turns XeFG on with NR off", fgOn);
+    Sleep(800);
+    const auto fgOnly = Measure("XeFG with NR off, 25 real fps");
+    Step("generated frames reach the screen with NR off", fgOn && shown(fgOnly));
+    mark = Mark();
+    Key(VK_NUMPAD5);
+    Step("NR key turns NR back on under XeFG",
+         WaitLog("Vulkan final-image bridge: NR on", mark, 3000) && WaitPresented(Mark()) && FgVisible());
+
+    // With vsync the display's refresh rate limits what XeFG puts out (about twice the refresh rate), which
+    // holds a 60 fps game at 40 real at 3x on a 60 Hz display. Without vsync XeFG's frames tear like the game's
+    // and more of them reach the screen than that limit allows.
+    capFps = vsync ? 0 : 60;
+    workMs = 8;
+    gpuClears = 130;
+    Sleep(2000);
+    const auto fgGame = Measure("NR and XeFG, same game");
+    DEVMODEW mode {};
+    mode.dmSize = sizeof(mode);
+    EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &mode);
+    std::snprintf(rates, sizeof(rates), "%.1f images/s on screen at %lu Hz, %.1f real fps", fgGame.screen.images,
+                  mode.dmDisplayFrequency, fgGame.real);
+    if (!vsync)
+        Step("without vsync XeFG puts out more than twice the refresh rate",
+             fgGame.screen.images > 2.1 * mode.dmDisplayFrequency, rates);
+    workMs = 0;
+    gpuClears = 0;
+}
+
 // PresentWithoutUpscaler off: the game presents, the menu works and nothing of the final-image route
 // runs, whatever key is pressed.
 void FinalImageOff()
@@ -920,6 +1254,16 @@ int wmain(int argc, wchar_t** argv)
 {
     if (argc >= 3 && !wcscmp(argv[1], L"input"))
         return Inject(argc, argv);
+    screenMode = argc >= 2 && !wcscmp(argv[1], L"screen");
+    bool vsyncAsked = false;
+    for (int i = 2; screenMode && i < argc; ++i)
+    {
+        exclusive |= !wcscmp(argv[i], L"fse");
+        vsyncAsked |= !wcscmp(argv[i], L"vsync");
+    }
+    vsync = !screenMode || vsyncAsked;
+    if (screenMode)
+        capFps = 25;
     if (!LoadLibraryW(L"vulkan-1.dll") || !LoadLibraryW(L"OptiScaler.dll"))
     {
         Print("FAIL setup: OptiScaler.dll or vulkan-1.dll did not load (%lu)", GetLastError());
@@ -939,6 +1283,8 @@ int wmain(int argc, wchar_t** argv)
     std::thread render(Render);
     if (argc >= 2 && !wcscmp(argv[1], L"off"))
         FinalImageOff();
+    else if (screenMode)
+        ScreenRun();
     else
         FinalImageOn(render);
 
