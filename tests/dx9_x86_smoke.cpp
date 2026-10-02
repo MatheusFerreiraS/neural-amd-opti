@@ -23,6 +23,8 @@
 //                        must be presented by a new host, without a failure counted (not with
 //                        --window-thread)
 //   --minimize-at F0 F1  minimize the window at F0 and restore it at F1
+//   --subclass-at F      at F, make the window procedure one that calls nothing installed before it, as
+//                        an engine or overlay that replaces it after the device exists would
 //   --expect-unhooked    OptiScaler must be reported unhooked in each host, and the session native
 //   --screen             fail when the window's pixels on screen stop changing
 //   --shot-at F FILE     save what the window shows on screen at frame F as a BMP
@@ -285,7 +287,7 @@ int main(int argc, char** argv)
          screen = false, expectUnhooked = false;
     int frames = 240, menuAt = -1, resetAt = -1, killAt = -1, timeout = 120, shotAt = -1;
     int holdDown = -1, holdUp = -1, ctrlAt = -1, ctrlX = 0, ctrlY = 0, typeAt = -1, recreateAt = -1, minimizeAt = -1,
-        restoreAt = -1;
+        restoreAt = -1, subclassAt = -1;
     std::string typeText;
     const char* shotPath = nullptr;
     double work = 0;
@@ -335,6 +337,8 @@ int main(int argc, char** argv)
         }
         else if (a == "--recreate-at")
             recreateAt = atoi(next());
+        else if (a == "--subclass-at")
+            subclassAt = atoi(next());
         else if (a == "--minimize-at")
         {
             minimizeAt = atoi(next());
@@ -630,6 +634,10 @@ int main(int argc, char** argv)
             printf("made a new device and window at frame %d (bridged %u), %d frames until a new host presented it\n",
                    frame, atRecreate.bridged, rewarm);
         }
+        if (frame == subclassAt)
+            printf("window procedure replaced at frame %d (it was %s)\n", frame,
+                   SetWindowLongPtrW(window, GWLP_WNDPROC, LONG_PTR(Proc)) == LONG_PTR(Proc) ? "the program's own"
+                                                                                             : "another one");
         if (frame == minimizeAt)
             ShowWindow(window, SW_MINIMIZE);
         if (frame == restoreAt)

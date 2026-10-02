@@ -184,7 +184,10 @@ try {
             Select-Object -Last 1
         if (-not $last -or $last.Matches[0].Groups[1].Value -eq '1280x720') { 'NR did not run at a new model scale' }
     }
-    Run-Case 'menu' $nr @('--frames', '300', '--menu-at', '100', '--shot-at', '150', 'menu.bmp') $null
+    # The window procedure is replaced at frame 50 by one that calls nothing before it (as an engine or
+    # overlay may do after the device exists): the menu must still hold the game's input.
+    Run-Case 'menu' $nr @('--frames', '300', '--subclass-at', '50', '--menu-at', '100', '--shot-at', '150',
+        'menu.bmp') $null
     Run-Case 'reset' $nr (@('--frames', '400', '--expect-bridged', '--reset-at', '200', '1600x900') + $screenArg) {
         param($text)
         if ($text -notmatch 'hostStarts=1 ') { 'the host was restarted for a resize without frame generation' }
