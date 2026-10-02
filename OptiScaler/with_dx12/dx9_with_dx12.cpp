@@ -596,12 +596,16 @@ struct Bridge
         return written;
     }
 
+    // A second XeFG swapchain in the same process does not survive (smoke case window-fg crashed in the provider's
+    // swapchain creation), so once released the presenter is not created again and D3D9 presents from then on.
     void ReleasePresenter()
     {
+        presenterFailed = true;
+
         if (swap == nullptr)
             return;
 
-        LOG_INFO("D3D9 bridge: releasing the XeFG presenter");
+        LOG_INFO("D3D9 bridge: releasing the XeFG presenter; frame generation stays off for this session");
         MenuOverlayDx::CleanupRenderTarget(true, window);
         Wait();
         swap.Reset();
@@ -678,7 +682,6 @@ struct Bridge
             if (FAILED(resized))
             {
                 ReleasePresenter();
-                presenterFailed = true;
                 return false;
             }
 
@@ -701,7 +704,6 @@ struct Bridge
         {
             LOG_ERROR("D3D9 bridge: the frame could not be read back");
             ReleasePresenter();
-            presenterFailed = true;
             return false;
         }
 
@@ -745,7 +747,7 @@ struct Bridge
     {
         LOG_INFO("D3D9 bridge: following device {:X}, window {:X}", (size_t) device, (size_t) target);
 
-        if (target != window)
+        if (target != window && swap != nullptr)
             ReleasePresenter();
 
         if (device != game)
@@ -845,7 +847,7 @@ struct Bridge
             State::Instance().screenHeight = static_cast<float>(desc.Height);
         }
 
-        // Exclusive fullscreen belongs to the D3D9 device: the presenter comes back with a windowed device.
+        // Exclusive fullscreen belongs to the D3D9 device.
         if (swap != nullptr && !params.Windowed)
             ReleasePresenter();
 
