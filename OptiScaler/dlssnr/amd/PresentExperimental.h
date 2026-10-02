@@ -59,7 +59,7 @@ struct Context
     ComPtr<ID3D12Resource> retired[2];
     UINT64 retiredUntil = 0;
     UINT busyFrames = 0;
-    bool failedReported = false;
+    bool failedReported = false, formatReported = false;
     ComPtr<ID3D12DescriptorHeap> heap, clearCpu;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pipeline;
@@ -434,6 +434,10 @@ struct Context
         {
             if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM && desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM)
             {
+                if (!formatReported)
+                    LOG_WARN("Final-image NR: backbuffer format {} is not RGBA8 or BGRA8; no NR and no XeFG guides",
+                             (UINT) desc.Format);
+                formatReported = true;
                 status = "Final-image NR: unsupported backbuffer format";
                 return false;
             }
