@@ -53,6 +53,10 @@
 //   --shot-at F FILE     save what the window shows on screen at frame F as a BMP
 //   --work MS            spend MS milliseconds of CPU on each frame, as a game would
 //   --timeout S          give up after S seconds (default 120)
+//   --look-at F S NAME   from frame F, read back for S seconds every frame the screen shows in the window
+//                        (tests\screen_look.h) and keep presenting until then; fail on rows of black, which the
+//                        scenes never have; without --look-ref write the mean frame as NAME.ref
+//   --look-ref FILE      with --look-at: print how far each frame shown is from FILE (a NAME.ref of a still scene)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -69,6 +73,7 @@
 #include <string>
 #include <vector>
 #include "../tools/dx9-x86/dx9_wire.h"
+#include "screen_look.h"
 
 namespace
 {
@@ -402,6 +407,22 @@ void Compare(const std::vector<DWORD>& a, const std::vector<DWORD>& b, int width
     }
 }
 
+// --look-at: what the screen shows over the window, read on a thread of its own while the frames go on.
+struct LookJob
+{
+    double seconds = 0;
+    RECT area {};
+    std::wstring folder, name, reference;
+    ScreenLook result;
+};
+DWORD WINAPI LookThread(LPVOID job)
+{
+    auto& j = *static_cast<LookJob*>(job);
+    j.result =
+        LookAtScreen(j.seconds, j.area, j.folder, j.name.c_str(), j.reference.empty() ? nullptr : j.reference.c_str());
+    return 0;
+}
+
 // --lose-device-at: what TestCooperativeLevel reports while a lost device is simulated.
 using TestLevel = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*);
 TestLevel realTestLevel = nullptr;
@@ -427,6 +448,9 @@ int main(int argc, char** argv)
     std::string typeText;
     const char* shotPath = nullptr;
     double work = 0;
+    int lookAt = -1;
+    LookJob lookJob;
+    HANDLE look = nullptr;
     UINT width = 1280, height = 720, resetWidth = 0, resetHeight = 0;
     std::vector<std::pair<int, WORD>> keys;
     struct Drag
@@ -506,6 +530,18 @@ int main(int argc, char** argv)
         {
             minimizeAt = atoi(next());
             restoreAt = atoi(next());
+        }
+        else if (a == "--look-at")
+        {
+            lookAt = atoi(next());
+            lookJob.seconds = atof(next());
+            const std::string text = next();
+            lookJob.name.assign(text.begin(), text.end());
+        }
+        else if (a == "--look-ref")
+        {
+            const std::string text = next();
+            lookJob.reference.assign(text.begin(), text.end());
         }
         else if (a == "--frames")
             frames = atoi(next());
@@ -783,9 +819,21 @@ int main(int argc, char** argv)
     LARGE_INTEGER started {}, ended {}, rate {};
     QueryPerformanceFrequency(&rate);
     QueryPerformanceCounter(&started);
-    for (int frame = 0; frame < frames; ++frame)
+    int framesRun = 0;
+    for (int frame = 0; frame < frames || (look && WaitForSingleObject(look, 0) == WAIT_TIMEOUT); ++frame)
     {
+        framesRun = frame + 1;
         Pump();
+        if (frame == lookAt)
+        {
+            GetClientRect(window, &lookJob.area);
+            MapWindowPoints(window, nullptr, reinterpret_cast<POINT*>(&lookJob.area), 2);
+            wchar_t self[MAX_PATH] {};
+            GetModuleFileNameW(nullptr, self, MAX_PATH);
+            lookJob.folder = self;
+            lookJob.folder.resize(lookJob.folder.find_last_of(L'\\'));
+            look = CreateThread(nullptr, 0, LookThread, &lookJob, 0, nullptr);
+        }
         // A game that checks its device each frame and resets it once it can.
         if (frame == lostAt)
         {
@@ -1067,7 +1115,7 @@ int main(int argc, char** argv)
     }
 
     QueryPerformanceCounter(&ended);
-    const double msPerFrame = 1000.0 * double(ended.QuadPart - started.QuadPart) / double(rate.QuadPart) / frames;
+    const double msPerFrame = 1000.0 * double(ended.QuadPart - started.QuadPart) / double(rate.QuadPart) / framesRun;
     const auto s = Status();
     const bool covered = samples[0] == CLR_INVALID || samples[1] == CLR_INVALID;
     const bool screenMoves = !covered && samples[0] != samples[1];
@@ -1082,6 +1130,22 @@ int main(int argc, char** argv)
            samples[0], samples[1], front ? 1 : 0, keysSent, keysSkipped, msPerFrame);
 
     int failed = 0;
+    if (lookAt >= 0 && !look)
+        failed = Fail("the screen was not read back: --look-at is past the last frame");
+    if (look)
+    {
+        WaitForSingleObject(look, INFINITE);
+        CloseHandle(look);
+        const ScreenLook& l = lookJob.result;
+        printf(
+            "look %ls: %u frames shown, %u with black rows (%u rows, %u above the middle, %u below, longest run %u); "
+            "difference to the reference p10 %.2f p50 %.2f p90 %.2f mean %.2f\n",
+            lookJob.name.c_str(), l.frames, l.black, l.rows, l.top, l.bottom, l.run, l.p10, l.p50, l.p90, l.mean);
+        if (!l.error.empty() || !l.frames)
+            failed = Fail(("the screen was not read back: " + l.error).c_str());
+        else if (l.black)
+            failed = Fail("frames shown with rows of black");
+    }
     if (screen && !screenMoves)
         failed = Fail("the window's pixels on screen did not change between samples");
     // A Reset, an ended host, a new window or a lost device may cost frames presented natively.

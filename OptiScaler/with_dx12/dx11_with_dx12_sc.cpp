@@ -288,11 +288,12 @@ ULONG STDMETHODCALLTYPE Dx11wDx12SC::Release()
         if (State::Instance().currentD3D11Device == _dx11Device)
             State::Instance().currentD3D11Device = nullptr;
 
-        State::Instance().swapchainInteropApi = SwapchainInteropApi::None;
-
         // Same order as ResizeBuffers with final-image NR: the menu stays off and NR's motion and depth live until
-        // XeFG's swapchain is gone.
+        // XeFG's swapchain is gone. The bridge also stays the interop route until then, so a frame XeFG presents
+        // while it releases its swapchain is not taken for a game frame and given NR on XeFG's own queue.
         const bool finalImage = AmdPresentExperimental::IsTarget();
+        if (!finalImage)
+            State::Instance().swapchainInteropApi = SwapchainInteropApi::None;
         const auto guides = finalImage ? AmdPresentExperimental::LastGuides() : AmdPresentExperimental::Guides {};
         if (finalImage)
         {
@@ -306,6 +307,8 @@ ULONG STDMETHODCALLTYPE Dx11wDx12SC::Release()
             fg->Deactivate();
             fg->ReleaseSwapchain(_handle);
         }
+        if (finalImage)
+            State::Instance().swapchainInteropApi = SwapchainInteropApi::None;
 
         ResTrack_Dx11::OnDeviceReleased(_dx11Device);
 
@@ -398,8 +401,11 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
             *Config::Instance(), Config::Instance()->AmdNrScale.value_or_default());
         settings.spinDraw = 0;
         AmdPresentExperimental::Guides guides;
+        // NR runs on the queue the frame generation swapchain was made with, after its wait for the copy above:
+        // XeFG takes the frame and the guides in that queue's order, so the frames it generates carry NR. The copy
+        // queue is not ordered with XeFG's work.
         const bool ready = AmdPresentExperimental::Render(
-            _fgSwapChain, _dx12CommandQueue, Util::DllPath().parent_path(), settings, &guides, neural, true);
+            _fgSwapChain, _fg->GetCommandQueue(), Util::DllPath().parent_path(), settings, &guides, neural, true);
         static unsigned unavailableFrames = 0;
         if (ready)
             unavailableFrames = 0;
