@@ -258,6 +258,8 @@ constexpr int32_t SampleCount = 15;
 inline uint8_t* g_base = nullptr;
 inline PresentFn g_native = nullptr;
 inline bool g_enabled = false;
+// Set while final-image NR on D3D12 spaces XeFG's presents itself (MenuOverlayDx): the hooks then only forward.
+inline std::atomic<bool> g_bypass = false;
 
 // Written and read only by the swapchain present thread; the install path
 // runs before the provider is ever entered.
@@ -770,7 +772,7 @@ inline void TryPace(void* ctx, void* arg5, void* arg6, uint64_t arg7, bool isLas
 
 inline int64_t Detour(void* ctx, uint32_t a2, uint32_t a3, uint64_t a4, void* arg5, void* arg6, uint64_t arg7)
 {
-    if (g_enabled)
+    if (g_enabled && !g_bypass)
     {
         auto* caller = reinterpret_cast<uint8_t*>(_ReturnAddress());
 
@@ -806,6 +808,9 @@ inline bool SchedForwarder(void* ctx, void* burst, uint8_t gate, void* timing, u
 inline void* TsDetour(void* a1, int64_t* out, void* lookup, void* timing, uint32_t index, uint32_t countPlus1)
 {
     void* const result = g_tsNative(a1, out, lookup, timing, index, countPlus1);
+
+    if (g_bypass)
+        return result;
 
     // index 0 is the real frame and never reaches the provider's tail; the
     // provider caps the multiplier at 6X, so index 5 is the ceiling.

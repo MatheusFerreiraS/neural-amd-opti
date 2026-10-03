@@ -9,6 +9,7 @@
 #include <Logger.h>
 #include <Config.h>
 #include <hooks/FG_Hooks.h>
+#include <proxies/XeFGPacing.h>
 
 #include <imgui/imgui_impl_dx11.h>
 #include <imgui/imgui_impl_dx12.h>
@@ -46,6 +47,47 @@ static bool _isInited = false;
 static std::recursive_mutex _overlayMutex;
 static std::atomic<bool> _heldForResize = false;
 static bool _d3d12Captured = false;
+
+// Presents that reached the swapchain frame generation presents to, the longest time between two of them and how many
+// came less than a quarter of an even spacing after the previous one, for the final-image rate line.
+static std::atomic<UINT64> _fgOutputPresents = 0, _fgBunchedPresents = 0;
+static std::atomic<double> _fgLongestGapMs = 0;
+// XeFG presents one frame of each burst from the game's thread, inside the game's Present, and the others from a thread
+// of its own right after it, so above 2X a whole burst reaches the screen within a millisecond or two. With final-image
+// NR on D3D12 those others are spread here over the game's frame period, on XeFG's thread only, so the game's thread
+// does not wait for them. The pacing hooks in XeFG (XeFGPacing.h) make the game's Present wait for the burst they
+// space, which holds the game at the frame rate it had when frame generation started; they only forward meanwhile,
+// unless XeFG\ExtraPacing=true asks for them.
+static std::atomic<DWORD> _fgGameThread = 0;
+static std::atomic<double> _fgPeriodMs = 0;
+
+static void PaceFrameGenerationPresent(IFGFeature* fg)
+{
+    static std::atomic<double> burstStart = 0;
+    static std::atomic<UINT> burstIndex = 0;
+    const double now = Util::MillisecondsNow();
+    if (GetCurrentThreadId() == _fgGameThread)
+    {
+        burstStart = now;
+        burstIndex = 0;
+        return;
+    }
+    const double period = _fgPeriodMs;
+    if (burstStart == 0 || period <= 0 || fg == nullptr || !fg->IsActive() || fg->IsPaused() || !XeFGPacing::g_bypass)
+        return;
+    const UINT count = fg->GetInterpolatedFrameCount();
+    const double wait = burstStart + ++burstIndex * period / (count + 1) - now;
+    if (burstIndex > count || wait <= 0 || wait > period)
+        return;
+    // A high resolution timer for all but the last half millisecond, then a spin.
+    static thread_local HANDLE timer =
+        CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    LARGE_INTEGER due { .QuadPart = -static_cast<LONGLONG>((wait - 0.5) * 10000) };
+    if (timer && wait > 0.5 && SetWaitableTimerEx(timer, &due, 0, nullptr, nullptr, nullptr, 0))
+        WaitForSingleObject(timer, 100);
+    while (Util::MillisecondsNow() < now + wait)
+        YieldProcessor();
+}
 
 // for showing
 static bool _showRenderImGuiDebugOnce = true;
@@ -561,6 +603,19 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // its output to; FinalImageFrameGen has already run NR on the game's frame. D3D9 runs NR in its own bridge.
     const bool fgPresents = State::Instance().swapchainInteropApi == SwapchainInteropApi::None &&
                             State::Instance().currentFGSwapchain != nullptr;
+    if (fgPresents && !(Flags & DXGI_PRESENT_TEST) && AmdPresentExperimental::IsTarget())
+    {
+        auto fg = State::Instance().currentFG;
+        PaceFrameGenerationPresent(fg);
+        static double last = 0;
+        const double now = Util::MillisecondsNow();
+        if (last > 0 && now - last > _fgLongestGapMs)
+            _fgLongestGapMs = now - last;
+        if (last > 0 && fg != nullptr && now - last < _fgPeriodMs / (4 * (fg->GetInterpolatedFrameCount() + 1)))
+            _fgBunchedPresents++;
+        last = now;
+        _fgOutputPresents++;
+    }
     if (AmdPresentExperimental::IsTarget() && Config::Instance()->DlssNrEnabled.value_or_default() &&
         !State::Instance().currentFeature && !fgPresents &&
         State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx9wDx12 &&
@@ -766,8 +821,39 @@ void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
     if (ready || fg->FrameGenerationContext() == nullptr || !fgEnabled)
         fg->EvaluateState(device.Get(), constants);
 
+    // Frame generation on and its guides made, yet XeFG not generating: what holds it, every 30 s.
+    static ULONGLONG idleSince = 0, idleReported = 0;
+    if (fgEnabled && ready && (!fg->IsActive() || fg->IsPaused()))
+    {
+        const auto now = GetTickCount64();
+        if (idleSince == 0)
+            idleSince = now;
+        if (now - idleSince > 5000 && now - idleReported > 30000)
+        {
+            idleReported = now;
+            LOG_WARN("Final-image XeFG: frame generation is on but XeFG has not generated for {} s (active {}, paused "
+                     "until frame {} at frame {}, context {}, swapchain {})",
+                     (now - idleSince) / 1000, fg->IsActive(), fg->TargetFrame(), fg->FrameCount(),
+                     fg->FrameGenerationContext() != nullptr, state.currentFGSwapchain != nullptr);
+        }
+    }
+    else
+        idleSince = 0;
+
     if (!ready || !fg->IsActive() || fg->IsPaused())
         return;
+
+    // The game's frame period, for spacing XeFG's presents.
+    XeFGPacing::g_bypass = !config.FGXeFGExtraPacing.value_or(false);
+    static double lastFrame = 0;
+    const double frameStart = Util::MillisecondsNow();
+    const double interval = frameStart - lastFrame;
+    _fgGameThread = GetCurrentThreadId();
+    if (lastFrame == 0 || interval > 100)
+        _fgPeriodMs = 0;
+    else
+        _fgPeriodMs = _fgPeriodMs > 0 ? 0.9 * _fgPeriodMs + 0.1 * interval : interval;
+    lastFrame = frameStart;
 
     // Optical flow has no camera: an identity view, a nominal projection and pixel motion at output size.
     fg->SetCameraValues(0.1f, 1000.0f, 1.5707963f, float(guides.width) / float(guides.height));
@@ -800,6 +886,36 @@ void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
         LOG_INFO("Final-image NR: XeFG takes optical-flow motion and depth at {}x{} on the game's queue", guides.width,
                  guides.height);
     }
+
+    // Every 5 s while XeFG runs: the game's frames, how many NR changed and the presents that reached DXGI.
+    static ULONGLONG since = 0;
+    static UINT frames = 0, changed = 0;
+    static UINT64 presentsBefore = 0, bunchedBefore = 0;
+    const auto now = GetTickCount64();
+    if (since == 0 || now - since > 6000)
+    {
+        since = now;
+        frames = changed = 0;
+        presentsBefore = _fgOutputPresents;
+        bunchedBefore = _fgBunchedPresents;
+        _fgLongestGapMs = 0;
+        return;
+    }
+    frames++;
+    changed += neural && AmdPresentExperimental::LastFrameModified();
+    if (now - since < 5000)
+        return;
+    const double seconds = (now - since) / 1000.0;
+    const auto presents = _fgOutputPresents - presentsBefore;
+    LOG_INFO("Final-image XeFG: {:.1f} frames/s, {:.1f} presents/s ({:.2f} per frame, longest gap {:.1f} ms, {:.0f}% "
+             "bunched), NR on {} of {} frames",
+             frames / seconds, presents / seconds, double(presents) / frames, _fgLongestGapMs.load(),
+             presents ? 100.0 * (_fgBunchedPresents - bunchedBefore) / presents : 0.0, changed, frames);
+    since = now;
+    frames = changed = 0;
+    presentsBefore = _fgOutputPresents;
+    bunchedBefore = _fgBunchedPresents;
+    _fgLongestGapMs = 0;
 }
 
 void MenuOverlayDx::ApplyThemeStyle() { MenuOverlayBase::ApplyThemeStyle(); }
