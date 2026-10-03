@@ -288,11 +288,12 @@ ULONG STDMETHODCALLTYPE Dx11wDx12SC::Release()
         if (State::Instance().currentD3D11Device == _dx11Device)
             State::Instance().currentD3D11Device = nullptr;
 
-        State::Instance().swapchainInteropApi = SwapchainInteropApi::None;
-
         // Same order as ResizeBuffers with final-image NR: the menu stays off and NR's motion and depth live until
-        // XeFG's swapchain is gone.
+        // XeFG's swapchain is gone. The bridge also stays the interop route until then, so a frame XeFG presents
+        // while it releases its swapchain is not taken for a game frame and given NR on XeFG's own queue.
         const bool finalImage = AmdPresentExperimental::IsTarget();
+        if (!finalImage)
+            State::Instance().swapchainInteropApi = SwapchainInteropApi::None;
         const auto guides = finalImage ? AmdPresentExperimental::LastGuides() : AmdPresentExperimental::Guides {};
         if (finalImage)
         {
@@ -306,6 +307,8 @@ ULONG STDMETHODCALLTYPE Dx11wDx12SC::Release()
             fg->Deactivate();
             fg->ReleaseSwapchain(_handle);
         }
+        if (finalImage)
+            State::Instance().swapchainInteropApi = SwapchainInteropApi::None;
 
         ResTrack_Dx11::OnDeviceReleased(_dx11Device);
 
