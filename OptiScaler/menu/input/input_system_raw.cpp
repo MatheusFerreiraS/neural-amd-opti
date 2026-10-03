@@ -409,14 +409,25 @@ RawInputSanitizeDecision GetRawInputSanitizeDecisionLocked(HRAWINPUT rawInput, c
     return decision;
 }
 
+// Records a raw wheel packet as taken by the menu; false when it already was.
+static bool TakeWheelPacketLocked(HRAWINPUT packet)
+{
+    if (std::find(_state.WheelPackets.begin(), _state.WheelPackets.end(), packet) != _state.WheelPackets.end())
+        return false;
+    _state.WheelPackets[_state.WheelPacketsNext++ % _state.WheelPackets.size()] = packet;
+    return true;
+}
+
 // While the menu is open a mouse packet is sanitized for whoever reads it, the wheel included. When that reader is not
 // the game window (DirectInput in exclusive mode reads the mouse on a window of its own and keeps the system from
 // sending the game window any mouse message) or reads buffered input, the menu would never see the wheel. With
-// final-image NR it takes it here, once per packet.
-static void CreditSanitizedWheelLocked(const RAWINPUT& input, RawSanitizeAction action)
+// final-image NR it takes it here, once per packet (packet is null for buffered input, which never reaches the game
+// window as a message), unless the game window gets WM_MOUSEWHEEL, which the menu already takes.
+static void CreditSanitizedWheelLocked(const RAWINPUT& input, RawSanitizeAction action, HRAWINPUT packet)
 {
     if (action != RawSanitizeAction::Pass && input.header.dwType == RIM_TYPEMOUSE &&
-        (input.data.mouse.usButtonFlags & RI_MOUSE_WHEEL) != 0 && Config::Instance()->DlssNrPresent.value_or_default())
+        (input.data.mouse.usButtonFlags & RI_MOUSE_WHEEL) != 0 && !_state.LegacyWheelSeen &&
+        Config::Instance()->DlssNrPresent.value_or_default() && (packet == nullptr || TakeWheelPacketLocked(packet)))
     {
         _state.MouseWheel += static_cast<SHORT>(input.data.mouse.usButtonData) / static_cast<float>(WHEEL_DELTA);
     }
@@ -721,6 +732,11 @@ bool HandleRawInputLocked(HRAWINPUT rawInputHandle)
 
     UpdateStateFromRawInputLocked(*input);
 
+    // The wheel of this packet is the menu's now; the game's own GetRawInputData on it must not count it again.
+    if (input->header.dwType == RIM_TYPEMOUSE && (input->data.mouse.usButtonFlags & RI_MOUSE_WHEEL) != 0 &&
+        Config::Instance()->DlssNrPresent.value_or_default())
+        TakeWheelPacketLocked(rawInputHandle);
+
     return mustReachGame;
 }
 
@@ -841,13 +857,9 @@ UINT WINAPI hkGetRawInputData(HRAWINPUT rawInput, UINT command, LPVOID data, PUI
         {
             // A game may query the same HRAWINPUT more than once. Reuse the
             // first decision so key/button release passthrough stays stable.
-            // A packet with a decision already went through HandleRawInputLocked or an earlier query.
-            const bool seen = std::any_of(_state.RawInputSanitizeCache.begin(), _state.RawInputSanitizeCache.end(),
-                                          [&](const auto& cached) { return cached.Handle == rawInput; });
             const RawInputSanitizeDecision decision = GetRawInputSanitizeDecisionLocked(rawInput, *input);
 
-            if (!seen)
-                CreditSanitizedWheelLocked(*input, decision.Action);
+            CreditSanitizedWheelLocked(*input, decision.Action, rawInput);
 
             OPTIINPUT_LOG_VERBOSE("GetRawInputData sanitize handle:{} type:{} action:{} allowedUp:{:#x}",
                                   static_cast<void*>(rawInput), input->header.dwType, static_cast<int>(decision.Action),
@@ -907,7 +919,7 @@ UINT WINAPI hkGetRawInputBuffer(PRAWINPUT data, PUINT size, UINT headerSize)
                                   current->header.dwType, static_cast<int>(action), allowedMouseButtonUpFlags,
                                   static_cast<unsigned>(currentBytes - bufferBegin));
             RecordRawInputSanitizeCounterLocked(*current, action);
-            CreditSanitizedWheelLocked(*current, action);
+            CreditSanitizedWheelLocked(*current, action, nullptr);
             ApplyRawInputSanitizeActionLocked(*current, action, allowedMouseButtonUpFlags);
 
             current = reinterpret_cast<PRAWINPUT>(currentBytes + packetSize);

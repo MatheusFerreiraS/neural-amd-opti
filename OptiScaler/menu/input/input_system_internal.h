@@ -201,6 +201,12 @@ struct InputState
     std::array<RawInputSanitizeDecision, MaxRawInputSanitizeCacheEntries> RawInputSanitizeCache {};
     std::size_t RawInputSanitizeCacheWriteIndex = 0;
 
+    // Raw wheel packets the menu already took, and whether the game window ever got WM_MOUSEWHEEL; once it has, the
+    // menu takes the wheel from those messages only.
+    std::array<HRAWINPUT, 64> WheelPackets {};
+    std::size_t WheelPacketsNext = 0;
+    bool LegacyWheelSeen = false;
+
     std::array<WindowsHookSlot, MaxTrackedWindowsHooks> WindowsHookSlots {};
     std::array<bool, 256> WindowsHookKeyboardBlockedDown {};
     std::array<bool, 5> WindowsHookMouseBlockedDown {};
