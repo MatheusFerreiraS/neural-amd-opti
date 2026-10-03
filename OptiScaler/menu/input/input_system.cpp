@@ -512,8 +512,76 @@ void InitializeExternalVirtualMouseLocked(HWND coordinateHwnd, const POINT& fall
              _state.ExternalVirtualMouseClient.y, _state.MouseScreenPos.x, _state.MouseScreenPos.y);
 }
 
+// A target window in another process with the final image is the 32-bit D3D9 host (tools/dx9-x86). The
+// game side holds the game's own cursor calls while the menu is open, so the cursor moves freely there.
+bool FollowsShownCursorLocked() { return Config::Instance()->DlssNrPresent.value_or_default(); }
+
+bool IsSystemCursorShown()
+{
+    CURSORINFO info { sizeof(info) };
+    return GetCursorInfo(&info) && (info.flags & CURSOR_SHOWING) != 0 && info.hCursor != nullptr;
+}
+
+bool SamePoint(const POINT& a, const POINT& b) { return a.x == b.x && a.y == b.y; }
+
+// The menu's cursor on that route. It starts on the cursor each time the menu opens. While the cursor
+// shows (the game's own menus) and moves, or after an absolute move (pen tablet, remote desktop), it is
+// the cursor, clamped to the window: the player follows that one, and raw counts differ from it (pointer
+// speed and acceleration, the window's edges). Raw moves move it while the cursor is hidden, and while a
+// shown cursor stays still under them (a game that holds it): at least 8 counts with no cursor move for
+// 100 ms. Raw moves read sooner after a cursor move are the same move, read later (the input sink is read
+// on one thread, the menu also draws on XeFG's). The menu draws it unless the cursor shows right there.
+bool ApplyFinalImageMouseLocked(HWND coordinateHwnd, const POINT& cursorClientPos, LONG deltaX, LONG deltaY)
+{
+    const bool shown = IsSystemCursorShown();
+    const bool cursorMoved = !SamePoint(cursorClientPos, _state.ExternalLastCursorClient);
+    const ULONGLONG now = GetTickCount64();
+    const POINT before = _state.ExternalVirtualMouseClient;
+
+    if (!_state.ExternalVirtualMouseInitialized || _state.ExternalAbsoluteMouseMoved || (shown && cursorMoved))
+    {
+        _state.ExternalVirtualMouseClient = cursorClientPos;
+        _state.ExternalCursorMovedTick = now;
+        _state.ExternalCursorHeld = false;
+        _state.ExternalHeldDelta = {};
+    }
+    else if (!shown || _state.ExternalCursorHeld)
+    {
+        _state.ExternalVirtualMouseClient.x += deltaX;
+        _state.ExternalVirtualMouseClient.y += deltaY;
+    }
+    else if (now - _state.ExternalCursorMovedTick >= 100)
+    {
+        _state.ExternalHeldDelta.x += deltaX;
+        _state.ExternalHeldDelta.y += deltaY;
+        _state.ExternalCursorHeld = std::abs(_state.ExternalHeldDelta.x) + std::abs(_state.ExternalHeldDelta.y) >= 8;
+
+        if (_state.ExternalCursorHeld)
+        {
+            _state.ExternalVirtualMouseClient.x += _state.ExternalHeldDelta.x;
+            _state.ExternalVirtualMouseClient.y += _state.ExternalHeldDelta.y;
+        }
+    }
+
+    ClampPointToClientLocked(coordinateHwnd, _state.ExternalVirtualMouseClient);
+    _state.ExternalVirtualMouseInitialized = true;
+    _state.ExternalAbsoluteMouseMoved = false;
+    _state.ExternalLastCursorClient = cursorClientPos;
+    _state.ExternalMenuCursorDrawn = !shown || !SamePoint(_state.ExternalVirtualMouseClient, cursorClientPos);
+    _state.ExternalVirtualMouseUsedThisFrame = !SamePoint(before, _state.ExternalVirtualMouseClient);
+    _state.MouseClientPos = _state.ExternalVirtualMouseClient;
+    UpdateExternalVirtualMouseScreenPosLocked(coordinateHwnd);
+    return true;
+}
+
 bool ShouldForceImGuiMouseDrawCursorLocked()
 {
+    if (FollowsShownCursorLocked())
+    {
+        return _state.MenuVisible && _state.Focused && _state.ExternalTargetProcess && _state.InputHwnd == nullptr &&
+               _state.ExternalMenuCursorDrawn;
+    }
+
     return _state.MenuVisible && _state.Focused && _state.ExternalTargetProcess && _state.InputHwnd == nullptr &&
            _state.ExternalVirtualMouseInitialized &&
            (_state.ExternalVirtualMouseActive || _state.ExternalVirtualMouseAuthoritative ||
@@ -609,6 +677,9 @@ bool ApplyExternalVirtualMouseLocked(HWND coordinateHwnd, const POINT& absoluteC
     const LONG deltaY = _state.ExternalPendingMouseDeltaY;
     _state.ExternalPendingMouseDeltaX = 0;
     _state.ExternalPendingMouseDeltaY = 0;
+
+    if (FollowsShownCursorLocked())
+        return ApplyFinalImageMouseLocked(coordinateHwnd, absoluteClientPos, deltaX, deltaY);
 
     if (deltaX != 0 || deltaY != 0)
     {
@@ -750,6 +821,10 @@ void ApplyMenuVisibilityChangeLocked(bool visible)
 
     if (!wasMenuVisible && visible)
     {
+        // The menu's own cursor starts where the cursor is, not where it was left the last time.
+        if (FollowsShownCursorLocked())
+            _state.ExternalVirtualMouseInitialized = false;
+
         HandleBlockingFocusGainLocked();
     }
     else if (wasMenuVisible && !visible)

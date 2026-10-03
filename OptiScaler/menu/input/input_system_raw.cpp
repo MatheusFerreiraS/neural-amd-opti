@@ -225,7 +225,11 @@ void AccumulateExternalRawMouseDeltaLocked(const RAWMOUSE& mouse)
     }
 
     if ((mouse.usFlags & MOUSE_MOVE_ABSOLUTE) != 0)
+    {
+        // Read with the final image only (ApplyFinalImageMouseLocked): the cursor is where such a device put it.
+        _state.ExternalAbsoluteMouseMoved = true;
         return;
+    }
 
     if (mouse.lLastX == 0 && mouse.lLastY == 0)
         return;
