@@ -8,7 +8,10 @@ rem Without scenario args it runs: nr, fg, fg --bgra, fg --cpu-ms 6 (a game's CP
 rem fg --debug-layer, nr --lifecycle, fg --lifecycle, fg --lifecycle --nr-off-start, nr and fg with
 rem --bad-runtime (another DLL in the runtime's place), fg --r10 (a 10-bit backbuffer, which final-image
 rem NR leaves alone), fg with InterpolationCount=auto (3X), fg with UnlockMFG=false (2X), and
-rem fg --lifecycle as rdr.exe (Red Dead Redemption's quirk: a plain first swapchain, XeFG's on the next).
+rem fg --lifecycle as rdr.exe (Red Dead Redemption's quirk: a plain first swapchain, XeFG's on the next),
+rem fg --perf windowed and borderless with a heavy game frame (presented frame rate with XeFG against without it,
+rem with NR and without, and XeFG's frames spread over the frame period), and the mouse wheel over the open menu, with the game's mouse read through DirectInput in
+rem exclusive mode as Red Dead Redemption does, with FG and without.
 rem With scenario args, set SMOKE_EXE=rdr.exe first to run them under that name.
 setlocal
 cd /d "%~dp0.."
@@ -18,7 +21,7 @@ if not exist "%SMOKE%\OptiScaler" mkdir "%SMOKE%\OptiScaler"
 for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_ROOT=%%I"
 call "%VS_ROOT%\VC\Auxiliary\Build\vcvarsall.bat" x64 -vcvars_ver=14.44 >nul
 if errorlevel 1 exit /b 1
-cl /nologo /std:c++20 /EHsc /O2 /W3 /utf-8 tests\dx12_final_image_smoke.cpp /Fe"%SMOKE%\dx12_final_image_smoke.exe" /Fo"%SMOKE%\dx12_final_image_smoke.obj" /link d3dcompiler.lib user32.lib gdi32.lib dbghelp.lib
+cl /nologo /std:c++20 /EHsc /O2 /W3 /utf-8 tests\dx12_final_image_smoke.cpp /Fe"%SMOKE%\dx12_final_image_smoke.exe" /Fo"%SMOKE%\dx12_final_image_smoke.obj" /link d3dcompiler.lib user32.lib gdi32.lib dbghelp.lib dinput8.lib dxguid.lib
 if errorlevel 1 exit /b 1
 copy /y "%SMOKE%\dx12_final_image_smoke.exe" "%SMOKE%\rdr.exe" >nul || exit /b 1
 copy /y "exports\release-local\OptiScaler.dll" "%SMOKE%\dxgi.dll" >nul || exit /b 1
@@ -49,6 +52,11 @@ call :run fg --bad-runtime
 call :run fg --r10
 call :run fg --set XeFG/InterpolationCount=auto
 call :run fg --set XeFG/UnlockMFG=false --expect-2x
+call :run fg --perf --gpu-load 2000 --cpu-ms 2
+call :run fg --perf --borderless --waitable 2 --gpu-load 10000 --cpu-ms 3
+call :run fg --wheel
+call :run fg --wheel --dinput
+call :run nr --wheel --dinput
 set "SMOKE_EXE=rdr.exe"
 call :run fg --lifecycle
 :done
