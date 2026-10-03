@@ -16,5 +16,10 @@ void Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
 // Final-image NR on a native D3D12 game's frame at the frame generation swapchain's Present, before
 // frame generation reads it, and the optical-flow motion and depth for XeFG.
 void FinalImageFrameGen(IDXGISwapChain* fgSwapChain);
+// The game's present into frame generation is about to start, or has returned, with final-image NR on D3D12.
+void FrameGenerationPresent(bool returned);
+// Called before the swapchain frame generation presents to is locked: spaces XeFG's own presents while the final image
+// generates frames.
+void SpaceFrameGenerationPresent(UINT flags);
 void ApplyThemeStyle();
 } // namespace MenuOverlayDx
