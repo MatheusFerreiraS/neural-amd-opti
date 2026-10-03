@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -51,8 +52,15 @@ std::atomic<int> workMs { 0 };
 std::atomic<int> gpuClears { 0 }, capFps { 0 };
 // The game's GPU time per frame in microseconds, from timestamps.
 std::atomic<int> gpuMicros { 0 };
+// Microseconds the render thread has spent waiting for its fence and next image, and inside vkQueuePresentKHR.
+std::atomic<long long> waitMicros { 0 }, presentMicros { 0 };
 std::atomic<bool> stopRender { false }, freeze { false }, renderFailed { false };
 int failures = 0;
+
+long long Micros(std::chrono::steady_clock::time_point since)
+{
+    return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - since).count();
+}
 
 void Print(const char* format, auto... values)
 {
@@ -118,6 +126,21 @@ bool Presented(size_t from, int presented)
             return true;
     }
     return false;
+}
+
+// XeFG's output as the FPS overlay shows it, from the last status line after `from`; -1 without one.
+double OverlayOutput(size_t from)
+{
+    const auto log = ReadLog();
+    const std::string needle = "Vulkan XeFG: frame ";
+    double output = -1;
+    for (auto at = log.find(needle, from); at != std::string::npos; at = log.find(needle, at + 1))
+    {
+        const auto value = log.find(", output ", at);
+        if (value != std::string::npos && value < log.find('\n', at))
+            output = std::atof(log.c_str() + value + 9);
+    }
+    return output;
 }
 
 bool WaitPresented(size_t from, DWORD timeout = 15000)
@@ -514,19 +537,29 @@ ScreenRate WatchScreen(DWORD ms)
 struct Measured
 {
     double real = 0;
+    // Milliseconds per frame the game's thread spends inside vkQueuePresentKHR.
+    double presentMs = 0;
+    // What the FPS overlay shows as XeFG's output.
+    double overlay = -1;
     ScreenRate screen;
 };
 
 Measured Measure(const char* name, DWORD ms = 5000)
 {
     const int before = frames;
+    const long long waited = waitMicros, presenting = presentMicros;
     const auto start = GetTickCount64();
+    const auto mark = Mark();
     Measured result;
     result.screen = WatchScreen(ms);
+    const int count = std::max(frames - before, 1);
     result.real = (frames - before) * 1000.0 / double(GetTickCount64() - start);
-    Print("%s: %.1f real presents/s, game GPU %.1f ms; screen %.1f images/s, %.1f with the block moved, %.1f "
-          "generated",
-          name, result.real, gpuMicros / 1000.0, result.screen.images, result.screen.moves, result.screen.generated);
+    result.presentMs = (presentMicros - presenting) / 1000.0 / count;
+    result.overlay = OverlayOutput(mark);
+    Print("%s: %.1f real presents/s, game GPU %.1f ms, per frame %.1f ms waiting for fence and image and %.1f ms in "
+          "present; screen %.1f images/s, %.1f with the block moved, %.1f generated; overlay output %.1f",
+          name, result.real, gpuMicros / 1000.0, (waitMicros - waited) / 1000.0 / count, result.presentMs,
+          result.screen.images, result.screen.moves, result.screen.generated, result.overlay);
     return result;
 }
 
@@ -859,6 +892,7 @@ struct Renderer
         if (!chain || caps.currentExtent.width != extent.width || caps.currentExtent.height != extent.height)
             return Recreate();
 
+        const auto waitStart = std::chrono::steady_clock::now();
         VK_CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, 5'000'000'000ull));
         uint64_t ticks[2] {};
         if (timed && vkGetQueryPoolResults(device, timestamps, 0, 2, sizeof(ticks), ticks, sizeof(uint64_t),
@@ -867,6 +901,7 @@ struct Renderer
         const uint32_t slot = acquireSlot++ % acquired.size();
         uint32_t index = 0;
         auto result = vkAcquireNextImageKHR(device, chain, 5'000'000'000ull, acquired[slot], VK_NULL_HANDLE, &index);
+        waitMicros += Micros(waitStart);
         if (result == VK_ERROR_OUT_OF_DATE_KHR)
             return Recreate();
         if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
@@ -930,7 +965,9 @@ struct Renderer
         present.swapchainCount = 1;
         present.pSwapchains = &chain;
         present.pImageIndices = &index;
+        const auto presentStart = std::chrono::steady_clock::now();
         result = vkQueuePresentKHR(queue, &present);
+        presentMicros += Micros(presentStart);
         ++frames;
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
             return Recreate();
@@ -1152,6 +1189,13 @@ void ScreenRun()
     // The FPS overlay (ShowFps in the runner's INI) is in this capture, for a person to read.
     SaveCapture(Capture(), "capture-screen-xefg.bmp");
     Step("generated frames reach the screen with NR on", shown(fgNr));
+    char rates[96];
+    std::snprintf(rates, sizeof(rates), "overlay %.1f, screen %.1f images/s", fgNr.overlay, fgNr.screen.images);
+    Step("FPS overlay shows the XeFG frames that reach the screen",
+         fgNr.overlay > 0 && std::abs(fgNr.overlay - fgNr.screen.images) <= 0.15 * fgNr.screen.images, rates);
+    // XeFG's Present can hold its caller for most of a frame while NR runs; the game's own present must not.
+    std::snprintf(rates, sizeof(rates), "%.1f ms per frame in present", fgNr.presentMs);
+    Step("the game's present does not wait for XeFG", fgNr.presentMs <= 4.0, rates);
 
     auto mark = Mark();
     Key(VK_END);
@@ -1175,7 +1219,6 @@ void ScreenRun()
     Key(VK_NUMPAD5);
     Step("NR key turns NR off", WaitLog("Vulkan final-image bridge: NR off", mark, 3000));
     const auto nrOff = Measure("NR off, same game");
-    char rates[96];
     std::snprintf(rates, sizeof(rates), "%.1f real fps with NR, %.1f without", nrOn.real, nrOff.real);
     Step("NR keeps most of the game's real frame rate", fgOff && nrOn.real >= 0.85 * nrOff.real, rates);
 
@@ -1190,13 +1233,24 @@ void ScreenRun()
     const auto fgOnly = Measure("XeFG with NR off, 25 real fps");
     Step("generated frames reach the screen with NR off", fgOn && shown(fgOnly));
     mark = Mark();
+    Key(VK_END);
+    Step("FG key with NR off turns XeFG off and says so",
+         WaitLog("Vulkan XeFG paused while frame generation is off", mark, 3000) &&
+             WaitFor([] { return !FgVisible(); }, 3000) && Count("paused while final-image NR is off", mark) == 0);
+    mark = Mark();
+    Key(VK_END);
+    Step("FG key with NR off turns XeFG back on", WaitPresented(mark) && FgVisible());
+    mark = Mark();
     Key(VK_NUMPAD5);
     Step("NR key turns NR back on under XeFG",
          WaitLog("Vulkan final-image bridge: NR on", mark, 3000) && WaitPresented(Mark()) && FgVisible());
 
     // With vsync the display's refresh rate limits what XeFG puts out (about twice the refresh rate), which
-    // holds a 60 fps game at 40 real at 3x on a 60 Hz display. Without vsync XeFG's frames tear like the game's
-    // and more of them reach the screen than that limit allows.
+    // holds a 60 fps game at 40 real at 3x on a 60 Hz display. Without vsync XeFG's frames tear like the game's,
+    // so both generated frames of each real one reach the screen, more than a refresh-limited display shows.
+    // Desktop Duplication misses some torn images at these rates, so the generated ones are counted.
+    // XeFG's Present, which can hold its caller for most of a frame while NR runs, runs on a thread of its own, so
+    // the game keeps most of the real frame rate it has with NR alone.
     capFps = vsync ? 0 : 60;
     workMs = 8;
     gpuClears = 130;
@@ -1205,11 +1259,19 @@ void ScreenRun()
     DEVMODEW mode {};
     mode.dmSize = sizeof(mode);
     EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &mode);
-    std::snprintf(rates, sizeof(rates), "%.1f images/s on screen at %lu Hz, %.1f real fps", fgGame.screen.images,
-                  mode.dmDisplayFrequency, fgGame.real);
     if (!vsync)
-        Step("without vsync XeFG puts out more than twice the refresh rate",
-             fgGame.screen.images > 2.1 * mode.dmDisplayFrequency, rates);
+    {
+        std::snprintf(rates, sizeof(rates), "%.1f images/s on screen at %lu Hz, %.1f generated, %.1f real fps",
+                      fgGame.screen.images, mode.dmDisplayFrequency, fgGame.screen.generated, fgGame.real);
+        Step("without vsync every generated frame reaches the screen, past the refresh rate",
+             fgGame.screen.images > 1.5 * mode.dmDisplayFrequency && fgGame.screen.generated >= 0.8 * 2 * fgGame.real,
+             rates);
+        std::snprintf(rates, sizeof(rates), "%.1f ms per frame in present", fgGame.presentMs);
+        Step("the game's present does not wait for XeFG in the same game", fgGame.presentMs <= 4.0, rates);
+        std::snprintf(rates, sizeof(rates), "%.1f real fps with NR and XeFG, %.1f with NR only", fgGame.real,
+                      nrOn.real);
+        Step("XeFG keeps most of the game's real frame rate with NR", fgGame.real >= 0.95 * nrOn.real, rates);
+    }
     workMs = 0;
     gpuClears = 0;
 }

@@ -2140,7 +2140,8 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             }
             else if (childGenerated > 0)
             {
-                const double shownFps = frameRate * (childGenerated + 1);
+                const float measured = AmdPresentExperimental::childFgOutputFps;
+                const double shownFps = measured > 0 ? measured : frameRate * (childGenerated + 1);
 
                 switch (overlayType)
                 {

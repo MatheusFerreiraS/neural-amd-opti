@@ -129,6 +129,23 @@ struct FgWindow
     }
 };
 
+// Logs the average time of one per-present step every 120 presents.
+struct Timing
+{
+    uint64_t micros = 0;
+    unsigned count = 0;
+
+    void Add(std::chrono::steady_clock::time_point start, const char* step)
+    {
+        micros += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+        if (++count < 120)
+            return;
+        LOG_INFO("Vulkan final-image bridge: {} average {:.1f} ms over 120 presents", step, micros / 120000.0);
+        micros = count = 0;
+    }
+};
+
 struct FgPresenter
 {
     static void Log(const char* message, xefg_swapchain_logging_level_t level, void*)
@@ -159,6 +176,55 @@ struct FgPresenter
     // Presents may tear, as the game's own do when it presents without vsync.
     bool tearing = false;
     std::chrono::steady_clock::time_point previous {};
+    // XeFG's Present can hold its caller for most of a frame while the frame's NR runs, so it runs on a thread of its
+    // own: the game's present thread hands the frame over and goes on with the next one. The game's thread calls Idle
+    // before anything else of the presenter and before the next frame's NR, which rewrites the guides and images XeFG
+    // reads until its Present returns.
+    std::thread worker;
+    std::mutex jobLock;
+    std::condition_variable jobChanged;
+    AmdPresentExperimental::Guides job;
+    bool posted = false, quit = false, presentFailed = false;
+    Timing presentTiming;
+    // XeFG's output over the last second, for the FPS overlay.
+    unsigned outputFrames = 0;
+    std::chrono::steady_clock::time_point outputStart {};
+
+    void Idle()
+    {
+        std::unique_lock hold(jobLock);
+        jobChanged.wait(hold, [&] { return !posted; });
+    }
+
+    void Post(const AmdPresentExperimental::Guides& guides)
+    {
+        if (!worker.joinable())
+            worker = std::thread(
+                [this]
+                {
+                    std::unique_lock hold(jobLock);
+                    while (true)
+                    {
+                        jobChanged.wait(hold, [&] { return posted || quit; });
+                        if (!posted)
+                            return;
+                        hold.unlock();
+                        const auto start = std::chrono::steady_clock::now();
+                        const bool presented = Present(job);
+                        presentTiming.Add(start, "XeFG present on its own thread");
+                        hold.lock();
+                        presentFailed |= !presented;
+                        posted = false;
+                        jobChanged.notify_all();
+                    }
+                });
+        {
+            std::lock_guard hold(jobLock);
+            job = guides;
+            posted = true;
+        }
+        jobChanged.notify_all();
+    }
 
     void Show(bool show)
     {
@@ -182,17 +248,31 @@ struct FgPresenter
 
     void Pause()
     {
+        Idle();
         if (context && enabled)
             XeFGProxy::SetEnabled()(context, false);
         enabled = false;
         if (visible) Show(false);
         resetOnResume = true;
-        previous = {};
+        previous = outputStart = {};
+        outputFrames = 0;
+        AmdPresentExperimental::childFgOutputFps = 0;
     }
 
     void Release()
     {
         Pause();
+        if (worker.joinable())
+        {
+            {
+                std::lock_guard hold(jobLock);
+                quit = true;
+            }
+            jobChanged.notify_all();
+            worker.join();
+        }
+        quit = presentFailed = false;
+        job = {};
         swap.Reset();
         if (context)
             XeFGProxy::Destroy()(context);
@@ -425,17 +505,34 @@ struct FgPresenter
         }
         if (!visible)
             Show(true);
-        ScopedVulkanCreatingSC creating;
         if (FAILED(swap->Present(0, tearing ? DXGI_PRESENT_ALLOW_TEARING : 0)))
             return false;
         resetOnResume = false;
+        xefg_swapchain_present_status_t status {};
+        if (XeFGProxy::GetLastPresentStatus()(context, &status) != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+            return true;
         if (id == 2 || id % 30 == 0)
+            LOG_INFO("Vulkan XeFG: frame {}, presented {}, generated {}, result {}, visible {}, output {:.1f} fps", id,
+                     status.framesPresented, status.isFrameGenEnabled, (int) status.frameGenResult,
+                     IsWindowVisible(window) != FALSE, AmdPresentExperimental::childFgOutputFps.load());
+        // Frames that cannot tear reach the screen at most once a refresh.
+        if (!outputStart.time_since_epoch().count())
+            outputStart = now;
+        else
+            outputFrames += status.framesPresented;
+        if (const float seconds = std::chrono::duration<float>(now - outputStart).count(); seconds >= 1.0f)
         {
-            xefg_swapchain_present_status_t status {};
-            if (XeFGProxy::GetLastPresentStatus()(context, &status) == XEFG_SWAPCHAIN_RESULT_SUCCESS)
-                LOG_INFO("Vulkan XeFG: frame {}, presented {}, generated {}, result {}, visible {}", id,
-                         status.framesPresented, status.isFrameGenEnabled, (int) status.frameGenResult,
-                         IsWindowVisible(window) != FALSE);
+            float fps = outputFrames / seconds;
+            MONITORINFOEXW monitor {};
+            monitor.cbSize = sizeof(monitor);
+            DEVMODEW mode {};
+            mode.dmSize = sizeof(mode);
+            if (!tearing && GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor) &&
+                EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode) && mode.dmDisplayFrequency > 1)
+                fps = std::min(fps, static_cast<float>(mode.dmDisplayFrequency));
+            AmdPresentExperimental::childFgOutputFps = fps;
+            outputFrames = 0;
+            outputStart = now;
         }
         return true;
     }
@@ -474,10 +571,12 @@ struct Bridge
     uint32_t set = 0;
     // The Vulkan queue and queue12 order their work on the GPU through a D3D12 fence shared as a Vulkan
     // semaphore, so a present goes on while its NR runs. `linkValue` is the last value either side was given,
-    // `d3d12Done` the last one queue12 signals after reading the shared images.
+    // `d3d12Done` the last one queue12 signals after reading the shared images, `linkWaited` the last one a Vulkan
+    // submit waited for, on `linkQueue`.
     ComPtr<ID3D12Fence> link12;
     VkSemaphore link = VK_NULL_HANDLE;
-    uint64_t linkValue = 0, d3d12Done = 0;
+    uint64_t linkValue = 0, d3d12Done = 0, linkWaited = 0;
+    VkQueue linkQueue = VK_NULL_HANDLE;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     void* mapped = nullptr;
@@ -507,7 +606,8 @@ struct Bridge
             vkDestroySemaphore(device, link, nullptr);
         link = VK_NULL_HANDLE;
         link12.Reset();
-        linkValue = d3d12Done = 0;
+        linkValue = d3d12Done = linkWaited = 0;
+        linkQueue = VK_NULL_HANDLE;
         set = 0;
         shared12.Reset();
         overlay12.Reset();
@@ -909,6 +1009,12 @@ struct Bridge
         if (vkQueueSubmit(queue, 1, &submit, step.fence) != VK_SUCCESS)
             return false;
         step.pending = true;
+        for (size_t i = 0; link && i < waits.size(); ++i)
+            if (waits[i] == link)
+            {
+                linkWaited = waitValues[i];
+                linkQueue = queue;
+            }
         return true;
     }
 
@@ -999,6 +1105,13 @@ struct Bridge
         const uint32_t imageIndex = present.pImageIndices[0];
         if (imageIndex >= images.size())
             return false;
+        fg.Idle();
+        if (fg.presentFailed)
+        {
+            fg.Release();
+            fgFailed = true;
+            LOG_ERROR("Vulkan XeFG: presentation failed; NR will continue");
+        }
         if (link)
             set ^= 1;
         Step& in = steps[set][0];
@@ -1008,13 +1121,18 @@ struct Bridge
         auto image = images[imageIndex];
         CopyShared(in.buffer, image, sharedImage, true, sharedInitialized);
         // Besides the game's semaphores the copy waits until queue12 has read the shared images of the last frame.
+        // A value is waited for once, as a binary semaphore requires: when the last copy back already waited for it
+        // on this queue, the copy's first barrier, which covers every earlier command of the queue, orders the copy
+        // after that one.
         std::vector<VkSemaphore> waits(present.pWaitSemaphores, present.pWaitSemaphores + present.waitSemaphoreCount);
         std::vector<uint64_t> waitValues(waits.size(), 0);
-        if (link && d3d12Done)
+        if (link && d3d12Done > linkWaited)
         {
             waits.push_back(link);
             waitValues.push_back(d3d12Done);
         }
+        else if (link && d3d12Done && linkQueue != queue && !Settle())
+            return false;
         const uint64_t copied = linkValue + 1;
         if (!Submit(in, waits, waitValues, link ? std::vector { link } : std::vector<VkSemaphore> {}, { copied }))
             return false;
@@ -1130,7 +1248,9 @@ struct Bridge
         }
         else
             copied = copied && fg.Reached(fg.serial);
-        if (!copied || !fg.Present(fgGuides))
+        if (copied)
+            fg.Post(fgGuides);
+        else
         {
             fg.Release();
             fgFailed = true;
@@ -1212,23 +1332,6 @@ struct Bridge
     }
 };
 
-// Logs the average time of one per-present step every 120 presents.
-struct Timing
-{
-    uint64_t micros = 0;
-    unsigned count = 0;
-
-    void Add(std::chrono::steady_clock::time_point start, const char* step)
-    {
-        micros += static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
-        if (++count < 120)
-            return;
-        LOG_INFO("Vulkan final-image bridge: {} average {:.1f} ms over 120 presents", step, micros / 120000.0);
-        micros = count = 0;
-    }
-};
-
 std::mutex mutex;
 Bridge bridge;
 Timing nrTiming, fgTiming;
@@ -1300,7 +1403,7 @@ bool Process(VkQueue queue, VkPresentInfoKHR& present)
         {
             std::lock_guard lock(mutex);
             bridge.fg.Pause();
-            LOG_INFO("Vulkan XeFG paused while final-image NR is off");
+            LOG_INFO("Vulkan XeFG paused while {}", wantFg ? "final-image NR is off" : "frame generation is off");
         }
         return true;
     }
@@ -1320,8 +1423,7 @@ bool Process(VkQueue queue, VkPresentInfoKHR& present)
                                        "restart the game");
     if (upscaler || bridge.swapchain != present.pSwapchains[0] || bridge.stopped)
     {
-        if (bridge.fg.enabled || bridge.fg.visible)
-            bridge.fg.Pause();
+        bridge.fg.Pause();
         return true;
     }
     bridge.queue = queue;
@@ -1357,7 +1459,7 @@ bool PresentGenerated(VkPresentInfoKHR& present)
     const auto start = std::chrono::steady_clock::now();
     if (bridge.PresentGenerated(present))
     {
-        fgTiming.Add(start, "XeFG copy and present");
+        fgTiming.Add(start, "XeFG copy");
         return true;
     }
     bridge.stopped = true;

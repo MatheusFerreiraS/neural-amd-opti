@@ -3,9 +3,9 @@ rem Vulkan final-image regression: NR through the shared D3D12 image, XeFG on th
 rem menu with frame generation on, focus loss and return, minimize, resize and the NR and FG keys,
 rem then the same INI with PresentWithoutUpscaler=false, which must leave all of that alone, then a
 rem borderless window over the whole monitor at model scale 1, where Desktop Duplication shows whether
-rem generated frames reach the screen and NR's cost to the game's real frame rate is measured with vsync
-rem off and a 60 fps cap (Detroit: Become Human's settings), and the same in exclusive fullscreen
-rem (VK_EXT_full_screen_exclusive) with vsync.
+rem generated frames reach the screen and match the FPS overlay, and NR's and XeFG's cost to the game's
+rem real frame rate is measured with vsync off and a 60 fps cap (Detroit: Become Human's settings), and
+rem the same in exclusive fullscreen (VK_EXT_full_screen_exclusive) with vsync.
 rem Not part of the release set: it needs an AMD GPU, the danielblnc runtime, XeFG and an unlocked
 rem desktop, since it moves the real cursor and types into its own window.
 rem   tools\test-vulkan-present.cmd <runtime folder> <XeFG folder> [OptiScaler.dll]
