@@ -802,6 +802,9 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UIN
     if (_real == nullptr)
         return DXGI_ERROR_DEVICE_REMOVED;
 
+    // Before the lock: a present from the game's thread must not wait for this one's spacing.
+    MenuOverlayDx::SpaceFrameGenerationPresent(Flags);
+
 #ifdef USE_LOCAL_MUTEX
     OwnedLockGuard lock(_localMutex, 4);
 #endif
@@ -1164,6 +1167,8 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UI
 {
     if (_real1 == nullptr)
         return DXGI_ERROR_DEVICE_REMOVED;
+
+    MenuOverlayDx::SpaceFrameGenerationPresent(Flags);
 
 #ifdef USE_LOCAL_MUTEX
     OwnedLockGuard lock(_localMutex, 5);

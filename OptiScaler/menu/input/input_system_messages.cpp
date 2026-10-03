@@ -555,6 +555,7 @@ bool HandleWindowMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, Inpu
     {
         const SHORT delta = GET_WHEEL_DELTA_WPARAM(wParam);
         _state.MouseWheel += static_cast<float>(delta) / static_cast<float>(WHEEL_DELTA);
+        _state.LegacyWheelSeen = true;
 
         shouldBlock = blockMouse;
         break;

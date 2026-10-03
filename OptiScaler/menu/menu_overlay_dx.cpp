@@ -9,6 +9,7 @@
 #include <Logger.h>
 #include <Config.h>
 #include <hooks/FG_Hooks.h>
+#include <proxies/XeFGPacing.h>
 
 #include <imgui/imgui_impl_dx11.h>
 #include <imgui/imgui_impl_dx12.h>
@@ -46,6 +47,81 @@ static bool _isInited = false;
 static std::recursive_mutex _overlayMutex;
 static std::atomic<bool> _heldForResize = false;
 static bool _d3d12Captured = false;
+
+// Presents that reached the swapchain frame generation presents to and the longest time between two of them, for the
+// final-image rate line.
+static std::atomic<UINT64> _fgOutputPresents = 0;
+static std::atomic<double> _fgLongestGapMs = 0, _fgLastOutputMs = 0;
+// XeFG presents one frame of each burst from the game's thread, inside the game's Present, and the others from a thread
+// of its own right after it, so above 2X a whole burst reaches the screen within a millisecond or two. With final-image
+// NR on D3D12 those others are spread over the time the game spends outside frame generation's Present, on XeFG's
+// thread only, and the pacing hooks in XeFG (XeFGPacing.h) only forward meanwhile, unless XeFG\ExtraPacing=true asks
+// for them. A wait ends when the game's next frame reaches frame generation, so the game never waits for it.
+static std::atomic<DWORD> _fgGameThread = 0;
+static std::atomic<double> _fgPeriodMs = 0, _fgReturnedMs = 0, _fgSpacingUntilMs = 0;
+static std::atomic<UINT64> _fgFrames = 0;
+
+void MenuOverlayDx::FrameGenerationPresent(bool returned)
+{
+    const double now = Util::MillisecondsNow();
+    if (returned)
+    {
+        _fgReturnedMs = now;
+        return;
+    }
+    const double interval = now - _fgReturnedMs;
+    _fgPeriodMs = _fgReturnedMs == 0 || interval > 100 ? 0
+                  : _fgPeriodMs > 0                    ? 0.9 * _fgPeriodMs + 0.1 * interval
+                                                       : interval;
+    _fgFrames++;
+}
+
+void MenuOverlayDx::SpaceFrameGenerationPresent(UINT flags)
+{
+    static std::atomic<double> burstStart = 0;
+    static std::atomic<UINT> burstIndex = 0;
+    static std::atomic<UINT64> burstFrame = 0;
+    const double now = Util::MillisecondsNow();
+    const auto& state = State::Instance();
+    if ((flags & DXGI_PRESENT_TEST) || now > _fgSpacingUntilMs || state.currentFGSwapchain == nullptr ||
+        state.swapchainInteropApi != SwapchainInteropApi::None)
+        return;
+    if (GetCurrentThreadId() == _fgGameThread)
+    {
+        burstStart = now;
+        burstIndex = 0;
+        burstFrame = _fgFrames.load();
+        return;
+    }
+    auto fg = state.currentFG;
+    const double period = _fgPeriodMs;
+    if (burstStart == 0 || period <= 0 || fg == nullptr || _fgFrames != burstFrame)
+        return;
+    const UINT count = fg->GetInterpolatedFrameCount();
+    const double until = burstStart + ++burstIndex * period / (count + 1);
+    if (burstIndex > count || until <= now || until - now > period)
+        return;
+    // A high resolution timer a millisecond at a time, then a spin.
+    struct Timer
+    {
+        HANDLE handle =
+            CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        ~Timer()
+        {
+            if (handle)
+                CloseHandle(handle);
+        }
+    };
+    static thread_local Timer timer;
+    for (double left = until - now; left > 0 && _fgFrames == burstFrame; left = until - Util::MillisecondsNow())
+    {
+        LARGE_INTEGER due { .QuadPart = -static_cast<LONGLONG>(std::min(left - 0.5, 1.0) * 10000) };
+        if (left > 0.5 && timer.handle && SetWaitableTimerEx(timer.handle, &due, 0, nullptr, nullptr, nullptr, 0))
+            WaitForSingleObject(timer.handle, 100);
+        else
+            YieldProcessor();
+    }
+}
 
 // for showing
 static bool _showRenderImGuiDebugOnce = true;
@@ -561,6 +637,14 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // its output to; FinalImageFrameGen has already run NR on the game's frame. D3D9 runs NR in its own bridge.
     const bool fgPresents = State::Instance().swapchainInteropApi == SwapchainInteropApi::None &&
                             State::Instance().currentFGSwapchain != nullptr;
+    if (fgPresents && !(Flags & DXGI_PRESENT_TEST) && AmdPresentExperimental::IsTarget())
+    {
+        const double now = Util::MillisecondsNow();
+        const double last = _fgLastOutputMs.exchange(now);
+        if (last > 0 && now - last > _fgLongestGapMs)
+            _fgLongestGapMs = now - last;
+        _fgOutputPresents++;
+    }
     if (AmdPresentExperimental::IsTarget() && Config::Instance()->DlssNrEnabled.value_or_default() &&
         !State::Instance().currentFeature && !fgPresents &&
         State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx9wDx12 &&
@@ -766,8 +850,36 @@ void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
     if (ready || fg->FrameGenerationContext() == nullptr || !fgEnabled)
         fg->EvaluateState(device.Get(), constants);
 
+    // Frame generation on and its guides made, yet XeFG not generating: what holds it, every 30 s.
+    static ULONGLONG idleSince = 0, idleReported = 0;
+    if (fgEnabled && ready && (!fg->IsActive() || fg->IsPaused()))
+    {
+        const auto now = GetTickCount64();
+        if (idleSince == 0)
+            idleSince = now;
+        if (now - idleSince > 5000 && now - idleReported > 30000)
+        {
+            idleReported = now;
+            LOG_WARN("Final-image XeFG: frame generation is on but XeFG has not generated for {} s (active {}, paused "
+                     "until frame {} at frame {}, context {}, swapchain {})",
+                     (now - idleSince) / 1000, fg->IsActive(), fg->TargetFrame(), fg->FrameCount(),
+                     fg->FrameGenerationContext() != nullptr, state.currentFGSwapchain != nullptr);
+        }
+    }
+    else
+        idleSince = 0;
+
     if (!ready || !fg->IsActive() || fg->IsPaused())
         return;
+
+    // XeFG generates: OptiScaler spaces its presents and the pacing hooks forward, until a quarter second after the
+    // last such frame.
+    _fgGameThread = GetCurrentThreadId();
+    if (!config.FGXeFGExtraPacing.value_or(false))
+    {
+        _fgSpacingUntilMs = Util::MillisecondsNow() + 250;
+        XeFGPacing::BypassFor(0.25);
+    }
 
     // Optical flow has no camera: an identity view, a nominal projection and pixel motion at output size.
     fg->SetCameraValues(0.1f, 1000.0f, 1.5707963f, float(guides.width) / float(guides.height));
@@ -800,6 +912,37 @@ void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
         LOG_INFO("Final-image NR: XeFG takes optical-flow motion and depth at {}x{} on the game's queue", guides.width,
                  guides.height);
     }
+
+    // Every 5 s while XeFG runs: the game's frames, how many NR changed, how many reset XeFG's history and the presents
+    // that reached DXGI. One present per frame means XeFG showed the game's frames only.
+    static ULONGLONG since = 0;
+    static UINT frames = 0, changed = 0, resets = 0;
+    static UINT64 presentsBefore = 0;
+    const auto now = GetTickCount64();
+    if (since == 0 || now - since > 6000)
+    {
+        since = now;
+        frames = changed = resets = 0;
+        presentsBefore = _fgOutputPresents;
+        _fgLongestGapMs = 0;
+        return;
+    }
+    frames++;
+    changed += neural && AmdPresentExperimental::LastFrameModified();
+    resets += guides.reset;
+    if (now - since < 5000)
+        return;
+    const double seconds = (now - since) / 1000.0;
+    const double perFrame = double(_fgOutputPresents - presentsBefore) / frames;
+    LOG_INFO(
+        "Final-image XeFG: {:.1f} frames/s, {:.1f} presents/s ({:.2f} per frame{}, longest gap {:.1f} ms), NR on {} "
+        "of {} frames, {} history resets",
+        frames / seconds, perFrame * frames / seconds, perFrame,
+        perFrame < 1.2 ? ": XeFG presented no generated frames" : "", _fgLongestGapMs.load(), changed, frames, resets);
+    since = now;
+    frames = changed = resets = 0;
+    presentsBefore = _fgOutputPresents;
+    _fgLongestGapMs = 0;
 }
 
 void MenuOverlayDx::ApplyThemeStyle() { MenuOverlayBase::ApplyThemeStyle(); }

@@ -1289,11 +1289,18 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     if (willPresent)
         state.fgPresentIsCalled = true;
 
+    const bool finalImage = willPresent && config->DlssNrPresent.value_or_default();
+    if (finalImage)
+        MenuOverlayDx::FrameGenerationPresent(false);
+
     HRESULT result;
     if (pPresentParameters == nullptr)
         result = o_FGSCPresent(This, SyncInterval, Flags);
     else
         result = o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
+
+    if (finalImage)
+        MenuOverlayDx::FrameGenerationPresent(true);
 
     if (result == S_OK)
     {
