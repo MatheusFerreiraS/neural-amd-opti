@@ -409,6 +409,19 @@ RawInputSanitizeDecision GetRawInputSanitizeDecisionLocked(HRAWINPUT rawInput, c
     return decision;
 }
 
+// While the menu is open a mouse packet is sanitized for whoever reads it, the wheel included. When that reader is not
+// the game window (DirectInput in exclusive mode reads the mouse on a window of its own and keeps the system from
+// sending the game window any mouse message) or reads buffered input, the menu would never see the wheel. With
+// final-image NR it takes it here, once per packet.
+static void CreditSanitizedWheelLocked(const RAWINPUT& input, RawSanitizeAction action)
+{
+    if (action != RawSanitizeAction::Pass && input.header.dwType == RIM_TYPEMOUSE &&
+        (input.data.mouse.usButtonFlags & RI_MOUSE_WHEEL) != 0 && Config::Instance()->DlssNrPresent.value_or_default())
+    {
+        _state.MouseWheel += static_cast<SHORT>(input.data.mouse.usButtonData) / static_cast<float>(WHEEL_DELTA);
+    }
+}
+
 void RecordRawInputSanitizeCounterLocked(const RAWINPUT& input, RawSanitizeAction action)
 {
     switch (input.header.dwType)
@@ -828,7 +841,13 @@ UINT WINAPI hkGetRawInputData(HRAWINPUT rawInput, UINT command, LPVOID data, PUI
         {
             // A game may query the same HRAWINPUT more than once. Reuse the
             // first decision so key/button release passthrough stays stable.
+            // A packet with a decision already went through HandleRawInputLocked or an earlier query.
+            const bool seen = std::any_of(_state.RawInputSanitizeCache.begin(), _state.RawInputSanitizeCache.end(),
+                                          [&](const auto& cached) { return cached.Handle == rawInput; });
             const RawInputSanitizeDecision decision = GetRawInputSanitizeDecisionLocked(rawInput, *input);
+
+            if (!seen)
+                CreditSanitizedWheelLocked(*input, decision.Action);
 
             OPTIINPUT_LOG_VERBOSE("GetRawInputData sanitize handle:{} type:{} action:{} allowedUp:{:#x}",
                                   static_cast<void*>(rawInput), input->header.dwType, static_cast<int>(decision.Action),
@@ -888,6 +907,7 @@ UINT WINAPI hkGetRawInputBuffer(PRAWINPUT data, PUINT size, UINT headerSize)
                                   current->header.dwType, static_cast<int>(action), allowedMouseButtonUpFlags,
                                   static_cast<unsigned>(currentBytes - bufferBegin));
             RecordRawInputSanitizeCounterLocked(*current, action);
+            CreditSanitizedWheelLocked(*current, action);
             ApplyRawInputSanitizeActionLocked(*current, action, allowedMouseButtonUpFlags);
 
             current = reinterpret_cast<PRAWINPUT>(currentBytes + packetSize);
