@@ -9,9 +9,11 @@ rem fg --debug-layer, nr --lifecycle, fg --lifecycle, fg --lifecycle --nr-off-st
 rem --bad-runtime (another DLL in the runtime's place), fg --r10 (a 10-bit backbuffer, which final-image
 rem NR leaves alone), fg with InterpolationCount=auto (3X), fg with UnlockMFG=false (2X), and
 rem fg --lifecycle as rdr.exe (Red Dead Redemption's quirk: a plain first swapchain, XeFG's on the next),
-rem fg --perf windowed and borderless with a heavy game frame (presented frame rate with XeFG against without it,
-rem with NR and without, and XeFG's frames spread over the frame period), and the mouse wheel over the open menu, with the game's mouse read through DirectInput in
-rem exclusive mode as Red Dead Redemption does, with FG and without.
+rem fg --perf at 3X windowed and borderless with a heavy game frame and at 2X windowed (presented frame rate with
+rem XeFG against without it, with NR and without, and XeFG's frames spread over the frame period), the mouse wheel
+rem over the open menu, with the game's mouse read through DirectInput in exclusive mode as Red Dead Redemption does,
+rem with FG and without, and fg --hitch --reflex (Reflex driven through nvapi as Red Dead Redemption does, and a few
+rem very long frames in the middle of play).
 rem With scenario args, set SMOKE_EXE=rdr.exe first to run them under that name.
 setlocal
 cd /d "%~dp0.."
@@ -35,8 +37,15 @@ set "LOCK="
 if exist "%~dp0..\..\locks" set "LOCK=--lock %~dp0..\..\locks\gpu"
 set "FAILED=0"
 if not defined SMOKE_EXE set "SMOKE_EXE=dx12_final_image_smoke.exe"
-if not "%~4"=="" (
-  call :run %4 %5 %6 %7 %8 %9
+set "ARGS="
+:args
+if "%~4"=="" goto argsdone
+set "ARGS=%ARGS% %4"
+shift /4
+goto args
+:argsdone
+if defined ARGS (
+  call :run %ARGS%
   goto done
 )
 call :run nr
@@ -54,6 +63,8 @@ call :run fg --set XeFG/InterpolationCount=auto
 call :run fg --set XeFG/UnlockMFG=false --expect-2x
 call :run fg --perf --gpu-load 2000 --cpu-ms 2
 call :run fg --perf --borderless --waitable 2 --gpu-load 10000 --cpu-ms 3
+call :run fg --perf --gpu-load 2000 --cpu-ms 2 --set XeFG/UnlockMFG=false --expect-2x
+call :run fg --hitch --reflex --borderless --waitable 2 --gpu-load 4000 --cpu-ms 3
 call :run fg --wheel
 call :run fg --wheel --dinput
 call :run nr --wheel --dinput

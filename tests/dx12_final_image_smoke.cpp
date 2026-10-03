@@ -5,7 +5,8 @@
 //                              [--log-level <OptiScaler LogLevel, 2 by default>] [--cpu-ms <game CPU ms per frame>]
 //                              [--dump] [--lifecycle] [--nr-off-start] [--bad-runtime] [--r10] [--no-probe]
 //                              [--set <Section/Key=Value>] [--expect-2x] [--perf] [--gpu-load <iterations>]
-//                              [--borderless] [--waitable <max latency>] [--vsync] [--wheel] [--dinput]
+//                              [--borderless] [--waitable <max latency>] [--vsync] [--wheel] [--dinput] [--reflex]
+//                              [--hitch]
 //
 // The parent writes OptiScaler.ini from OptiScaler.template.ini, takes the GPU lock, runs itself as a
 // child with a timeout and asserts on the child's results and on OptiScaler.log. The child renders a
@@ -23,10 +24,16 @@
 // --perf measures the presented frame rate with NR and XeFG in each on/off combination, without probes, and
 // expects XeFG to raise it. --gpu-load gives the game frame that many shader iterations per pixel, --borderless
 // covers the screen as a borderless game does, --waitable makes the swapchain with a frame latency waitable object
-// the game waits on each frame (as Red Dead Redemption does), --vsync presents with sync interval 1.
+// the game waits on each frame (as Red Dead Redemption does), --vsync presents with sync interval 1. A thread reads the
+// present count every 0.1 ms to see when each present reached DXGI, and how evenly.
+// The test process keeps its timer resolution requests honoured while its window cannot be seen (a screen that is
+// off): Windows 11 ignores them otherwise, and XeFG's present thread then sleeps a whole 15.6 ms tick.
 // --wheel turns the mouse wheel over the open menu and expects its page to scroll. --dinput reads the mouse through
 // DirectInput in exclusive mode from before OptiScaler loads, as Red Dead Redemption does, which keeps the system
 // from sending the window any mouse message.
+// --reflex drives Reflex through nvapi (sleep and latency markers with the game's own frame numbers), as Red Dead
+// Redemption does through Streamline. --hitch gives the game six frames of 110 ms in the middle of play and expects
+// frame generation to go on after them.
 #define NOMINMAX
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
@@ -211,6 +218,8 @@ struct Options
     bool vsync = false;
     bool wheel = false;  // the mouse wheel over the open menu
     bool dinput = false; // the mouse read through DirectInput in exclusive mode
+    bool reflex = false; // Reflex sleep and latency markers through nvapi, with the game's own frame numbers
+    bool hitch = false;  // a few very long frames while frame generation runs, then whether it still generates
 };
 
 // The frame in progress and when it began, for the stall sampler.
@@ -244,6 +253,8 @@ struct App
     DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM;
     UINT swapFlags = 0;
     UINT64 frame = 0;
+    // Seconds the game thread spent inside Present, and waiting before it could record, since the phase began.
+    double inPresent = 0, inWait = 0;
 
     void Wait(UINT64 value)
     {
@@ -361,6 +372,59 @@ struct App
         Check(device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&rtvHeap)), "CreateDescriptorHeap");
         CreatePipeline();
         CreateProbe();
+    }
+
+    // Reflex as a game drives it through NvAPI, which Red Dead Redemption does through Streamline's sl.reflex: low
+    // latency mode, a sleep at the start of each frame and the frame's latency markers, with the game's own frame
+    // numbers. On an AMD GPU OptiScaler answers as nvapi64.dll.
+    using NvQuery = void*(__cdecl*) (unsigned);
+    int(__cdecl* reflexSleep)(IUnknown*) = nullptr;
+    int(__cdecl* reflexMarker)(IUnknown*, void*) = nullptr;
+    UINT64 reflexFrame = 0;
+    void CreateReflex()
+    {
+        const HMODULE nvapi = LoadLibraryW(L"nvapi64.dll");
+        const auto query = nvapi ? (NvQuery) GetProcAddress(nvapi, "nvapi_QueryInterface") : nullptr;
+        if (!query)
+            Fail("no nvapi64.dll with nvapi_QueryInterface");
+        const auto initialize = (int(__cdecl*)()) query(0x0150e828);
+        const auto setSleepMode = (int(__cdecl*)(IUnknown*, void*)) query(0xac1ca9e0);
+        reflexSleep = (int(__cdecl*)(IUnknown*)) query(0x852cd1d2);
+        reflexMarker = (int(__cdecl*)(IUnknown*, void*)) query(0xd9984c05);
+        if (!initialize || !setSleepMode || !reflexSleep || !reflexMarker)
+            Fail("nvapi64.dll has no Reflex");
+        initialize();
+        struct
+        {
+            UINT32 version;
+            UINT8 lowLatency, boost;
+            UINT32 minimumIntervalUs;
+            UINT8 useMarkers, minQueueTime, reserved[30];
+        } mode {};
+        mode.version = sizeof(mode) | (1 << 16);
+        mode.lowLatency = mode.useMarkers = 1;
+        wchar_t name[MAX_PATH] {};
+        GetModuleFileNameW(nvapi, name, MAX_PATH);
+        Out("reflex nvapi=%ls sleep-mode=%d", fs::path(name).filename().c_str(), setSleepMode(device.Get(), &mode));
+        // The game counts its frames from its own start, well ahead of anything OptiScaler counts.
+        reflexFrame = 100000;
+    }
+    void ReflexMarker(int type)
+    {
+        if (!reflexMarker)
+            return;
+        struct
+        {
+            UINT32 version;
+            UINT64 frameID;
+            int markerType;
+            UINT64 reserved0;
+            UINT8 reserved[56];
+        } marker {};
+        marker.version = sizeof(marker) | (1 << 16);
+        marker.frameID = reflexFrame;
+        marker.markerType = type;
+        reflexMarker(device.Get(), &marker);
     }
 
     // The game's own mouse, as Red Dead Redemption reads it: DirectInput, exclusive while in front.
@@ -540,8 +604,16 @@ struct App
 
     HRESULT RenderFrame(ProbeResult* probe)
     {
+        using Clock = std::chrono::steady_clock;
+        const auto waitStart = Clock::now();
         if (latency)
             WaitForSingleObjectEx(latency, 1000, TRUE);
+        if (reflexSleep)
+        {
+            ++reflexFrame;
+            reflexSleep(device.Get());
+            ReflexMarker(0); // SIMULATION_START
+        }
         ReadMouse();
         if (options.cpuMs > 0)
         {
@@ -553,8 +625,10 @@ struct App
                 QueryPerformanceCounter(&now);
             while (now.QuadPart < end.QuadPart);
         }
+        ReflexMarker(1); // SIMULATION_END
         const UINT index = swapchain->GetCurrentBackBufferIndex();
         Wait(allocatorFence[index]);
+        inWait += std::chrono::duration<double>(Clock::now() - waitStart).count();
         ComPtr<ID3D12Resource> back;
         Check(swapchain->GetBuffer(index, IID_PPV_ARGS(&back)), "GetBuffer");
         auto rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -577,11 +651,17 @@ struct App
         }
         Check(list->Close(), "list Close");
         ID3D12CommandList* lists[] = { list.Get() };
+        ReflexMarker(2); // RENDERSUBMIT_START
         queue->ExecuteCommandLists(1, lists);
+        ReflexMarker(3); // RENDERSUBMIT_END
+        ReflexMarker(4); // PRESENT_START
+        const auto presentStart = Clock::now();
         const HRESULT presented = options.vsync ? swapchain->Present(1, 0)
                                                 : swapchain->Present(0, (swapFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)
                                                                             ? DXGI_PRESENT_ALLOW_TEARING
                                                                             : 0);
+        inPresent += std::chrono::duration<double>(Clock::now() - presentStart).count();
+        ReflexMarker(5); // PRESENT_END
         if (probe && SUCCEEDED(presented))
         {
             // Same queue, after Present: sees what the game frame became on its way to the screen.
@@ -976,6 +1056,11 @@ static int Child(const Options& options)
 {
     results = _wfopen((Here() / L"dx12_smoke_result.txt").c_str(), L"w");
     SetUnhandledExceptionFilter(Crash);
+    // Windows 11 honours a process's timer resolution only while its window can be seen; the test machine's screen may
+    // be off. This keeps it honoured, as for a game on screen.
+    PROCESS_POWER_THROTTLING_STATE throttling { PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+                                                PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, 0 };
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof(throttling));
     App app;
     app.options = options;
     WNDCLASSW type {};
@@ -1003,6 +1088,8 @@ static int Child(const Options& options)
     if (options.dinput)
         app.CreateMouse();
     app.CreateDevice();
+    if (options.reflex)
+        app.CreateReflex();
     // A helper process writes the stacks: this one may be stalled holding any lock.
     if (options.stallStacks)
         std::thread(
@@ -1074,6 +1161,7 @@ static int Child(const Options& options)
         Hardware = -10, // every object again on the hardware adapter
         FgActive = -11, // the XeFG "Active" box on the Frame Gen page
         Wheel = -12,    // the mouse wheel over the open menu
+        Hitch = -13,    // six game frames of 110 ms each, as a game that loads in the middle of play
     };
     struct Step
     {
@@ -1085,6 +1173,8 @@ static int Child(const Options& options)
     std::vector<Step> steps;
     if (options.wheel)
         steps = { { "steady", None, 0, 2 }, { "wheel", Wheel, 0.5, 2 } };
+    else if (options.hitch)
+        steps = { { "steady", None, 3, 4 }, { "after-hitch", Hitch, 1, 5 }, { "later", None, 0, 5 } };
     // Every NR and XeFG combination, from NR with XeFG as the INI starts, once XeFG's first seconds are over.
     else if (options.perf)
         steps = { { "nr-fg", None, 5, 5 },
@@ -1113,7 +1203,7 @@ static int Child(const Options& options)
         if (options.scenario == "nr")
             steps.insert(steps.end(), { { "warp", Warp, 3, 3 }, { "hardware", Hardware, 4, 4 } });
     }
-    else if (!options.nrOffStart && !options.perf && !options.wheel)
+    else if (!options.nrOffStart && !options.perf && !options.wheel && !options.hitch)
         steps = {
             { "steady", None, 0, 4 },           { "menu-open", VK_INSERT, 1, 4 },
             { "menu-closed", VK_INSERT, 1, 3 }, { "fg-off", VK_END, 1.5, 3 },
@@ -1140,6 +1230,14 @@ static int Child(const Options& options)
             app.Click(360, 350, Pump, 0.6);
         else if (step.key == Wheel)
             app.ScrollMenu(Pump);
+        else if (step.key == Hitch)
+            for (int i = 0; i < 6; ++i)
+            {
+                Pump();
+                Sleep(110);
+                if (FAILED(app.Frame(nullptr)))
+                    Fail("hitch");
+            }
         else if (step.key == Minimize)
             ShowWindow(app.window, SW_MINIMIZE);
         else if (step.key == Restore)
@@ -1160,6 +1258,31 @@ static int Child(const Options& options)
         UINT presentStart = 0, presentEnd = 0;
         app.swapchain->GetLastPresentCount(&presentStart);
         const UINT64 frameStart = app.frame;
+        app.inPresent = app.inWait = 0;
+        // With --perf, when each present reached DXGI, seen from outside OptiScaler: a thread reads the present count
+        // every 0.1 ms. Two presents within one read count as no time apart.
+        std::atomic<bool> polling = options.perf;
+        std::vector<double> presentTimes;
+        std::thread poller;
+        if (options.perf)
+            poller = std::thread(
+                [&]
+                {
+                    UINT last = presentStart, count = 0;
+                    while (polling)
+                    {
+                        const auto pollStart = Clock::now();
+                        if (SUCCEEDED(app.swapchain->GetLastPresentCount(&count)))
+                        {
+                            const double at =
+                                std::chrono::duration<double, std::milli>(Clock::now().time_since_epoch()).count();
+                            for (; last != count; ++last)
+                                presentTimes.push_back(at);
+                        }
+                        while (Clock::now() - pollStart < std::chrono::microseconds(100))
+                            YieldProcessor();
+                    }
+                });
         begin = Clock::now();
         std::vector<App::ProbeResult> probes;
         double nextProbe = step.seconds / 8, worst = 0;
@@ -1185,6 +1308,23 @@ static int Child(const Options& options)
         }
         const double elapsed = Seconds(begin);
         app.swapchain->GetLastPresentCount(&presentEnd);
+        polling = false;
+        if (poller.joinable())
+            poller.join();
+        // Time between presents: p10, p50, p90, and the share under a quarter of an even spacing.
+        std::vector<double> gaps;
+        for (size_t i = 1; i < presentTimes.size(); ++i)
+            gaps.push_back(presentTimes[i] - presentTimes[i - 1]);
+        std::sort(gaps.begin(), gaps.end());
+        const double even = presentEnd > presentStart ? 1000 * elapsed / (presentEnd - presentStart) : 0;
+        const auto gapAt = [&](double p) { return gaps.empty() ? 0.0 : gaps[size_t(p * (gaps.size() - 1))]; };
+        const double bunched =
+            gaps.empty()
+                ? 0.0
+                : 100.0 * std::count_if(gaps.begin(), gaps.end(), [&](double g) { return g < even / 4; }) / gaps.size();
+        if (options.perf)
+            Out("spacing %s p10=%.2fms p50=%.2fms p90=%.2fms bunched=%.0f%%", step.phase, gapAt(0.1), gapAt(0.5),
+                gapAt(0.9), bunched);
         // Probe frames wait for the GPU and count in the rate. least is the probe NR changed least: a frame
         // that missed NR shows there.
         const UINT64 frames = app.frame - frameStart;
@@ -1196,10 +1336,11 @@ static int Child(const Options& options)
             mean = std::max(mean, p.mean);
         }
         Out("phase %s frames=%llu seconds=%.2f fps=%.1f presents=%u ratio=%.2f changed=%.4f least=%.4f mean=%.3f "
-            "size=%ux%u worst=%.1fms pps=%.1f",
+            "size=%ux%u worst=%.1fms pps=%.1f in-present=%.2fms in-wait=%.2fms",
             step.phase, frames, elapsed, frames / elapsed, presentEnd - presentStart,
             frames ? double(presentEnd - presentStart) / frames : 0.0, changed, least, mean, app.width, app.height,
-            worst, (presentEnd - presentStart) / elapsed);
+            worst, (presentEnd - presentStart) / elapsed, frames ? 1000 * app.inPresent / frames : 0.0,
+            frames ? 1000 * app.inWait / frames : 0.0);
         app.DebugMessages(step.phase);
     }
     app.Idle();
@@ -1502,6 +1643,16 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
         withNr = { "steady" };
         generating = { "steady" };
     }
+    else if (options.hitch)
+    {
+        // Frame generation goes on after a few long frames, and the game gets its frame rate back.
+        for (auto name : { "steady", "after-hitch", "later" })
+            std::printf("info: %-11s real %6.1f fps, presented %6.1f/s, %.2f presents per frame\n", name,
+                        phase(name).fps, phase(name).pps, phase(name).ratio);
+        expect(phase("later").fps > 0.85 * phase("steady").fps, "the game keeps its frame rate after the long frames");
+        withNr = { "steady", "after-hitch", "later" };
+        generating = { "steady", "after-hitch", "later" };
+    }
     else if (options.perf)
     {
         for (auto name : { "nr-fg", "nr-only", "none", "fg-only", "nr-fg-again" })
@@ -1513,21 +1664,27 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
         // NR XeFG's own work is a larger part of a short frame, but the presented rate must still rise.
         for (auto name : { "nr-fg", "nr-fg-again" })
         {
-            expect(phase(name).pps > 1.8 * phase("nr-only").pps,
+            expect(phase(name).pps > (options.expect2x ? 1.6 : 2.4) * phase("nr-only").pps,
                    (std::string("XeFG raises the presented frame rate with NR in ") + name).c_str());
             expect(phase(name).fps > 0.85 * phase("nr-only").fps,
                    (std::string("the game keeps its own frame rate with XeFG and NR in ") + name).c_str());
         }
-        expect(phase("fg-only").pps > 1.1 * phase("none").pps, "XeFG raises the presented frame rate without NR");
-        // OptiScaler's own count, every 5 s: presents that came less than a quarter of an even spacing after the
-        // previous one. A burst handed over at once makes about two thirds of them at 3X.
-        std::vector<double> bunched;
-        for (size_t at = log.find("% bunched)"); at != std::string::npos; at = log.find("% bunched)", at + 1))
-            bunched.push_back(std::atof(log.c_str() + log.rfind(' ', at - 1) + 1));
-        std::sort(bunched.begin(), bunched.end());
-        const double median = bunched.empty() ? 100 : bunched[bunched.size() / 2];
-        std::printf("info: bunched presents %.0f%% in the median of %zu XeFG rate lines\n", median, bunched.size());
-        expect(median < 10, "XeFG's frames are spread over the game's frame period");
+        // At 2X XeFG's work on a frame this short takes about what it gives back, so there it must only not cost.
+        if (options.expect2x)
+            expect(phase("fg-only").pps > 0.9 * phase("none").pps, "XeFG keeps the presented frame rate without NR");
+        else
+            expect(phase("fg-only").pps > 1.1 * phase("none").pps, "XeFG raises the presented frame rate without NR");
+        // When the presents reached DXGI, read from this process: a burst handed over at once puts about two thirds of
+        // them less than a quarter of an even spacing after the previous one at 3X.
+        for (auto name : generating)
+        {
+            const auto at = result.find(std::string("spacing ") + name + " ");
+            const auto line = at == std::string::npos ? std::string() : result.substr(at, result.find('\n', at) - at);
+            const auto bunched = line.find("bunched=");
+            std::printf("info: %s\n", line.c_str());
+            expect(bunched != std::string::npos && std::atof(line.c_str() + bunched + 8) < 10,
+                   (std::string("XeFG's frames are spread over the game's frame period in ") + name).c_str());
+        }
     }
     else if (!options.nrOffStart && !options.lifecycle)
     {
@@ -1711,6 +1868,10 @@ int wmain(int argc, wchar_t** argv)
             options.perf = options.noProbe = true;
         else if (arg == L"--borderless")
             options.borderless = true;
+        else if (arg == L"--reflex")
+            options.reflex = true;
+        else if (arg == L"--hitch")
+            options.hitch = true;
         else if (arg == L"--vsync")
             options.vsync = true;
         else if (arg == L"--gpu-load" && i + 1 < argc)
@@ -1754,6 +1915,8 @@ int wmain(int argc, wchar_t** argv)
     args += options.wheel ? L" --wheel" : L"";
     args += options.dinput ? L" --dinput" : L"";
     args += options.borderless ? L" --borderless" : L"";
+    args += options.reflex ? L" --reflex" : L"";
+    args += options.hitch ? L" --hitch" : L"";
     args += options.vsync ? L" --vsync" : L"";
     args += options.gpuLoad ? L" --gpu-load " + std::to_wstring(options.gpuLoad) : L"";
     args += options.waitable ? L" --waitable " + std::to_wstring(options.waitable) : L"";
