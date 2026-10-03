@@ -8,8 +8,8 @@
 // present count, the RivaTuner Statistics Server shared memory when RTSS runs, and the screen (Desktop Duplication
 // counts what the compositor shows).
 //
-//   dx11_final_image_smoke.exe fg|nr|keys|focus|fgoff|resize|recreate|menu|pace|artefacts
-//   [seconds per phase] [log level] [Section/Key=Value ...] [sync=1] [bgra=1] [tearing=1]
+//   dx11_final_image_smoke.exe fg|nr|keys|focus|fgoff|resize|recreate|menu|pace|artefacts|bars
+//   [seconds per phase] [log level] [Section/Key=Value ...] [sync=1] [bgra=1] [tearing=1] [full=1] [blt=1]
 #define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
@@ -30,6 +30,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "present_look.h"
 #include "screen_look.h"
 
 using Microsoft::WRL::ComPtr;
@@ -42,6 +43,8 @@ static std::atomic<const char*> phaseName { "start" };
 static UINT syncInterval = 0; // sync=1 on the command line presents with vsync
 static bool bgra = false;     // bgra=1: a B8G8R8A8 back buffer, as the 32-bit D3D9 host has
 static bool tearing = false; // tearing=1: a swapchain that allows tearing, presented with it at interval 0, as the host
+static bool full = false;    // full=1: a borderless window over the whole primary screen, as a game in fullscreen
+static bool blt = false;     // blt=1: one back buffer and the bit-block transfer model, as older D3D11 games
 
 static void check(HRESULT hr, const char* what)
 {
@@ -160,14 +163,14 @@ struct Opti
             throw std::runtime_error("symbol not found");
         return (void*) symbol->Address;
     }
-    BYTE* Field(const wchar_t* name)
+    DWORD Offset(ULONG typeIndex, const wchar_t* name)
     {
         DWORD count = 0;
-        SymGetTypeInfo(process, base, configType, TI_GET_CHILDRENCOUNT, &count);
+        SymGetTypeInfo(process, base, typeIndex, TI_GET_CHILDRENCOUNT, &count);
         std::vector<BYTE> storage(sizeof(TI_FINDCHILDREN_PARAMS) + count * sizeof(ULONG));
         auto children = (TI_FINDCHILDREN_PARAMS*) storage.data();
         children->Count = count;
-        SymGetTypeInfo(process, base, configType, TI_FINDCHILDREN, children);
+        SymGetTypeInfo(process, base, typeIndex, TI_FINDCHILDREN, children);
         for (DWORD i = 0; i < count; ++i)
         {
             WCHAR* childName = nullptr;
@@ -177,9 +180,20 @@ struct Opti
             LocalFree(childName);
             DWORD offset = 0;
             if (match && SymGetTypeInfo(process, base, children->ChildId[i], TI_GET_OFFSET, &offset))
-                return config + offset;
+                return offset;
         }
-        throw std::runtime_error("Config field not found");
+        throw std::runtime_error("field not found");
+    }
+    BYTE* Field(const wchar_t* name) { return config + Offset(configType, name); }
+    // A member of an OptiScaler object, by its class and member name.
+    template <class T> T Member(const void* object, const wchar_t* typeName, const wchar_t* name)
+    {
+        SYMBOL_INFOW type {};
+        type.SizeOfStruct = sizeof(type);
+        check(SymGetTypeFromNameW(process, base, typeName, &type) ? S_OK : E_FAIL, "type");
+        T value {};
+        std::memcpy(&value, (const BYTE*) object + Offset(type.TypeIndex, name), sizeof(T));
+        return value;
     }
     // CustomOptional<T> starts with its std::optional<T>: the value, then the engaged flag.
     template <class T> void Set(const wchar_t* name, T value)
@@ -541,11 +555,11 @@ struct Game
         desc.BufferDesc.Format = bgra ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
         desc.SampleDesc.Count = 1;
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        desc.BufferCount = 2;
+        desc.BufferCount = blt ? 1 : 2;
         desc.OutputWindow = window;
         desc.Windowed = TRUE;
-        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        desc.Flags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+        desc.SwapEffect = blt ? DXGI_SWAP_EFFECT_DISCARD : DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        desc.Flags = tearing && !blt ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
         check(factory->CreateSwapChain(device.Get(), &desc, &swap), "CreateSwapChain");
     }
     // What a game does on a display mode or graphics settings change in many engines: drop the swapchain, make another.
@@ -603,7 +617,7 @@ struct Game
         depthView.Reset();
         context->Flush();
         check(swap->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN,
-                                  tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0),
+                                  tearing && !blt ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0),
               "ResizeBuffers");
         Views();
     }
@@ -639,7 +653,7 @@ struct Game
             QueryPerformanceCounter(&now);
         while ((now.QuadPart - start.QuadPart) * 1000.0 / f.QuadPart < cpuMs);
         // The depth buffer stays bound through Present, as in most D3D11 games.
-        return swap->Present(syncInterval, tearing && !syncInterval ? DXGI_PRESENT_ALLOW_TEARING : 0);
+        return swap->Present(syncInterval, tearing && !blt && !syncInterval ? DXGI_PRESENT_ALLOW_TEARING : 0);
     }
 } game;
 
@@ -848,8 +862,12 @@ int wmain(int argc, wchar_t** argv)
                 bgra = _wtoi(argv[i] + 5) != 0;
             else if (wcsncmp(argv[i], L"tearing=", 8) == 0)
                 tearing = _wtoi(argv[i] + 8) != 0;
+            else if (wcsncmp(argv[i], L"full=", 5) == 0)
+                full = _wtoi(argv[i] + 5) != 0;
+            else if (wcsncmp(argv[i], L"blt=", 4) == 0)
+                blt = _wtoi(argv[i] + 4) != 0;
         const bool fg = mode == L"fg" || mode == L"focus" || mode == L"fgoff" || mode == L"resize" || mode == L"menu" ||
-                        mode == L"pace" || mode == L"recreate" || mode == L"artefacts";
+                        mode == L"pace" || mode == L"recreate" || mode == L"artefacts" || mode == L"bars";
         fs::remove(dir / "OptiScaler.log");
         fs::remove(dir / "amd_presr.log");
         WriteIni(fg, argc > 3 ? argv[3] : (mode == L"pace" ? L"1" : nullptr),
@@ -889,10 +907,21 @@ int wmain(int argc, wchar_t** argv)
         wc.hCursor = LoadCursorW(nullptr, (LPCWSTR) IDC_ARROW);
         wc.lpszClassName = L"OptiDx11FinalImageSmoke";
         RegisterClassW(&wc);
-        RECT rect { 0, 0, (LONG) width, (LONG) height };
-        AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
-        window = CreateWindowW(wc.lpszClassName, L"OptiScaler D3D11 smoke", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40,
-                               rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, wc.hInstance, nullptr);
+        if (full)
+        {
+            width = (UINT) GetSystemMetrics(SM_CXSCREEN);
+            height = (UINT) GetSystemMetrics(SM_CYSCREEN);
+            window = CreateWindowW(wc.lpszClassName, L"OptiScaler D3D11 smoke", WS_POPUP | WS_VISIBLE, 0, 0, width,
+                                   height, nullptr, nullptr, wc.hInstance, nullptr);
+        }
+        else
+        {
+            RECT rect { 0, 0, (LONG) width, (LONG) height };
+            AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
+            window =
+                CreateWindowW(wc.lpszClassName, L"OptiScaler D3D11 smoke", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40,
+                              rect.right - rect.left, rect.bottom - rect.top, nullptr, nullptr, wc.hInstance, nullptr);
+        }
         decoy = CreateWindowW(wc.lpszClassName, L"focus thief", WS_OVERLAPPEDWINDOW, 200, 200, 400, 300, nullptr,
                               nullptr, wc.hInstance, nullptr);
         Foreground(window);
@@ -969,6 +998,126 @@ int wmain(int argc, wchar_t** argv)
             std::printf("  FG off: %u presents for %u game frames; on screen %.1f fps for %.1f game fps\n",
                         fgOff.presents, off.frames, visibleOff, off.appFps);
             expect(fgOff.presents <= off.frames + 2, "FG off: one present per game frame");
+            std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
+            return failures ? 1 : 0;
+        }
+        if (mode == L"bars")
+        {
+            // Every frame XeFG presents, read on its swapchain's queue before the display takes it
+            // (tests\present_look.h), so what a fullscreen game with tearing shows is read too: rows of black, which
+            // the scene never has, with the menu closed and open and with the game's CPU or the GPU setting the pace;
+            // then, on a still scene, how far each present is from the one before it (a generated frame without NR
+            // stands out from the real frames as a band of the picture once presents tear).
+            // XeFG presents through OptiScaler's wrapper of its DXGI swapchain; the wrapper's first present after this
+            // hands over the real swapchain, whose class the probe then patches.
+            static void *wrapperPresent = nullptr, *wrapperPresent1 = nullptr;
+            static DWORD realAt = 0;
+            static DWORD deviceAt = 0;
+            static auto findReal = [](IDXGISwapChain* wrapper)
+            {
+                auto real = *(IDXGISwapChain**) ((BYTE*) wrapper + realAt);
+                auto device = *(IUnknown**) ((BYTE*) wrapper + deviceAt);
+                ComPtr<ID3D12CommandQueue> queue;
+                if (real && device && SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&queue))))
+                    InstallPresentLook(real, queue.Get());
+            };
+            struct Finder
+            {
+                static HRESULT STDMETHODCALLTYPE Present(IDXGISwapChain* s, UINT i, UINT f)
+                {
+                    findReal(s);
+                    return ((present_look::PresentFn) wrapperPresent)(s, i, f);
+                }
+                static HRESULT STDMETHODCALLTYPE Present1(IDXGISwapChain1* s, UINT i, UINT f,
+                                                          const DXGI_PRESENT_PARAMETERS* p)
+                {
+                    findReal(s);
+                    return ((present_look::Present1Fn) wrapperPresent1)(s, i, f, p);
+                }
+            };
+            {
+                SYMBOL_INFOW type {};
+                type.SizeOfStruct = sizeof(type);
+                check(SymGetTypeFromNameW(opti.process, opti.base, L"WrappedIDXGISwapChain4", &type) ? S_OK : E_FAIL,
+                      "WrappedIDXGISwapChain4 type");
+                realAt = opti.Offset(type.TypeIndex, L"_real");
+                deviceAt = opti.Offset(type.TypeIndex, L"_device");
+            }
+            auto wrapperTable = (void**) opti.Address(L"WrappedIDXGISwapChain4::`vftable'");
+            expect(PatchPresentSlots(wrapperTable, (void*) &Finder::Present, (void*) &Finder::Present1, &wrapperPresent,
+                                     &wrapperPresent1),
+                   "present probe finds XeFG's swapchain through OptiScaler's wrapper");
+            Run("probe settle", 0.5, true);
+            expect(present_look::state.table != nullptr, "present probe on the DXGI swapchain class");
+            PresentLook total;
+            auto Probe = [&](const char* name, const wchar_t* csv, double seconds)
+            {
+                PresentLook l;
+                std::thread reader([&] { l = LookAtPresents(seconds - 0.3, (dir / csv).wstring()); });
+                const Stats s = Run(name, seconds);
+                reader.join();
+                std::printf("  %s: %u frames presented and read, %u with black rows (%u rows, longest run %u), %u "
+                            "with partly black rows, %u not read; %.2f presents per game frame; GPU time between "
+                            "presents p10 %.2f p50 %.2f p90 %.2f ms, %u bunched; step from the frame before p50 %.2f "
+                            "p90 %.2f max %.2f\n",
+                            name, l.frames, l.black, l.rows, l.run, l.partial, l.dropped, s.presentsPerFrame, l.gapP10,
+                            l.gapP50, l.gapP90, l.bunched, l.stepP50, l.stepP90, l.stepMax);
+                expect(l.frames > s.frames * 2, "the probe read the frames XeFG presented");
+                total.frames += l.frames;
+                total.black += l.black;
+                total.rows += l.rows;
+                return l;
+            };
+            const float cpuMs = game.cpuMs;
+            game.tilt = 8;
+            Probe("FG on, menu closed", L"bars-closed.csv", phase);
+            // Which D3D12 queue each part uses: the bridge's copy, XeFG's game queue (NR and XeFG's reads), and the
+            // queue XeFG presents its frames on.
+            auto fgFeature = opti.Member<void*>(game.swap.Get(), L"Dx11wDx12SC", L"_fg");
+            std::printf("  queues: bridge copy %p, XeFG game queue %p, XeFG presents on %p\n",
+                        opti.Member<void*>(game.swap.Get(), L"Dx11wDx12SC", L"_dx12CommandQueue"),
+                        fgFeature ? opti.Member<void*>(fgFeature, L"IFGFeature_Dx12", L"_gameCommandQueue") : nullptr,
+                        present_look::state.queue.load());
+            game.speed = 24;
+            game.tilt = 30;
+            Probe("FG on, fast pan", L"bars-fast.csv", phase);
+            Press(VK_INSERT);
+            expect(*opti.menuVisible, "Insert opens the menu");
+            Probe("FG on, menu open", L"bars-menu.csv", phase);
+            game.cpuMs = cpuMs * 4 + 20;
+            Probe("FG on, menu open, slow game", L"bars-menu-slow.csv", phase);
+            game.cpuMs = cpuMs;
+            // The GPU, not the game's CPU, sets the pace: the game's own D3D11 work, NR and XeFG compete for it.
+            const float gpuLoad = game.gpuLoad;
+            game.gpuLoad = gpuLoad * 512;
+            Probe("FG on, menu open, GPU-bound game", L"bars-menu-gpu.csv", phase);
+            game.gpuLoad = gpuLoad * 1536;
+            Probe("FG on, menu open, heavier GPU-bound game", L"bars-menu-gpu2.csv", phase);
+            game.gpuLoad = gpuLoad;
+            Press(VK_INSERT);
+            expect(!*opti.menuVisible, "Insert closes the menu");
+            Probe("FG on, menu closed again", L"bars-after.csv", phase);
+            // A still scene: consecutive presents differ only where generated and real frames differ. NR off first,
+            // as the floor. The game runs at about 15 fps here, where XeFG has the most time between real frames.
+            game.speed = 0;
+            game.tilt = 0;
+            game.clock = 0;
+            game.cpuMs = 60;
+            Press(VK_NUMPAD5);
+            Run("NR off settle", 2, true);
+            const PresentLook plain = Probe("still, NR off, FG on", L"bars-still-plain.csv", phase);
+            Press(VK_NUMPAD5);
+            Run("NR on settle", 3, true);
+            const PresentLook still = Probe("still, NR on, FG on", L"bars-still-nr.csv", phase);
+            char text[200];
+            std::snprintf(text, sizeof(text), "no presented frame with black rows (%u of %u, %u rows)", total.black,
+                          total.frames, total.rows);
+            expect(total.frames > 0 && total.black == 0, text);
+            std::snprintf(text, sizeof(text),
+                          "still scene, NR on: consecutive presents as alike as with NR off (step p90 %.2f against "
+                          "%.2f)",
+                          still.stepP90, plain.stepP90);
+            expect(still.stepP90 < std::max(1.0, plain.stepP90 * 2), text);
             std::printf("%s: %d failure(s)\n", failures ? "FAIL" : "PASS", failures);
             return failures ? 1 : 0;
         }

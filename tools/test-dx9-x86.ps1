@@ -186,9 +186,8 @@ try {
         '--drag-at', '340', '470', '395', '420', '395', '--drag-at', '380', '470', '395', '420', '395', '--shot-at', '420',
         'nr-scale-fg.bmp', '--key-at', '440', '0x2D') {
         param($text)
-        $last = Select-String -Path (Join-Path $host64 'amd_presr.log') -Pattern 'Completed AMD pre-SR passes=\d+ at (\d+x\d+)' |
-            Select-Object -Last 1
-        if (-not $last -or $last.Matches[0].Groups[1].Value -eq '1280x720') { 'NR did not run at a new model scale' }
+        $size = Last-NrSize
+        if (-not $size -or $size -eq '1280x720') { 'NR did not run at a new model scale' }
     }
     # The window procedure is replaced at frame 50 by one that calls nothing before it (as an engine or
     # overlay may do after the device exists): the menu must still hold the game's input.
@@ -292,7 +291,9 @@ try {
         if ([math]::Abs([int]$Matches[1] - [int]$Matches[2]) -gt $pan) { "the picture moved $($Matches[1]) px, the scene $($Matches[2])" }
         if ([double]$Matches[3] -ge $limit) { "the picture changed by $($Matches[3]) of 255 beyond the move (limit $limit)" }
         if (-not $withNr) { return }
-        $lines = @(Select-String -Path (Join-Path $host64 'dlssnr_on_amd.log') -Pattern 'job \d+ motion: mean \|mv\| = \(([0-9.]+), ([0-9.]+)\)')
+        # A runtime that did not start writes no log; that fails this case, not the whole run.
+        $log = Join-Path $host64 'dlssnr_on_amd.log'
+        $lines = if (Test-Path $log) { @(Select-String -Path $log -Pattern 'job \d+ motion: mean \|mv\| = \(([0-9.]+), ([0-9.]+)\)') } else { @() }
         if (-not $lines.Count) { 'no motion lines in the runtime log' }
         foreach ($line in $lines) {
             $x = [double]$line.Matches[0].Groups[1].Value
