@@ -1065,7 +1065,8 @@ struct Awaited
     }
 };
 
-// Every image of ours: copied into and out of, and sampled, which lets the core read the frame and the vectors in place.
+// Every image of ours: copied into and out of, and sampled, which lets the core read the frame and the vectors in
+// place.
 constexpr VkImageUsageFlags kImageUsage =
     VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
@@ -2775,6 +2776,31 @@ struct Session
     // pipelines once `abandon` is set (Destroy; P3's prewarm and the core's pipeline loop check it). Then the next
     // frame's buffers, when asked for: making them takes the render thread longer than a frame. When Destroy has given
     // the session up to this thread (Abandon), it ends it.
+    // dlssnr-amd\build.pending while a network build runs. Still there when the next one starts, or renamed
+    // build.failed by the ReShade add-on (mochizuki.inc, which then runs danielblnc instead), it means that build
+    // never finished: the game crashed or was closed during it. The next build logs every pipeline it compiles. A
+    // build that ends, built or failed, takes both away.
+    struct BuildMarker
+    {
+        std::wstring pending = DataDirectory() + L"\\dlssnr-amd\\build.pending";
+        std::wstring failed = DataDirectory() + L"\\dlssnr-amd\\build.failed";
+        bool lastDied = GetFileAttributesW(pending.c_str()) != INVALID_FILE_ATTRIBUTES ||
+                        GetFileAttributesW(failed.c_str()) != INVALID_FILE_ATTRIBUTES;
+
+        BuildMarker()
+        {
+            if (FILE* f = _wfopen(pending.c_str(), L"wb"))
+                std::fclose(f);
+        }
+        ~BuildMarker()
+        {
+            DeleteFileW(pending.c_str());
+            DeleteFileW(failed.c_str());
+        }
+        BuildMarker(const BuildMarker&) = delete;
+        BuildMarker& operator=(const BuildMarker&) = delete;
+    };
+
     void Build(const nr::HostDevice& host, const nr::RuntimeConfig& config, const nr::TemporalConfig& temporal,
                std::unique_ptr<nr::Runtime> old, UINT64 oldFinished, std::unique_ptr<FrameBuffers> buffers)
     {
@@ -2810,7 +2836,14 @@ struct Session
             // The pipelines an earlier build recorded are compiled on several threads first, into the pipeline.cache
             // the core then loads; the capture records this build's for the next one, and Finish saves what the core
             // compiled after its own save (mz_interpose.h).
+            const BuildMarker marker;
             mzi::Capture pipelines(host.device, host.physical, DataDirectory());
+            if (marker.lastDied)
+            {
+                nr::logf("[mochizuki] the last network build in this folder never finished (the game crashed or was "
+                         "closed during it); this one logs every pipeline it compiles");
+                pipelines.Verbose();
+            }
             pipelines.Prewarm(&abandon);
             if (abandon)
                 throw std::runtime_error("stopped: the session is being destroyed");

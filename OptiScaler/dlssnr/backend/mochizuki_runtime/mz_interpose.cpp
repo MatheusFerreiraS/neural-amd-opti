@@ -653,6 +653,21 @@ struct mzi::Capture::State
     uint32_t created = 0;                      // the core's vkCreateComputePipelines calls' pipelines...
     double createSeconds = 0;                  // ... and the time in them: a miss in the cache is a compile
 
+    bool verbose = false;          // Capture::Verbose
+    std::vector<File> shaderFiles; // dlssnr-amd\shaders, read once for the verbose lines
+
+    // The shader files a module of this size can be, for the verbose lines: the core loads them by content.
+    std::string NameOf(const Module& m)
+    {
+        if (shaderFiles.empty())
+            shaderFiles = Scan(data + L"\\shaders").files;
+        std::string names;
+        for (const File& f : shaderFiles)
+            if (f.bytes == m.bytes)
+                names += (names.empty() ? "" : " or ") + f.rel;
+        return names.empty() ? std::to_string(m.bytes) + " bytes of SPIR-V" : names;
+    }
+
     // Prewarm's reading of the manifest, which Finish uses rather than reading it again.
     bool checked = false;
     Manifest manifest;
@@ -772,8 +787,26 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL mzi_vkCreateComputePipelines(VkDevice 
                                                                        VkPipeline* pPipelines)
 {
     const auto t0 = t_capture ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
+    const bool verbose = t_capture && t_capture->verbose && createInfoCount > 0;
+    if (verbose)
+    {
+        std::string what = "a module this build did not make";
+        try
+        {
+            if (const auto m = t_capture->modules.find(Key(pCreateInfos[0].stage.module));
+                m != t_capture->modules.end())
+                what = t_capture->NameOf(m->second);
+        }
+        catch (...)
+        {
+        }
+        nr::logf("[mochizuki] core pipeline %u: compiling %s", t_capture->created + 1, what.c_str());
+    }
     const VkResult r =
         vkCreateComputePipelines(device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+    if (verbose)
+        nr::logf("[mochizuki] core pipeline %u: %.0f ms (VkResult %d)", t_capture->created + 1,
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), int(r));
     if (t_capture)
     {
         t_capture->createSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -890,6 +923,12 @@ void Capture::Prewarm(const std::atomic<bool>* stop) noexcept
     }
 }
 
+void Capture::Verbose() noexcept
+{
+    if (state)
+        state->verbose = true;
+}
+
 void Capture::Finish() noexcept
 {
     if (!state)
@@ -944,11 +983,12 @@ void Capture::State::Prewarm(const std::atomic<bool>* stop)
     {
         const Pipeline* pipeline;
         const std::vector<uint32_t>* code;
+        const std::string* path;
     };
     std::vector<Job> jobs;
     for (const auto& [path, p] : manifest.entries)
         if (path != "-")
-            jobs.push_back({ &p, &code.at(path) });
+            jobs.push_back({ &p, &code.at(path), &path });
     std::stable_sort(jobs.begin(), jobs.end(),
                      [](const Job& a, const Job& b) { return a.pipeline->module.bytes > b.pipeline->module.bytes; });
     // Allocated before the cache is made, so that nothing between its creation and its destruction throws.
@@ -995,6 +1035,10 @@ void Capture::State::Prewarm(const std::atomic<bool>* stop)
     auto compile = [&](size_t i) noexcept
     {
         VkResult r = VK_ERROR_OUT_OF_HOST_MEMORY;
+        const auto started = std::chrono::steady_clock::now();
+        if (verbose)
+            nr::logf("[mochizuki] prewarm %zu/%zu: compiling %s (%s)", i + 1, jobs.size(), jobs[i].path->c_str(),
+                     jobs[i].pipeline->entry.c_str());
         try
         {
             r = Compile(device, cache, *jobs[i].pipeline, *jobs[i].code);
@@ -1002,6 +1046,10 @@ void Capture::State::Prewarm(const std::atomic<bool>* stop)
         catch (...)
         {
         }
+        if (verbose)
+            nr::logf(
+                "[mochizuki] prewarm %zu/%zu: %s in %.0f ms (VkResult %d)", i + 1, jobs.size(), jobs[i].path->c_str(),
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count(), int(r));
         if (r == VK_SUCCESS)
             ++made;
         else

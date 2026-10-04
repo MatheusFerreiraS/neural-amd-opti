@@ -555,6 +555,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdSpinDraw.set_from_config(readInt("DlssNr", "AmdSpinDraw"));
             AmdGraphicsWait.set_from_config(readInt("DlssNr", "AmdGraphicsWait"));
             AmdStallStandDownMs.set_from_config(readInt("DlssNr", "AmdStallStandDownMs"));
+            AmdAsync.set_from_config(readBool("DlssNr", "AmdAsync"));
             NrBackend.set_from_config(readString("DlssNr", "NrBackend", true));
             LmxxfDiagnostic.set_from_config(readString("DlssNr", "LmxxfDiagnostic", true));
             // true/false only; missing or "auto" => false (do not enable FitLarge by accident).
@@ -1741,6 +1742,7 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "AmdGraphicsWait", GetIntValue(Instance()->AmdGraphicsWait.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdStallStandDownMs",
                      GetIntValue(Instance()->AmdStallStandDownMs.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "AmdAsync", GetBoolValue(Instance()->AmdAsync.value_for_config()).c_str());
         ini.SetValue("DlssNr", "NrBackend", Instance()->NrBackend.value_for_config().value_or("auto").c_str());
         ini.SetValue("DlssNr", "LmxxfDiagnostic",
                      Instance()->LmxxfDiagnostic.value_for_config().value_or("auto").c_str());

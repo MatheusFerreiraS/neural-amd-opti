@@ -32,6 +32,9 @@ namespace DlssNr::AmdBridge
 {
 namespace
 {
+// Why NR was switched off by the stall watch, until it is switched on again.
+std::mutex standDownMutex;
+std::string standDown;
 std::atomic<DlssNr::Backend::Host*> backend { nullptr };
 // COM identity and adapter of the device the backend was built on (guarded by initMutex). The backend lives for
 // the process, so this reference is never released either.
@@ -859,27 +862,38 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     if (cfg.ExposureResourceBarrier.has_value())
         f.exposureState = static_cast<D3D12_RESOURCE_STATES>(cfg.ExposureResourceBarrier.value());
     auto s = SettingsFromConfig(cfg, sessionScale);
+    // The upscaler path alone takes async: the present routes (PresentWithoutUpscaler) have not been run with it.
+    s.async = AsyncSession();
+    // Async chains one pass: each would hand the next a frame-old answer.
+    if (s.async)
+        s.passes = 1u;
     // Evaluate cut: Split proxy + SetBetween(EnqueueHip). Live only when SubmissionHooksWanted() (NrBackend=lmxxf
     // or mochizuki).
     DlssNr::Backend::LmxxfCut::OnEvaluateBeforeRecord(cmd);
     // One job the GPU held for seconds is the warning before the one that locks the PC (StallWatch.h):
-    // NR stands down until the game restarts, and the original colour goes to SR.
+    // NR switches off for this session without touching the INI, the original colour goes to SR, and
+    // the menu says why. Switched on again (menu or the NR key), it starts with a fresh watch.
     auto& stall = stallwatch::Watch::Get();
     stall.limitMs.store(static_cast<UINT64>(std::max(0, cfg.AmdStallStandDownMs.value_or_default())));
     if (const UINT64 held = stall.Tripped())
     {
-        static std::string said;
-        if (said.empty())
+        char seconds[16];
+        std::snprintf(seconds, sizeof(seconds), "%.1f", static_cast<double>(held) / 1000.0);
         {
-            char seconds[16];
-            std::snprintf(seconds, sizeof(seconds), "%.1f", static_cast<double>(held) / 1000.0);
-            said = std::string("AMD neural: off until the game restarts. The GPU held one NR job for ") + seconds +
-                   " s, the warning before a freeze that locks the PC. Try the mochizuki runtime; "
-                   "AmdStallStandDownMs=0 turns this off.";
-            LOG_WARN("{}", said);
+            std::lock_guard lock(standDownMutex);
+            standDown = std::string("Turned off: the GPU held one NR job for ") + seconds +
+                        " s, the warning before a freeze that can lock the PC. Turn NR on again to retry, or "
+                        "try another runtime. AmdStallStandDownMs=0 turns this check off.";
+            LOG_WARN("AMD neural: {}", standDown);
+            Message(standDown.c_str());
         }
-        Message(said.c_str());
+        stall.Clear();
+        Config::Instance()->DlssNrEnabled.set_volatile_value(false);
         return true;
+    }
+    {
+        std::lock_guard lock(standDownMutex);
+        standDown.clear();
     }
     if (neuralTimer)
         neuralTimer->Start(cmd);
@@ -1048,6 +1062,18 @@ bool GraphicsRestartNeeded(UINT activePasses)
         return b->GraphicsRestartNeeded(activePasses);
     return false;
 }
+bool AsyncSession()
+{
+    static const bool async = Config::Instance()->AmdAsync.value_or_default();
+    return async;
+}
+
+std::string StandDownNote()
+{
+    std::lock_guard lock(standDownMutex);
+    return standDown;
+}
+
 std::string Status()
 {
     // The final image's status only while it is the path that runs: danielblnc, no upscaler.

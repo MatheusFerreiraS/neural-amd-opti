@@ -460,8 +460,18 @@ namespace
 {
 bool ShouldUseExternalMouseHookLocked()
 {
-    return _state.Initialized && _state.Focused && _state.ExternalTargetProcess && _state.InputHwnd == nullptr &&
-           !_state.ExternalRawInputSinkRegistered && _state.TargetHwnd != nullptr && IsWindow(_state.TargetHwnd);
+    if (!_state.Initialized || !_state.Focused || _state.TargetHwnd == nullptr || !IsWindow(_state.TargetHwnd))
+        return false;
+
+    if (_state.ExternalTargetProcess)
+        return _state.InputHwnd == nullptr && !_state.ExternalRawInputSinkRegistered;
+
+    // In the game's own process, only for the menu's clicks when nothing else sees them: another WndProc took the
+    // window (Assetto Corsa's CSP) and the game holds its DirectInput mouse exclusively, which keeps the buttons out
+    // of the async key state the polling reads. The hook runs on the thread that installs it, so it stays off the
+    // rest of the time.
+    return _state.MenuVisible && _state.InputHwnd != nullptr && !_state.WndProcSubclassed &&
+           _state.DirectInputMouseExclusive;
 }
 
 bool GetTargetCenterScreenLocked(POINT* centerScreen)
@@ -546,13 +556,64 @@ LRESULT CALLBACK ExternalLowLevelMouseProc(int code, WPARAM wParam, LPARAM lPara
     {
         const MSLLHOOKSTRUCT* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
 
-        if (mouse != nullptr && wParam == WM_MOUSEMOVE)
+        if (mouse != nullptr)
         {
             std::unique_lock lock(_state.Mutex);
-            RecordExternalMouseMoveLocked(mouse->pt, mouse->flags);
+
+            if (_state.ExternalTargetProcess)
+            {
+                if (wParam == WM_MOUSEMOVE)
+                    RecordExternalMouseMoveLocked(mouse->pt, mouse->flags);
+            }
+            else
+            {
+                // The position still comes from the polling; the buttons come from here and the polling ORs them in.
+                int button = -1;
+                bool down = false;
+
+                switch (static_cast<UINT>(wParam))
+                {
+                case WM_LBUTTONDOWN:
+                case WM_LBUTTONUP:
+                    button = 0;
+                    down = wParam == WM_LBUTTONDOWN;
+                    break;
+                case WM_RBUTTONDOWN:
+                case WM_RBUTTONUP:
+                    button = 1;
+                    down = wParam == WM_RBUTTONDOWN;
+                    break;
+                case WM_MBUTTONDOWN:
+                case WM_MBUTTONUP:
+                    button = 2;
+                    down = wParam == WM_MBUTTONDOWN;
+                    break;
+                case WM_XBUTTONDOWN:
+                case WM_XBUTTONUP:
+                    button = HIWORD(mouse->mouseData) == XBUTTON1 ? 3 : HIWORD(mouse->mouseData) == XBUTTON2 ? 4 : -1;
+                    down = wParam == WM_XBUTTONDOWN;
+                    break;
+                default:
+                    break;
+                }
+
+                if (button >= 0)
+                {
+                    const DWORD time = mouse->time != 0 ? mouse->time : GetTickCount();
+                    _state.LowLevelMouseDown[button] = down;
+
+                    if (down)
+                        SetMouseDown(button, time, ShouldBlockMouseInputLocked());
+                    else
+                        SetMouseUp(button, time);
+
+                    _state.ReceivedAnyInputThisFrame = true;
+                }
+            }
         }
     }
 
+    // Never swallow the event: the game and the rest of the system still get it.
     return CallNextHookEx(_state.ExternalLowLevelMouseHook, code, wParam, lParam);
 }
 
@@ -600,6 +661,8 @@ void UpdateExternalMouseHookLocked()
 bool RemoveExternalMouseHookLocked()
 {
     HHOOK hook = _state.ExternalLowLevelMouseHook;
+
+    _state.LowLevelMouseDown = {};
 
     if (hook == nullptr)
     {

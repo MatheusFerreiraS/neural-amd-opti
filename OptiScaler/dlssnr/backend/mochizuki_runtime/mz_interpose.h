@@ -43,6 +43,11 @@ class Capture
     // pipelines.
     void Prewarm(const std::atomic<bool>* stop = nullptr) noexcept;
 
+    // After a build in this folder that never finished (MochizukiNrRuntime.cpp, BuildMarker): every pipeline the
+    // prewarm and the core compile is logged as it starts and as it ends, so that the next report names the one a
+    // crash in the driver's compiler was on.
+    void Verbose() noexcept;
+
     // After the core's constructor returned.
     void Finish() noexcept;
 

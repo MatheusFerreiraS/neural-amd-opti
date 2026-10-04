@@ -364,6 +364,9 @@ class Config
     CustomOptional<int> AmdGraphicsWait { 1 };
     // One danielblnc job the GPU holds this long stands NR down for the session (StallWatch.h). 0 = off.
     CustomOptional<int> AmdStallStandDownMs { 2000 };
+    // danielblnc async: the game's queue does not wait for the network, which runs after the finished frame and
+    // lands a frame late. Read once per session.
+    CustomOptional<bool> AmdAsync { false };
     // NR host: daniel (default), lmxxf, mochizuki, off. Missing key = daniel. Restart to change.
     CustomOptional<std::string> NrBackend { "daniel" };
     // lmxxf diagnostics: original/copy-current/staging-current/staging-previous,

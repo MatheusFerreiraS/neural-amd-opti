@@ -234,6 +234,13 @@ void RenderMenu(Config* config, float menuResScale)
         bool enabled = config->DlssNrEnabled.value_or_default();
         if (ImGui::Checkbox("Enable NR", &enabled))
             config->DlssNrEnabled = enabled;
+        if (!enabled)
+            if (const auto note = DlssNr::AmdBridge::StandDownNote(); !note.empty())
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, .45f, .35f, 1.f));
+                ImGui::TextWrapped("%s", note.c_str());
+                ImGui::PopStyleColor();
+            }
         bool present = config->DlssNrPresent.value_or_default();
         if (ImGui::Checkbox("Final image (D3D9/D3D11/D3D12/Vulkan/OpenGL, no upscaler)", &present))
             config->DlssNrPresent = present;
@@ -709,7 +716,8 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nrender thread also waits for the model every frame."
                        "\n\nChanging it restarts the model's history.");
             float stabilizer = finalImage && !config->AmdStabilizerStrength.has_value()
-                                   ? .8f : config->AmdStabilizerStrength.value_or_default();
+                                   ? .8f
+                                   : config->AmdStabilizerStrength.value_or_default();
             if (ImGui::SliderFloat("Stabilizer", &stabilizer, 0.0f, 1.0f, "%.2f"))
                 config->AmdStabilizerStrength = stabilizer;
             HelpMarker("Smooths small frame-to-frame changes of the neural effect along motion"
@@ -717,7 +725,8 @@ void RenderMenu(Config* config, float menuResScale)
                        "\npass through, and the game's own image is untouched. 0 turns it off; higher values can"
                        "\nsoften fine detail in motion. Final-image mode defaults to 0.8 with optical flow.");
             float stabilizerThreshold = finalImage && !config->AmdStabilizerThreshold.has_value()
-                                            ? 4.f : config->AmdStabilizerThreshold.value_or_default();
+                                            ? 4.f
+                                            : config->AmdStabilizerThreshold.value_or_default();
             if (ImGui::SliderFloat("Stabilizer threshold", &stabilizerThreshold, 0.5f, 8.0f, "%.1f / 255"))
                 config->AmdStabilizerThreshold = stabilizerThreshold;
             HelpMarker("Largest frame-to-frame change of the effect, in 1/255, that the stabilizer smooths.");
@@ -800,8 +809,8 @@ void RenderMenu(Config* config, float menuResScale)
         {
             if (DlssNr::AmdBridge::HasFiles())
                 scheduling();
-            ImGui::TextWrapped(
-                "Final-image neural: optical flow, scene resets, fixed noise seed and depth when available. Includes game HUD.");
+            ImGui::TextWrapped("Final-image neural: optical flow, scene resets, fixed noise seed and depth when "
+                               "available. Includes game HUD.");
             ImGui::TextUnformatted("D3D9, D3D11, D3D12, Vulkan and OpenGL. RenoDX composition does not apply here.");
             static float scale = 1.f;
             static bool editingScale = false;
@@ -853,21 +862,35 @@ void RenderMenu(Config* config, float menuResScale)
                 if (ImGui::Combo("Processing point", &placement, "Before Super Resolution\0After the finished frame\0"))
                     config->DlssNrApplyAfterRR = (placement != 0);
 
-                HelpMarker(placement == 0 ? "The model is handed the render-resolution frame the upscaler is about to"
-                                            "\nread, so the percentage below is of that render resolution. The upscaler"
-                                            "\nthen enlarges the model\'s work along with everything else."
-                                            "\n\nA game driving Ray Reconstruction never reaches this point: RR denoises"
-                                            "\nand enlarges in one dispatch, leaving no seam before it. Pick the other"
-                                            "\nplacement there, or the model will not run at all."
-                                          : "The model is handed the finished frame, and the percentage below is of"
-                                            "\nthat frame: at 50% a 4K picture is reduced to 1080p, the model runs on"
-                                            "\nit, and its answer is enlarged back to fill the frame."
-                                            "\n\nThis is the placement Ray Reconstruction titles need, and the only one"
-                                            "\nthey can reach.");
+                HelpMarker(placement == 0
+                               ? "The model is handed the render-resolution frame the upscaler is about to"
+                                 "\nread, so the percentage below is of that render resolution. The upscaler"
+                                 "\nthen enlarges the model\'s work along with everything else."
+                                 "\n\nA game driving Ray Reconstruction never reaches this point: RR denoises"
+                                 "\nand enlarges in one dispatch, leaving no seam before it. Pick the other"
+                                 "\nplacement there, or the model will not run at all."
+                               : "The model is handed the finished frame, and the percentage below is of"
+                                 "\nthat frame: at 50% a 4K picture is reduced to 1080p, the model runs on"
+                                 "\nit, and its answer is enlarged back to fill the frame."
+                                 "\n\nThis is the placement Ray Reconstruction titles need, and the only one"
+                                 "\nthey can reach.");
+
+                int timing = config->AmdAsync.value_or_default() ? 1 : 0;
+                if (ImGui::Combo("Timing", &timing, "Same frame\0Async\0"))
+                    config->AmdAsync = timing == 1;
+                HelpMarker("Same frame: the game's GPU queue waits for the network every frame, and the result goes"
+                           "\non that frame. Async: the queue does not wait, and the result lands one frame later."
+                           "\ndanielblnc traces the freezes some players met to those waits, so Async may avoid"
+                           "\nthem; it does not promise to."
+                           "\n\nAsync runs after the finished frame, whichever point is chosen above (a correction"
+                           "\none frame late would build up in the upscaler's history), with one pass."
+                           "\nIt takes effect the next time the game starts.");
+                if (timing == 1 != DlssNr::AmdBridge::AsyncSession())
+                    ImGui::TextDisabled("Restart the game to apply.");
 
                 // A Ray Reconstruction title has no seam before the upscaler, and the pass declines the
                 // one after it unless this switch picks it, so in this placement the model does not run.
-                if (placement == 0)
+                if (placement == 0 && !DlssNr::AmdBridge::AsyncSession())
                 {
                     if (auto feature = State::Instance().currentFeature; feature != nullptr)
                     {
@@ -879,8 +902,10 @@ void RenderMenu(Config* config, float menuResScale)
                     }
                 }
 
-                // One slider, bound to whichever placement is live. The two keep separate values, so
-                // switching back and forth does not make you retune each time.
+                // One slider, bound to whichever placement is live (async runs after the finished frame). The
+                // two keep separate values, so switching back and forth does not make you retune each time.
+                if (DlssNr::AmdBridge::AsyncSession())
+                    placement = 1;
                 auto& modelScale = placement == 0 ? config->AmdNrScale : config->DlssNrRRWorkingScale;
                 static float scale = 100.f;
                 static bool editingScale = false;
@@ -889,8 +914,9 @@ void RenderMenu(Config* config, float menuResScale)
                 // With dynamic resolution on, this is the ceiling it steps down from.
                 const bool dynamicScale = config->AmdDynamicScale.value_or_default();
                 ImGui::SliderFloat(
-                    placement == 0 ? (dynamicScale ? "NR resolution, maximum (% of render)" : "NR resolution (% of render)")
-                                   : (dynamicScale ? "NR resolution, maximum (% of frame)" : "NR resolution (% of frame)"),
+                    placement == 0
+                        ? (dynamicScale ? "NR resolution, maximum (% of render)" : "NR resolution (% of render)")
+                        : (dynamicScale ? "NR resolution, maximum (% of frame)" : "NR resolution (% of frame)"),
                     &scale, 25, 100, "%.0f%%");
                 editingScale = ImGui::IsItemActive();
                 // Commit once after dragging or text entry, not one model rebuild per mouse move.
@@ -1369,7 +1395,9 @@ void RenderMenu(Config* config, float menuResScale)
                 pendingPasses = -1;
             }
 
-            if (amdPasses)
+            if (amdPasses && DlssNr::AmdBridge::AsyncSession())
+                ImGui::TextDisabled("Async runs one pass whatever this says.");
+            else if (amdPasses)
                 ImGui::TextDisabled("Three is the ceiling: one runtime module per pass.");
 
             // The lift, its tooltip and its running-cost line all describe the NVIDIA feature
