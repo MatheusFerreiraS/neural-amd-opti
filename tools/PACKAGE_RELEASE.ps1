@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.4.9-amd-nr, the version in OptiScaler/resource.h.
+  Default product: OptiScaler-0.4.10-amd-nr, the version in OptiScaler/resource.h.
   The danielblnc runtime it drives is 0.5.1 (0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1, 0.3.0 and the 0.6.0 supporter build
   still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
@@ -9,11 +9,11 @@
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.4.9-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.4.10-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.4.9-amd-nr',
+    [string]$Version = '0.4.10-amd-nr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
@@ -179,7 +179,7 @@ $ini = [regex]::Replace($ini, '(?ms)(\[FrameGen\].*?^Enabled=)[^\r\n]*', '$1fals
 $ini = [regex]::Replace($ini, '(?ms)^\[DlssNr\].*?(?=^\[|\z)', @"
 [DlssNr]
 ; Product $Version - NR slots default 3 (2-5 in-game, 1-5 here).
-; Requires DLSS-NR-on-AMD 0.5.1 (0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1 and 0.3.0 still work;
+; Requires DLSS-NR-on-AMD 0.6.0 (0.5.1, 0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1 and 0.3.0 still work;
 ; https://github.com/danielblnc/DLSS-NR-on-AMD)
 ; as dlssnr_amd_pass1-3.dll (Setup copies version.dll from the package folder, or takes it
 ; out of dlssnr_on_amd_setup.exe).
@@ -283,6 +283,11 @@ AmdEveryFrame=false
 AmdSlots=3
 AmdGraphicsWait=1
 AmdGraphicsUnsafe=0
+; One danielblnc job the GPU holds this long (ms) switches NR off; switch it on again to retry. 0 turns it off.
+AmdStallStandDownMs=2000
+; danielblnc async: the game's queue does not wait for the network, the result lands a frame later (after the
+; finished frame, one pass). Read when the game starts.
+AmdAsync=false
 AmdNeuralLighting=true
 AmdNeuralLightingStrength=0.5
 AmdStabilizerStrength=0

@@ -925,6 +925,12 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
             arguments.push_back(std::to_string(unsigned(unorm)));
         }
     }
+    // NR_GRAPH_ARGS (diagnostic): more graph options, space-separated, after the runtime's own.
+    if (const char* extra = std::getenv("NR_GRAPH_ARGS")) {
+        std::istringstream words(extra);
+        for (std::string w; words >> w;) arguments.push_back(w);
+        nr::logf("[nr] NR_GRAPH_ARGS: %s", extra);
+    }
     std::vector<char*> argv;
     for (auto& a : arguments) argv.push_back(a.data());
     timer.mark("device");

@@ -40,6 +40,8 @@ std::array<DirectInputMethodHookSlot<DirectInputGetDeviceState_t>, MaxDirectInpu
     DirectInputGetDeviceStateHooks {};
 std::array<DirectInputMethodHookSlot<DirectInputGetDeviceData_t>, MaxDirectInputMethodHooks>
     DirectInputGetDeviceDataHooks {};
+std::array<DirectInputMethodHookSlot<DirectInputSetCooperativeLevel_t>, MaxDirectInputMethodHooks>
+    DirectInputSetCooperativeLevelHooks {};
 
 bool IsDirectInputKeyboardGuid(REFGUID guid) { return IsEqualGUID(guid, DirectInputSysKeyboardGuid) != FALSE; }
 
@@ -68,7 +70,9 @@ bool ShouldBlockDirectInputMouseLocked()
 
 bool ShouldBlockDirectInputOtherLocked()
 {
-    return _state.Initialized && (ShouldBlockKeyboardInputLocked() || ShouldBlockMouseInputLocked());
+    // Wheels, pedals and joysticks pass through. A zeroed DIJOYSTATE is not a released device: the axes run
+    // 0..65535 around a centre, so zero is full lock, and on some pedal sets full throttle (Assetto Corsa).
+    return false;
 }
 
 bool ShouldBlockDirectInputDeviceLocked(DirectInputDeviceKind kind)
@@ -211,6 +215,7 @@ void ClearDirectInputMethodHooksLocked()
     DirectInputReleaseHooks = {};
     DirectInputGetDeviceStateHooks = {};
     DirectInputGetDeviceDataHooks = {};
+    DirectInputSetCooperativeLevelHooks = {};
     RefreshDirectInputDeviceHookStateLocked();
 }
 
@@ -271,6 +276,19 @@ DirectInputDeviceKind GetDirectInputDeviceKindLocked(void* device)
     return _state.DirectInputDeviceSlots[slot].Kind;
 }
 
+void RefreshDirectInputMouseExclusiveLocked()
+{
+    bool exclusive = false;
+
+    for (const DirectInputDeviceSlot& slot : _state.DirectInputDeviceSlots)
+        exclusive |= slot.InUse && slot.Kind == DirectInputDeviceKind::Mouse && slot.Exclusive;
+
+    if (exclusive != _state.DirectInputMouseExclusive)
+        LOG_INFO("DirectInput mouse exclusive:{}", exclusive ? 1 : 0);
+
+    _state.DirectInputMouseExclusive = exclusive;
+}
+
 void ClearDirectInputDeviceSlotLocked(std::size_t slot)
 {
     if (slot >= MaxTrackedDirectInputDevices)
@@ -280,12 +298,14 @@ void ClearDirectInputDeviceSlotLocked(std::size_t slot)
         _state.DirectInputTrackedDeviceCount--;
 
     _state.DirectInputDeviceSlots[slot] = {};
+    RefreshDirectInputMouseExclusiveLocked();
 }
 
 void ClearAllDirectInputDeviceSlotsLocked()
 {
     _state.DirectInputDeviceSlots = {};
     _state.DirectInputTrackedDeviceCount = 0;
+    RefreshDirectInputMouseExclusiveLocked();
 }
 
 void TrackDirectInputDeviceLocked(void* device, DirectInputDeviceKind kind)
@@ -308,6 +328,7 @@ void TrackDirectInputDeviceLocked(void* device, DirectInputDeviceKind kind)
                 slot.Kind = kind;
                 MarkDirectInputDeviceKindSeenLocked(kind);
                 LOG_INFO("DirectInput device reclassified device:{} kind:{}", device, DirectInputDeviceKindName(kind));
+                RefreshDirectInputMouseExclusiveLocked();
             }
             else if (slot.Kind != DirectInputDeviceKind::Other && kind != DirectInputDeviceKind::Other &&
                      slot.Kind != kind)
@@ -352,16 +373,20 @@ bool HookDirectInputDeviceLocked(void* device, DirectInputDeviceKind kind)
     auto release = reinterpret_cast<DirectInputDeviceRelease_t>(vtable[2]);
     auto getDeviceState = reinterpret_cast<DirectInputGetDeviceState_t>(vtable[9]);
     auto getDeviceData = reinterpret_cast<DirectInputGetDeviceData_t>(vtable[10]);
+    auto setCooperativeLevel = reinterpret_cast<DirectInputSetCooperativeLevel_t>(vtable[13]);
 
     bool attachRelease = false;
     bool attachGetDeviceState = false;
     bool attachGetDeviceData = false;
+    bool attachSetCooperativeLevel = false;
 
     auto* releaseHook = PrepareDirectInputMethodHookLocked(DirectInputReleaseHooks, release, &attachRelease);
     auto* getDeviceStateHook =
         PrepareDirectInputMethodHookLocked(DirectInputGetDeviceStateHooks, getDeviceState, &attachGetDeviceState);
     auto* getDeviceDataHook =
         PrepareDirectInputMethodHookLocked(DirectInputGetDeviceDataHooks, getDeviceData, &attachGetDeviceData);
+    auto* setCooperativeLevelHook = PrepareDirectInputMethodHookLocked(DirectInputSetCooperativeLevelHooks,
+                                                                       setCooperativeLevel, &attachSetCooperativeLevel);
 
     bool completeCoverage = true;
 
@@ -386,7 +411,7 @@ bool HookDirectInputDeviceLocked(void* device, DirectInputDeviceKind kind)
         completeCoverage = false;
     }
 
-    if (!attachRelease && !attachGetDeviceState && !attachGetDeviceData)
+    if (!attachRelease && !attachGetDeviceState && !attachGetDeviceData && !attachSetCooperativeLevel)
     {
         TrackDirectInputDeviceLocked(device, kind);
         return completeCoverage;
@@ -404,6 +429,9 @@ bool HookDirectInputDeviceLocked(void* device, DirectInputDeviceKind kind)
     if (attachGetDeviceData)
         DetourAttach(reinterpret_cast<PVOID*>(&getDeviceDataHook->Trampoline), hkDirectInputGetDeviceData);
 
+    if (attachSetCooperativeLevel)
+        DetourAttach(reinterpret_cast<PVOID*>(&setCooperativeLevelHook->Trampoline), hkDirectInputSetCooperativeLevel);
+
     const LONG result = DetourTransactionCommit();
 
     if (result != NO_ERROR)
@@ -419,6 +447,9 @@ bool HookDirectInputDeviceLocked(void* device, DirectInputDeviceKind kind)
 
         if (attachGetDeviceData)
             *getDeviceDataHook = {};
+
+        if (attachSetCooperativeLevel)
+            *setCooperativeLevelHook = {};
 
         RefreshDirectInputDeviceHookStateLocked();
         return false;
@@ -673,6 +704,12 @@ bool RemoveDirectInputHooksLocked()
     {
         if (slot.InUse && slot.Trampoline != nullptr)
             DetourDetach(reinterpret_cast<PVOID*>(&slot.Trampoline), hkDirectInputDeviceRelease);
+    }
+
+    for (auto& slot : DirectInputSetCooperativeLevelHooks)
+    {
+        if (slot.InUse && slot.Trampoline != nullptr)
+            DetourDetach(reinterpret_cast<PVOID*>(&slot.Trampoline), hkDirectInputSetCooperativeLevel);
     }
 
     const LONG result = DetourTransactionCommit();
@@ -1018,6 +1055,45 @@ ULONG WINAPI hkDirectInputDeviceRelease(void* device)
 
         if (slot < MaxTrackedDirectInputDevices)
             ClearDirectInputDeviceSlotLocked(slot);
+    }
+
+    return result;
+}
+
+HRESULT WINAPI hkDirectInputSetCooperativeLevel(void* device, HWND hwnd, DWORD flags)
+{
+    DirectInputSetCooperativeLevel_t original = nullptr;
+
+    {
+        std::unique_lock lock(_state.Mutex);
+
+        if (device != nullptr)
+        {
+            PVOID* vtable = *reinterpret_cast<PVOID**>(device);
+            auto target = reinterpret_cast<DirectInputSetCooperativeLevel_t>(vtable[13]);
+            original = ResolveDirectInputMethodTrampolineLocked(DirectInputSetCooperativeLevelHooks, target);
+        }
+    }
+
+    if (original == nullptr)
+        return DIERR_GENERIC;
+
+    HRESULT result;
+    {
+        ScopedHookBypass bypass;
+        result = original(device, hwnd, flags);
+    }
+
+    if (SUCCEEDED(result))
+    {
+        std::unique_lock lock(_state.Mutex);
+        const std::size_t slot = FindDirectInputDeviceSlotLocked(device);
+
+        if (slot < MaxTrackedDirectInputDevices)
+        {
+            _state.DirectInputDeviceSlots[slot].Exclusive = (flags & DISCL_EXCLUSIVE) != 0;
+            RefreshDirectInputMouseExclusiveLocked();
+        }
     }
 
     return result;

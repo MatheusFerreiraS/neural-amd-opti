@@ -3732,7 +3732,10 @@ void EvaluateAtSeam(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* par
         // every frame to the seam they refuse, and NR would stay off.
         const auto kind = DlssNr::Backend::ActiveKindFromConfig();
         const bool beforeSrOnly = kind == DlssNr::Backend::Kind::Lmxxf || kind == DlssNr::Backend::Kind::Mochizuki;
-        const bool placedAfter = cfg.DlssNrApplyAfterRR.value_or_default() && !beforeSrOnly;
+        // danielblnc async runs after the finished frame: a correction one frame late would build up in the
+        // upscaler's history before it.
+        const bool placedAfter =
+            (cfg.DlssNrApplyAfterRR.value_or_default() || DlssNr::AmdBridge::AsyncSession()) && !beforeSrOnly;
 
         if (postPlacement != placedAfter)
         {

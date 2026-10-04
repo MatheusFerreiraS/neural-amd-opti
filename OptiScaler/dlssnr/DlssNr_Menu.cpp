@@ -234,6 +234,13 @@ void RenderMenu(Config* config, float menuResScale)
         bool enabled = config->DlssNrEnabled.value_or_default();
         if (ImGui::Checkbox("Enable NR", &enabled))
             config->DlssNrEnabled = enabled;
+        if (!enabled)
+            if (const auto note = DlssNr::AmdBridge::StandDownNote(); !note.empty())
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, .45f, .35f, 1.f));
+                ImGui::TextWrapped("%s", note.c_str());
+                ImGui::PopStyleColor();
+            }
 
         // With more than one runtime installed, choose the one the next launch uses. This session keeps the
         // one it started with: each installs its own D3D12 hooks as the device is created.
@@ -832,9 +839,22 @@ void RenderMenu(Config* config, float menuResScale)
                                         "\n\nThis is the placement Ray Reconstruction titles need, and the only one"
                                         "\nthey can reach.");
 
+            int timing = config->AmdAsync.value_or_default() ? 1 : 0;
+            if (ImGui::Combo("Timing", &timing, "Same frame\0Async\0"))
+                config->AmdAsync = timing == 1;
+            HelpMarker("Same frame: the game's GPU queue waits for the network every frame, and the result goes"
+                       "\non that frame. Async: the queue does not wait, and the result lands one frame later."
+                       "\ndanielblnc traces the freezes some players met to those waits, so Async may avoid"
+                       "\nthem; it does not promise to."
+                       "\n\nAsync runs after the finished frame, whichever point is chosen above (a correction"
+                       "\none frame late would build up in the upscaler's history), with one pass."
+                       "\nIt takes effect the next time the game starts.");
+            if (timing == 1 != DlssNr::AmdBridge::AsyncSession())
+                ImGui::TextDisabled("Restart the game to apply.");
+
             // A Ray Reconstruction title has no seam before the upscaler, and the pass declines the
             // one after it unless this switch picks it, so in this placement the model does not run.
-            if (placement == 0)
+            if (placement == 0 && !DlssNr::AmdBridge::AsyncSession())
             {
                 if (auto feature = State::Instance().currentFeature; feature != nullptr)
                 {
@@ -846,8 +866,10 @@ void RenderMenu(Config* config, float menuResScale)
                 }
             }
 
-            // One slider, bound to whichever placement is live. The two keep separate values, so
-            // switching back and forth does not make you retune each time.
+            // One slider, bound to whichever placement is live (async runs after the finished frame). The two keep
+            // separate values, so switching back and forth does not make you retune each time.
+            if (DlssNr::AmdBridge::AsyncSession())
+                placement = 1;
             auto& modelScale = placement == 0 ? config->AmdNrScale : config->DlssNrRRWorkingScale;
             static float scale = 100.f;
             static bool editingScale = false;
@@ -1332,7 +1354,9 @@ void RenderMenu(Config* config, float menuResScale)
                 pendingPasses = -1;
             }
 
-            if (amdPasses)
+            if (amdPasses && DlssNr::AmdBridge::AsyncSession())
+                ImGui::TextDisabled("Async runs one pass whatever this says.");
+            else if (amdPasses)
                 ImGui::TextDisabled("Three is the ceiling: one runtime module per pass.");
 
             // The lift, its tooltip and its running-cost line all describe the NVIDIA feature

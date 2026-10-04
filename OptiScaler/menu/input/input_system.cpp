@@ -402,7 +402,8 @@ bool PollMouseButtonLocked(int vk, int button, DWORD time)
         return false;
 
     const bool wasDown = _state.MouseButtons[button].Down;
-    const bool down = (RealGetAsyncKeyStateSafe(vk) & 0x8000) != 0;
+    // An exclusive DirectInput mouse hides its buttons from the async state; the low-level hook still sees them.
+    const bool down = (RealGetAsyncKeyStateSafe(vk) & 0x8000) != 0 || _state.LowLevelMouseDown[button];
 
     if (down)
     {

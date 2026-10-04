@@ -78,6 +78,7 @@ struct DirectInputDeviceSlot
     void* Device = nullptr;
     DirectInputDeviceKind Kind = DirectInputDeviceKind::Other;
     DWORD LastObjectDataSize = 0;
+    bool Exclusive = false;
 };
 
 enum class HidDeviceKind
@@ -194,6 +195,8 @@ struct InputState
 
     std::array<ButtonState, 256> Keys {};
     std::array<ButtonState, 5> MouseButtons {};
+    // Buttons held as the low-level mouse hook saw them (an exclusive DirectInput mouse with the WndProc lost).
+    std::array<bool, 5> LowLevelMouseDown {};
 
     std::array<bool, 256> RawKeyboardBlockedDown {};
     std::array<bool, 5> RawMouseBlockedDown {};
@@ -286,6 +289,8 @@ struct InputState
     bool DirectInputDeviceReleaseHookInstalled = false;
     bool DirectInputKeyboardDeviceSeen = false;
     bool DirectInputMouseDeviceSeen = false;
+    // A DirectInput mouse in exclusive mode: Windows then keeps its buttons from the async key state.
+    bool DirectInputMouseExclusive = false;
     bool DirectInputOtherDeviceSeen = false;
 
     HRESULT GameInputLastCreateResult = S_OK;
@@ -413,6 +418,7 @@ using DirectInputCreateDevice_t = HRESULT(WINAPI*)(void*, REFGUID, void**, LPUNK
 using DirectInputGetDeviceState_t = HRESULT(WINAPI*)(void*, DWORD, LPVOID);
 using DirectInputGetDeviceData_t = HRESULT(WINAPI*)(void*, DWORD, LPDIDEVICEOBJECTDATA, LPDWORD, DWORD);
 using DirectInputDeviceRelease_t = ULONG(WINAPI*)(void*);
+using DirectInputSetCooperativeLevel_t = HRESULT(WINAPI*)(void*, HWND, DWORD);
 
 extern InputState _state;
 
@@ -510,6 +516,7 @@ HRESULT WINAPI hkDirectInputGetDeviceState(void* device, DWORD dataSize, LPVOID 
 HRESULT WINAPI hkDirectInputGetDeviceData(void* device, DWORD objectDataSize, LPDIDEVICEOBJECTDATA data, LPDWORD inOut,
                                           DWORD flags);
 ULONG WINAPI hkDirectInputDeviceRelease(void* device);
+HRESULT WINAPI hkDirectInputSetCooperativeLevel(void* device, HWND hwnd, DWORD flags);
 
 // Target/input window
 void SetTargetWindow(HWND hwnd, bool isUwp, bool useWndProcSubclass);

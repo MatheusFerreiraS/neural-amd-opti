@@ -8,6 +8,9 @@
 //
 //   amd_runtime_init_smoke.exe <version.dll> <dlssnr_on_amd_weights.bin> <work folder> [frames per mode]
 //
+// With AMD_TEST_ASYNC set it runs the runtime async, as AmdAsync does: no wait on the game's queue, the job
+// counter left alone (async never moves it), and frames counted done once their list ran.
+//
 // The runtime is copied into the work folder as dlssnr_amd_pass1.dll, so what its DllMain reads or
 // writes beside itself (dlssnr_on_amd.ini, dlssnr_on_amd.log) stays there.
 #include "../OptiScaler/dlssnr/amd/RuntimeHostLoad.h"
@@ -168,7 +171,8 @@ int wmain(int argc, wchar_t** argv)
         At<ID3D12CommandQueue*>(h, L->queue) = queue.Get();
         queue->AddRef();
         At<int>(h, L->hipOrdinal) = hip.device;
-        At<uint8_t>(h, L->configuredInline) = 1;
+        const bool async = GetEnvironmentVariableW(L"AMD_TEST_ASYNC", nullptr, 0) != 0;
+        At<uint8_t>(h, L->configuredInline) = async ? 0 : 1;
         At<uint8_t>(h, L->interop) = 1;
         At<uint8_t>(h, L->enabled) = 1;
         At<uint8_t>(h, L->fsrInputs) = 1;
@@ -225,7 +229,7 @@ int wmain(int argc, wchar_t** argv)
         const auto timeoutsBefore = At<UINT>(h, L->timeoutCount);
         bool failed = false;
         const int modes[] = { L->spinDraw ? 1 : 0, 0 };
-        for (int step = 0; step < (L->spinDraw ? 2 : 1) && !failed; ++step)
+        for (int step = 0; step < (L->spinDraw && !async ? 2 : 1) && !failed; ++step)
         {
             const int mode = modes[step];
             int accepted = 0, completed = 0, measured = 0;
@@ -293,10 +297,11 @@ int wmain(int argc, wchar_t** argv)
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - submitted).count();
                 if (recorded)
                 {
-                    // The worker publishes jobDone after its HIP synchronize, just after the GPU wait ends.
-                    for (int i = 0; i < 200 && At<volatile UINT>(h, L->jobDone) < job; ++i)
+                    // The worker publishes jobDone after its HIP synchronize, just after the GPU wait ends. Async
+                    // never moves it: the list having run is the whole of a frame there.
+                    for (int i = 0; i < 200 && !async && At<volatile UINT>(h, L->jobDone) < job; ++i)
                         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                    if (At<volatile UINT>(h, L->jobDone) >= job)
+                    if (async || At<volatile UINT>(h, L->jobDone) >= job)
                         ++completed;
                     // The first frames build staging and warm the kernels.
                     if (frame >= framesPerMode / 2)
@@ -305,6 +310,10 @@ int wmain(int argc, wchar_t** argv)
                         ++measured;
                     }
                 }
+                // Async takes no frame while the network is still on the last one, so frames come at a game's
+                // pace (60 fps) rather than as fast as an idle loop turns.
+                if (async)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(16));
                 if (frame < 3 || !recorded)
                     std::printf("  mode %d frame %d: recorded=%d job=%u done=%u timeouts=%u recreate=%u %.2f ms\n",
                                 mode, frame, recorded ? 1 : 0, job, At<UINT>(h, L->jobDone),
@@ -312,13 +321,15 @@ int wmain(int argc, wchar_t** argv)
             }
             const bool pso = L->graphicsPso && At<void*>(h, L->graphicsPso) != nullptr;
             const int predicate = L->predicateReady ? At<uint8_t>(h, L->predicateReady) : -1;
+            if (async)
+                std::printf("async: ");
             std::printf("mode %d (%s): %d/%d recorded, %d completed, timeouts %u, graphicsPso %d, predicateReady %d, "
                         "%.2f ms per frame (submit to fence, last %d)\n",
                         mode, mode ? "1-pixel draw wait" : "dispatch wait", accepted, framesPerMode, completed,
                         At<UINT>(h, L->timeoutCount) - timeoutsBefore, pso ? 1 : 0, predicate,
                         measured ? gpuMs / measured : 0.0, measured);
-            failed |= accepted < framesPerMode - 3 || completed != accepted ||
-                      At<UINT>(h, L->timeoutCount) != timeoutsBefore || (mode == 1 && !pso);
+            failed |= accepted < (async ? framesPerMode / 3 : framesPerMode - 3) || completed != accepted ||
+                      At<UINT>(h, L->timeoutCount) != timeoutsBefore || (mode == 1 && !pso && !async);
         }
         CloseHandle(event);
         Expect(!failed, "frames were refused, did not complete, timed out, or the draw wait had no PSO");
@@ -326,8 +337,8 @@ int wmain(int argc, wchar_t** argv)
         hip.setDevice(hip.device);
         reinterpret_cast<void (*)()>(base + L->shutdown)();
         std::printf("shutdown returned\n");
-        std::printf("PASS: runtime %s loads isolated, initialises, runs frames in every wait mode and shuts down\n",
-                    L->name);
+        std::printf("PASS: runtime %s loads isolated, initialises, runs frames in %s and shuts down\n", L->name,
+                    async ? "async" : "every wait mode");
         // The runtime stays pinned, as in the host, so its DLL_PROCESS_DETACH runs at process exit
         // the way it does when a game closes. A non-zero exit code after PASS points there.
         std::fflush(stdout);

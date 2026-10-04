@@ -278,6 +278,8 @@ void MenuCommon::UpdateManualInput(HWND targetHwnd)
             lastKey = vk;
             // receivingWmInputs = false;
             inputFlag = true;
+            // The same release can arrive by message and by polling; without this the menu toggles twice.
+            lastInputTick = GetTickCount64();
             LOG_DEBUG("{}", logMessage);
         }
     };
@@ -1513,6 +1515,20 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
             ImGui::InsertNotification(toast);
         }
 
+        // The stall watch switched NR off: say so once, since the menu may be closed.
+        static std::string shownStandDown;
+        if (auto note = DlssNr::AmdBridge::StandDownNote(); note != shownStandDown)
+        {
+            if (!note.empty())
+            {
+                ImGuiToast toast { ImGuiToastType::Warning, 8000 };
+                toast.setTitle("DLSS Neural Rendering turned off");
+                toast.setContent("%s", note.c_str());
+                ImGui::InsertNotification(toast);
+            }
+            shownStandDown = std::move(note);
+        }
+
         if (inputFpsCycle && config->ShowFps.value_or_default())
             config->FpsOverlayType = (FpsOverlay) ((config->FpsOverlayType.value_or_default() + 1) % FpsOverlay_COUNT);
 
@@ -2264,10 +2280,9 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
 
                     // Graph of the model's GPU times
                     ImGui::PlotLines(
-                        "##NeuralFrameTimeGraph",
-                        [](void* rb, int idx) -> float
-                        { return static_cast<RingBuffer<float, plotWidth>*>(rb)->At(idx); },
-                        &gNeuralTimes, plotWidth, 0, nullptr, 0.0f, 20.0f, plotSize);
+                        "##NeuralFrameTimeGraph", [](void* rb, int idx) -> float
+                        { return static_cast<RingBuffer<float, plotWidth>*>(rb)->At(idx); }, &gNeuralTimes, plotWidth,
+                        0, nullptr, 0.0f, 20.0f, plotSize);
                 }
             }
 
@@ -9678,8 +9693,7 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
     {
         const float helpGap = style.ItemSpacing.x + ImGui::GetFontSize() * 0.9f; // room for "(?)" marker
         const float discordBtnW = ImGui::CalcTextSize("Discord").x + style.FramePadding.x * 2.0f + style.ItemSpacing.x;
-        const float wikiBtnW =
-            ImGui::CalcTextSize("Open Wiki").x + style.FramePadding.x * 2.0f + helpGap;
+        const float wikiBtnW = ImGui::CalcTextSize("Open Wiki").x + style.FramePadding.x * 2.0f + helpGap;
         const float leftLimit = ImGui::GetItemRectMax().x - winPos.x + style.ItemSpacing.x; // past Close
         const float contentRight = ImGui::GetWindowWidth() - style.WindowPadding.x;
         const float wikiStartX = contentRight - wikiBtnW - discordBtnW;
@@ -10175,8 +10189,9 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
     // First appearance / after load — keeps any size the user dragged to during the session
     // Never larger than the screen: a size saved on a bigger display would put the resize grip off it.
     const ImVec2 maxMenuSize(std::max(io.DisplaySize.x, minMenuWidth), std::max(io.DisplaySize.y, minMenuHeight));
-    ImGui::SetNextWindowSize(ImVec2(std::min(defaultMenuWidth, maxMenuSize.x), std::min(defaultMenuHeight, maxMenuSize.y)),
-                             ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(
+        ImVec2(std::min(defaultMenuWidth, maxMenuSize.x), std::min(defaultMenuHeight, maxMenuSize.y)),
+        ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSizeConstraints(ImVec2(minMenuWidth, minMenuHeight), maxMenuSize);
 
     // Main menu window
@@ -10195,9 +10210,9 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
     {
         const float margin = 12.0f * menuResScale;
         const bool right = anchor == 2 || anchor == 4, bottom = anchor >= 3;
-        ImGui::SetNextWindowPos(ImVec2(right ? io.DisplaySize.x - margin : margin,
-                                       bottom ? io.DisplaySize.y - margin : margin),
-                                ImGuiCond_Always, ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f));
+        ImGui::SetNextWindowPos(
+            ImVec2(right ? io.DisplaySize.x - margin : margin, bottom ? io.DisplaySize.y - margin : margin),
+            ImGuiCond_Always, ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f));
     }
 
     if (ImGui::Begin(windowTitle.c_str(), NULL, flags))

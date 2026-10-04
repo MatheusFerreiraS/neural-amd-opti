@@ -53,6 +53,8 @@ struct RtgiSettings
 struct Settings
 {
     UINT encoding = 1; // 1 Linear, 2 sRGB, 3 Gamma 2.2
+    // The runtime's async timing (AmdBridge::AsyncSession): latched when the first pass loads.
+    bool async = false;
     bool everyFrame = false;
     // How many frames may be running at the NR stage at once. Too few and a frame that
     // finds every buffer busy carries no NR at all. In one YYSLS AB session the

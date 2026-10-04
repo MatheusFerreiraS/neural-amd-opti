@@ -404,6 +404,10 @@ struct Backend::Impl
     }
     bool deviceLostReported = false;
     UINT width = 0, height = 0, activePasses = 0, lastPasses = 0;
+    // The runtime's timing, set before the first pass loads. In async its job counter (L->jobDone) never moves:
+    // a slot is done once its list ran, since the runtime copied the inputs into its own staging there.
+    bool async = false;
+    UINT64 asyncRefusals = 0;
     HipSetFn hipSet = nullptr;
     int hipDevice = -1;
     const AmdLayout* L = nullptr;
@@ -540,7 +544,7 @@ struct Backend::Impl
         bool timedOut = false;
         // Use this slot's recorded pass count, not the global config.
         // 0 is valid (the runtime refused); only kPassUnset means "never recorded".
-        const UINT passCount = (sl.passCount == Slot::kPassUnset) ? 0u : sl.passCount;
+        const UINT passCount = (sl.passCount == Slot::kPassUnset || async) ? 0u : sl.passCount;
         for (UINT i = 0; i < passCount; ++i)
         {
             const auto done = static_cast<UINT>(
@@ -698,7 +702,7 @@ struct Backend::Impl
 #endif
         // Use THIS slot's recorded pass count, not the global activePasses
         // (the next Record may already have rewritten it).
-        const UINT slotPasses = (slots[k].passCount == Slot::kPassUnset) ? 0u : slots[k].passCount;
+        const UINT slotPasses = (slots[k].passCount == Slot::kPassUnset || async) ? 0u : slots[k].passCount;
         unsigned iterations = 0;
 #ifdef AMD_RETIRE_DIAGNOSTICS
         bool nativeAtEntry = true; // first poll result: did we wait at all?
@@ -831,7 +835,9 @@ struct Backend::Impl
         At<ID3D12CommandQueue*>(h, L->queue) = queue.Get();
         queue->AddRef();
         At<int>(h, L->hipOrdinal) = hipDevice;
-        At<uint8_t>(h, L->configuredInline) = 1;
+        At<uint8_t>(h, L->configuredInline) = async ? 0 : 1;
+        if (async)
+            Log("AMD runtime async: the game's queue does not wait for the network; the result lands a frame late");
         At<uint8_t>(h, L->interop) = 1;
         At<uint8_t>(h, L->enabled) = 1;
         At<uint8_t>(h, L->fsrInputs) = 1;
@@ -1237,7 +1243,9 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         }
         if (f.motion->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
             throw std::runtime_error("Unsupported depth-stencil motion buffer: " + Layout(f.motion));
-        p->activePasses = std::clamp(cfg.passes, 1u, 3u);
+        if (!p->runtime[0])
+            p->async = cfg.async;
+        p->activePasses = p->async ? 1u : std::clamp(cfg.passes, 1u, 3u);
         bool passChange = p->lastPasses != p->activePasses;
         p->lastPasses = p->activePasses;
         for (UINT i = 0; i < p->activePasses; ++i)
@@ -1813,6 +1821,10 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                 p->Log("AMD pass native failure: " + std::to_string(i + 1) + " job=" + std::to_string(sl->jobs[i]));
                 break;
             }
+            // Async declines every frame that arrives while the network is still on an earlier one, so there a
+            // refusal is routine and only a sample is logged.
+            if (!recorded && p->async && ++p->asyncRefusals % 600 != 1)
+                break;
             if (!recorded)
             {
                 // No matching pending list means we must not claim publication.
