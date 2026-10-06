@@ -1201,8 +1201,9 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         }
         const UINT inputW = w, inputH = h;
         const float scale = std::isfinite(cfg.modelScale) ? std::clamp(cfg.modelScale, .25f, 1.f) : 1.f;
-        w = (std::min) (inputW, (std::max) (32u, UINT(std::lround(inputW * scale))));
-        h = (std::min) (inputH, (std::max) (32u, UINT(std::lround(inputH * scale))));
+        const UINT baseW = (std::max) (inputW, f.fixedWidth), baseH = (std::max) (inputH, f.fixedHeight);
+        w = (std::min) (baseW, (std::max) (32u, UINT(std::lround(baseW * scale))));
+        h = (std::min) (baseH, (std::max) (32u, UINT(std::lround(baseH * scale))));
         const bool scaled = w != inputW || h != inputH;
         // The guides' own active extent: the render grid post-upscale, the colour's otherwise.
         const UINT guideInW = f.guideWidth ? f.guideWidth : inputW;
@@ -1407,7 +1408,8 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         if (scaled)
         {
             createScratch(p->scaleBaseline, w, h, DXGI_FORMAT_R16G16B16A16_FLOAT);
-            createScratch(p->scaleOutput, inputW, inputH, DXGI_FORMAT_R16G16B16A16_FLOAT);
+            // Shared by the slots in flight, so under dynamic resolution it keeps the largest frame's size.
+            createScratch(p->scaleOutput, baseW, baseH, DXGI_FORMAT_R16G16B16A16_FLOAT);
         }
         if (convertDepth)
         {
@@ -1439,7 +1441,8 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                       "Appearance pipeline");
             }
         }
-        const bool guideChange = p->lastInputWidth != inputW || p->lastInputHeight != inputH ||
+        // A dynamic resolution step keeps the model's extent and its history.
+        const bool guideChange = (!f.fixedWidth && (p->lastInputWidth != inputW || p->lastInputHeight != inputH)) ||
                                  p->lastMotionWidth != f.motionWidth || p->lastMotionHeight != f.motionHeight ||
                                  p->hadExposure != (exposureSource != nullptr);
         if (resize || guideChange || p->frames == 0)

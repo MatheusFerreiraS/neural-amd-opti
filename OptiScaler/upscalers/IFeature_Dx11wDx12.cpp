@@ -1,5 +1,7 @@
 #include <pch.h>
 #include <dlssnr/amd/AmdBridge.h>
+#include <dlssnr/backend/Selector.h>
+#include <dlssnr/submission/SubmissionHooks.h>
 #include "IFeature_Dx11wDx12.h"
 
 #include <Util.h>
@@ -34,6 +36,20 @@ bool IFeature_Dx11wDx12::CreateD3D12Objects()
 {
     HRESULT result;
 
+    // lmxxf and mochizuki run inside this frame's submission, before Super Resolution. A D3D11 game reaches the
+    // upscaler through these lists on OptiScaler's own D3D12 device, which the game's device hooks never see, so they
+    // are made as proxies and their queue gets the submission hook here (Assetto Corsa, GhostNappa's patch). Without
+    // the hook they stay plain lists: the upscaler still runs and NR stays off.
+    bool proxied = DlssNr::Backend::SubmissionHooksWanted() && Dx12CommandListType == D3D12_COMMAND_LIST_TYPE_DIRECT;
+    if (proxied)
+    {
+        proxied = DlssNr::AmdBridge::EnsureSubmissionHook(Dx12CommandQueue);
+        if (proxied)
+            DlssNr::Submission::Hooks::SetExpandEnabled(true);
+        LOG_INFO("Dx11wDx12 same-frame NR: submission hook {}",
+                 proxied ? "ready, lists proxied" : "failed, plain lists");
+    }
+
     for (size_t i = 0; i < DX11WDX12_COMMAND_BUFFER_COUNT; i++)
     {
         if (Dx12CommandAllocator[i] == nullptr)
@@ -51,8 +67,12 @@ bool IFeature_Dx11wDx12::CreateD3D12Objects()
         if (Dx12CommandList[i] == nullptr && Dx12CommandAllocator[i] != nullptr)
         {
             // CreateCommandList
-            result = _dx11on12Device->CreateCommandList(0, Dx12CommandListType, Dx12CommandAllocator[i], nullptr,
-                                                        IID_PPV_ARGS(&Dx12CommandList[i]));
+            result = proxied
+                         ? DlssNr::Submission::Hooks::CreateProxiedCommandList(_dx11on12Device, 0, Dx12CommandListType,
+                                                                               Dx12CommandAllocator[i], nullptr,
+                                                                               IID_PPV_ARGS(&Dx12CommandList[i]))
+                         : _dx11on12Device->CreateCommandList(0, Dx12CommandListType, Dx12CommandAllocator[i], nullptr,
+                                                              IID_PPV_ARGS(&Dx12CommandList[i]));
 
             if (result != S_OK)
             {

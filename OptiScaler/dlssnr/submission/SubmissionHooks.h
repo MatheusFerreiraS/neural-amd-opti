@@ -50,6 +50,7 @@ inline PFN_ExecuteCommandLists o_ExecuteCommandLists = nullptr;
 
 inline bool IsArmed() { return g_armed.load(std::memory_order_acquire); }
 inline bool ExpandEnabled() { return g_expandEnabled.load(std::memory_order_acquire); }
+inline void SetExpandEnabled(bool on) { g_expandEnabled.store(on, std::memory_order_release); }
 inline bool ProxyWrapEnabled() { return g_proxyWrap.load(std::memory_order_acquire); }
 inline void SetProxyWrap(bool on) { g_proxyWrap.store(on, std::memory_order_release); }
 inline void SetEarlyExeWrap(bool on) { g_earlyExeWrap.store(on, std::memory_order_release); }

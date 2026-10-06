@@ -573,7 +573,7 @@ class CommandListProxy final : public ID3D12GraphicsCommandList10, public ILogic
     }
     void STDMETHODCALLTYPE SetPredication(ID3D12Resource* b, UINT64 o, D3D12_PREDICATION_OP op) override
     {
-        MarkSplitIneligible("predication");
+        contState.OnPredication(b, o, op);
         if (auto* c = Cur())
             c->SetPredication(b, o, op);
     }
@@ -724,7 +724,7 @@ class CommandListProxy final : public ID3D12GraphicsCommandList10, public ILogic
         const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC* desc, UINT numPost,
         const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC* post) override
     {
-        MarkSplitIneligible("rtas");
+        // Ray tracing leaves no list state behind but its state object, which the continuation restores.
         if (auto* c = CurAs<ID3D12GraphicsCommandList4>())
         {
             c->BuildRaytracingAccelerationStructure(desc, numPost, post);
@@ -735,7 +735,6 @@ class CommandListProxy final : public ID3D12GraphicsCommandList10, public ILogic
         const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC* desc, UINT numSrc,
         const D3D12_GPU_VIRTUAL_ADDRESS* src) override
     {
-        MarkSplitIneligible("rtas");
         if (auto* c = CurAs<ID3D12GraphicsCommandList4>())
         {
             c->EmitRaytracingAccelerationStructurePostbuildInfo(desc, numSrc, src);
@@ -746,7 +745,6 @@ class CommandListProxy final : public ID3D12GraphicsCommandList10, public ILogic
     CopyRaytracingAccelerationStructure(D3D12_GPU_VIRTUAL_ADDRESS dst, D3D12_GPU_VIRTUAL_ADDRESS src,
                                         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE mode) override
     {
-        MarkSplitIneligible("rtas");
         if (auto* c = CurAs<ID3D12GraphicsCommandList4>())
         {
             c->CopyRaytracingAccelerationStructure(dst, src, mode);
@@ -755,7 +753,7 @@ class CommandListProxy final : public ID3D12GraphicsCommandList10, public ILogic
     }
     void STDMETHODCALLTYPE SetPipelineState1(ID3D12StateObject* stateObject) override
     {
-        MarkSplitIneligible("state_object");
+        contState.OnStateObject(stateObject);
         if (auto* c = CurAs<ID3D12GraphicsCommandList4>())
         {
             c->SetPipelineState1(stateObject);
@@ -764,7 +762,6 @@ class CommandListProxy final : public ID3D12GraphicsCommandList10, public ILogic
     }
     void STDMETHODCALLTYPE DispatchRays(const D3D12_DISPATCH_RAYS_DESC* desc) override
     {
-        MarkSplitIneligible("dispatch_rays");
         if (auto* c = CurAs<ID3D12GraphicsCommandList4>())
         {
             c->DispatchRays(desc);
