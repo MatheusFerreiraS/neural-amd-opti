@@ -552,6 +552,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdDynamicScale.set_from_config(readBool("DlssNr", "AmdDynamicScale"));
             AmdDynamicTargetFps.set_from_config(readInt("DlssNr", "AmdDynamicTargetFps"));
             AmdEveryFrame.set_from_config(readBool("DlssNr", "AmdEveryFrame"));
+            AmdFixedSeed.set_from_config(readBool("DlssNr", "AmdFixedSeed"));
             AmdSpinDraw.set_from_config(readInt("DlssNr", "AmdSpinDraw"));
             AmdGraphicsWait.set_from_config(readInt("DlssNr", "AmdGraphicsWait"));
             AmdStallStandDownMs.set_from_config(readInt("DlssNr", "AmdStallStandDownMs"));
@@ -1738,6 +1739,7 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "AmdDynamicTargetFps",
                      GetIntValue(Instance()->AmdDynamicTargetFps.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdEveryFrame", GetBoolValue(Instance()->AmdEveryFrame.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "AmdFixedSeed", GetBoolValue(Instance()->AmdFixedSeed.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdSpinDraw", GetIntValue(Instance()->AmdSpinDraw.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdGraphicsWait", GetIntValue(Instance()->AmdGraphicsWait.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdStallStandDownMs",

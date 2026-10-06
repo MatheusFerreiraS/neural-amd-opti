@@ -134,7 +134,10 @@ class Backend
     Impl* p;
 
   public:
-    Backend(ID3D12Device*, ID3D12CommandQueue*, const std::filesystem::path& directory);
+    // modules: the runtime files this backend loads, <modules>1-3.dll. A loaded runtime cannot be isolated again, so
+    // two backends in one process (the upscaler path and NR without upscaling) each need files of their own.
+    Backend(ID3D12Device*, ID3D12CommandQueue*, const std::filesystem::path& directory,
+            const wchar_t* modules = L"dlssnr_amd_pass");
     // Records pre-SR work. Returns a FP16 input for the upscaler, or nullptr on skip/failure.
     ID3D12Resource* Record(ID3D12GraphicsCommandList*, const Frame&, const Settings&);
     // Bind the render queue and enqueue a migration dependency BEFORE Execute.

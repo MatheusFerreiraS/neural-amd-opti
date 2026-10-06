@@ -9,7 +9,7 @@
 // counts what the compositor shows).
 //
 //   dx11_final_image_smoke.exe fg|nr|keys|focus|fgoff|resize|recreate|menu|pace|artefacts|bars
-//   [seconds per phase] [log level] [Section/Key=Value ...] [sync=1] [bgra=1] [tearing=1] [full=1] [blt=1]
+//   [seconds per phase] [log level] [Section/Key=Value ...] [sync=1] [bgra=1] [tearing=1] [full=1] [blt=1] [srgb=1]
 #define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
@@ -45,6 +45,7 @@ static bool bgra = false;     // bgra=1: a B8G8R8A8 back buffer, as the 32-bit D
 static bool tearing = false; // tearing=1: a swapchain that allows tearing, presented with it at interval 0, as the host
 static bool full = false;    // full=1: a borderless window over the whole primary screen, as a game in fullscreen
 static bool blt = false;     // blt=1: one back buffer and the bit-block transfer model, as older D3D11 games
+static bool srgb = false;    // srgb=1: an R8G8B8A8_UNORM_SRGB back buffer, resized with that format again, as Unity does
 
 static void check(HRESULT hr, const char* what)
 {
@@ -552,7 +553,9 @@ struct Game
         DXGI_SWAP_CHAIN_DESC desc {};
         desc.BufferDesc.Width = width;
         desc.BufferDesc.Height = height;
-        desc.BufferDesc.Format = bgra ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.BufferDesc.Format = bgra ? DXGI_FORMAT_B8G8R8A8_UNORM
+                                 : srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+                                        : DXGI_FORMAT_R8G8B8A8_UNORM;
         desc.SampleDesc.Count = 1;
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         desc.BufferCount = blt ? 1 : 2;
@@ -616,7 +619,7 @@ struct Game
         target.Reset();
         depthView.Reset();
         context->Flush();
-        check(swap->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN,
+        check(swap->ResizeBuffers(0, width, height, srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_UNKNOWN,
                                   tearing && !blt ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0),
               "ResizeBuffers");
         Views();
@@ -866,6 +869,8 @@ int wmain(int argc, wchar_t** argv)
                 full = _wtoi(argv[i] + 5) != 0;
             else if (wcsncmp(argv[i], L"blt=", 4) == 0)
                 blt = _wtoi(argv[i] + 4) != 0;
+            else if (wcsncmp(argv[i], L"srgb=", 5) == 0)
+                srgb = _wtoi(argv[i] + 5) != 0;
         const bool fg = mode == L"fg" || mode == L"focus" || mode == L"fgoff" || mode == L"resize" || mode == L"menu" ||
                         mode == L"pace" || mode == L"recreate" || mode == L"artefacts" || mode == L"bars";
         fs::remove(dir / "OptiScaler.log");

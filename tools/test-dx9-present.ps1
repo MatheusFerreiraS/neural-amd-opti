@@ -38,7 +38,7 @@ $fgScript = "150:mark=fg-on,200:motion=fg-on,220:menu,232:shot=fg-menu-open,235:
             "900:motion=after-restore"
 $nrLog = @("OptiScaler working as d3d9.dll", "D3D9 device hooks installed", "D3D9 bridge: D3D12 device",
            "D3D9 menu ready", "D3D9 bridge frame \d+: menu open", "D3D9 bridge frame \d+: menu closed",
-           "D3D9 bridge frame \d+: D3D9 present, NR true", "Final-image NR \(FidelityFX Optical Flow",
+           "D3D9 bridge frame \d+: D3D9 present, NR true", "NR without upscaling \(FidelityFX Optical Flow",
            "Reset.*: 0, 1600x900", "D3D9 bridge: 1600x900", "D3D9 bridge frame 4\d\d: menu open")
 $fgLog = @("OptiScaler working as d3d9.dll", "D3D9 device hooks installed", "D3D9 bridge: XeFG presenter",
            "D3D9 bridge frame \d+: menu open", "D3D9 bridge frame \d+: menu closed",

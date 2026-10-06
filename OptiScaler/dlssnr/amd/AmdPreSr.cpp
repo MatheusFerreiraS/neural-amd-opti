@@ -211,6 +211,7 @@ struct Backend::Impl
     std::array<HMODULE, 3> runtime {};
     std::array<UINT, 3> observedTimeouts {};
     std::filesystem::path directory;
+    std::wstring modules = L"dlssnr_amd_pass";
     std::string status = "AMD pre-SR: not initialized";
     std::atomic<bool> failed { false };
     std::atomic<bool> resetRequested { true };
@@ -766,10 +767,13 @@ struct Backend::Impl
         if (runtime[i])
             return;
         InitHip();
-        auto path = directory / (L"dlssnr_amd_pass" + std::to_wstring(i + 1) + L".dll");
+        auto path = directory / (modules + std::to_wstring(i + 1) + L".dll");
         // One module per pass, so one file per pass: passes 2 and 3 are copies of pass 1, made here when missing or
         // of another runtime, so a runtime is installed by replacing pass 1 alone. Pass 1 loaded first and set L.
-        if (i > 0 && IdentifyRuntime(path) != L)
+        // A backend with modules of its own copies its first one from dlssnr_amd_pass1.dll too.
+        const bool own = modules != L"dlssnr_amd_pass";
+        const AmdLayout* source = own && i == 0 ? IdentifyRuntime(directory / L"dlssnr_amd_pass1.dll") : nullptr;
+        if ((i > 0 && IdentifyRuntime(path) != L) || (own && i == 0 && IdentifyRuntime(path) != source))
         {
             std::error_code ec;
             std::filesystem::copy_file(directory / L"dlssnr_amd_pass1.dll", path,
@@ -777,7 +781,7 @@ struct Backend::Impl
             if (ec)
                 throw std::runtime_error("Could not copy dlssnr_amd_pass1.dll to pass " + std::to_string(i + 1) + ": " +
                                          ec.message());
-            Log("AMD runtime: pass " + std::to_string(i + 1) + " copied from pass 1");
+            Log("AMD runtime: " + path.filename().string() + " copied from dlssnr_amd_pass1.dll");
         }
         auto identified = IdentifyRuntime(path);
         if (!identified)
@@ -928,11 +932,13 @@ struct Backend::Impl
         Check(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap)), "Crop heap");
     }
 };
-Backend::Backend(ID3D12Device* d, ID3D12CommandQueue* q, const std::filesystem::path& dir) : p(new Impl)
+Backend::Backend(ID3D12Device* d, ID3D12CommandQueue* q, const std::filesystem::path& dir, const wchar_t* modules)
+    : p(new Impl)
 {
     p->device = d;
     p->queue = q;
     p->directory = dir;
+    p->modules = modules;
     // The tail of this line identifies the build. Four earlier rounds were
     // analysed without it and the logs could not be told apart.
 #ifdef AMD_SINGLESLOT

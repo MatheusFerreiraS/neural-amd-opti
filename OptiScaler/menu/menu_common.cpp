@@ -5242,7 +5242,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     inputOptions = {
         { FGInput::NoFG, "None" },
         { FGInput::Upscaler, "OptiFG (Upscaler)",
-            "Requires an upscaler, or final-image NR with XeFG\n\nCan be used with any FG Output, but might be imperfect with some\nTo prevent UI glitching, HUDfix required" },
+            "Requires an upscaler, or NR without upscaling with XeFG\n\nCan be used with any FG Output, but might be imperfect with some\nTo prevent UI glitching, HUDfix required" },
         { FGInput::DLSSG, "DLSSG via Streamline",
             "Can be used with any FG Output\n\nRequires enabling DLSS-FG in game settings\nSupports HUDless out of the box\n\nLimited to games that use Streamline" },
         { FGInput::NvngxFG, "DLSSG via Nvngx",
@@ -5271,10 +5271,10 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
                                          DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
     inputOptions[optiFgIndex].set_disabled(
         childWindowFgApi && !childWindowFinalImageFg,
-        "XeFG on Vulkan and OpenGL requires final-image NR on the danielblnc runtime");
+        "XeFG on Vulkan and OpenGL requires NR without upscaling on the danielblnc runtime");
     inputOptions[optiFgIndex].set_disabled(config->DlssNrPresent.value_or_default() &&
                                                config->FGOutput.value_or_default() != FGOutput::XeFG,
-                                           "Final-image NR has no upscaler motion/depth inputs for OptiFG");
+                                           "NR without upscaling has no upscaler motion/depth inputs for OptiFG");
 
     if (!inputOptions[optiFgIndex].disabled && state.activeFgOutput == FGOutput::FSRFG && !FfxApiProxy::IsFGReady() &&
         !ffxInitTried)
@@ -5359,7 +5359,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     auto constexpr xefgOutputIndex = (uint32_t) FGOutput::XeFG;
     outputOptions[xefgOutputIndex].set_disabled(
         childWindowFgApi && !childWindowFinalImageFg,
-        "XeFG requires final-image NR on the danielblnc runtime on Vulkan and OpenGL");
+        "XeFG requires NR without upscaling on the danielblnc runtime on Vulkan and OpenGL");
     // Unsupported FG input selected
     const auto currentInputIndex = (uint32_t) state.activeFgInput;
     if (config->FGInput != FGInput::NoFG && inputOptions.size() > currentInputIndex &&
@@ -6199,9 +6199,11 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             config->FGXeFGDebugView.reset();
         }
 
-        const bool restartNeeded = config->FGXeFGDepthInverted.value_or_default() != fgOutput->IsInvertedDepth() ||
-                                   config->FGXeFGJitteredMV.value_or_default() != fgOutput->IsJitteredMVs() ||
-                                   config->FGXeFGHighResMV.value_or_default() == fgOutput->IsLowResMV();
+        // The final image hands XeFG its own optical-flow motion and depth, whatever these keys say.
+        const bool restartNeeded =
+            !finalImageFlow && (config->FGXeFGDepthInverted.value_or_default() != fgOutput->IsInvertedDepth() ||
+                                config->FGXeFGJitteredMV.value_or_default() != fgOutput->IsJitteredMVs() ||
+                                config->FGXeFGHighResMV.value_or_default() == fgOutput->IsLowResMV());
 
         bool cantActivate = false;
         if (restartNeeded)

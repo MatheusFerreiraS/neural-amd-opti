@@ -284,6 +284,7 @@ AmdStyle=0
 AmdToneLift=0
 AmdUseGameExposure=true
 AmdEveryFrame=false
+AmdFixedSeed=true
 AmdSlots=3
 AmdGraphicsWait=1
 AmdGraphicsUnsafe=0

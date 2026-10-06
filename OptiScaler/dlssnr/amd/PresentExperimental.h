@@ -1,4 +1,6 @@
 #pragma once
+#include "AmdBridge.h"
+#include <gpu_time/GpuTime_Dx12.h>
 #include "AmdPreSr.h"
 #include "ResidualStabilizer.h"
 #include "StallWatch.h"
@@ -38,14 +40,14 @@ inline bool IsTarget()
 {
     return Config::Instance()->DlssNrPresent.value_or_default();
 }
-inline std::string status = "Final-image NR: waiting for a D3D9, D3D11, D3D12, Vulkan or OpenGL frame";
+inline std::string status = "NR without upscaling: waiting for a D3D9, D3D11, D3D12, Vulkan or OpenGL frame";
 inline std::mutex mutex;
 // The runtime loads once per process and stays on the device it was built on.
 inline bool runtimeLoaded = false;
 inline void Check(HRESULT h)
 {
     if (FAILED(h))
-        throw std::runtime_error("Final-image NR D3D12 failure: " + std::to_string((UINT) h));
+        throw std::runtime_error("NR without upscaling: D3D12 failure " + std::to_string((UINT) h));
 }
 inline void Transition(ID3D12GraphicsCommandList* c, ID3D12Resource* r, D3D12_RESOURCE_STATES a,
                        D3D12_RESOURCE_STATES b)
@@ -90,6 +92,8 @@ struct Context
     UINT flowFrames = 0;
     AmdPreSr::Backend* backend = nullptr;
     std::unique_ptr<AmdPreSr::ResidualStabilizer> stabilizer;
+    // GPU time of the model on this queue, as the upscaler path measures it: the record and the composed result.
+    std::unique_ptr<GpuTime_Dx12> neuralTimer;
     bool stableLast = false;
     bool lastFlowValid = false, lastReset = false, lastNeural = true;
     ULONGLONG lastModifiedTick = 0;
@@ -122,8 +126,8 @@ struct Context
         if (!done)
         {
             stopped = true;
-            status = removed ? "Final-image NR: the D3D12 device was removed; NR is off"
-                             : "Final-image NR: GPU timeout; backbuffer retained until process exit";
+            status = removed ? "NR without upscaling: the D3D12 device was removed; NR is off"
+                             : "NR without upscaling: GPU timeout; backbuffer retained until process exit";
         }
     }
     void BeforeResize()
@@ -424,7 +428,7 @@ struct Context
         if (const UINT64 held = stall.Tripped())
         {
             stopped = true;
-            status = "Final-image NR: off until the game restarts. The GPU held one NR job for " +
+            status = "NR without upscaling: off until the game restarts. The GPU held one NR job for " +
                      std::to_string(held) + " ms; AmdStallStandDownMs=0 turns this off.";
             LOG_WARN("{}", status);
             return false;
@@ -433,7 +437,7 @@ struct Context
         if (!WaitForFrame())
         {
             stopped = true;
-            status = "Final-image NR: GPU timeout; stopped";
+            status = "NR without upscaling: GPU timeout; stopped";
             return false;
         }
         heldBack.Reset();
@@ -450,10 +454,10 @@ struct Context
         if (failed && !failedReported)
         {
             failedReported = true;
-            LOG_WARN("Final-image NR: runtime failed, NR off until the game restarts: {}", backend->Status());
+            LOG_WARN("NR without upscaling: runtime failed, NR off until the game restarts: {}", backend->Status());
         }
         if (busy && (++busyFrames <= 3 || busyFrames % 300 == 0))
-            LOG_INFO("Final-image NR: runtime still busy, frame left without NR ({})", busyFrames);
+            LOG_INFO("NR without upscaling: runtime still busy, frame left without NR ({})", busyFrames);
         if ((failed || busy) && !guides)
         {
             stableLast = false;
@@ -466,16 +470,16 @@ struct Context
             if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM && desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM)
             {
                 if (!formatReported)
-                    LOG_WARN("Final-image NR: backbuffer format {} is not RGBA8 or BGRA8; no NR and no XeFG guides",
+                    LOG_WARN("NR without upscaling: backbuffer format {} is not RGBA8 or BGRA8; no NR and no XeFG guides",
                              (UINT) desc.Format);
                 formatReported = true;
-                status = "Final-image NR: unsupported backbuffer format";
+                status = "NR without upscaling: unsupported backbuffer format";
                 return false;
             }
             if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM &&
                 !(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET))
             {
-                status = "Final-image NR: BGRA backbuffer cannot be a render target";
+                status = "NR without upscaling: BGRA backbuffer cannot be a render target";
                 return false;
             }
             width = (UINT) desc.Width;
@@ -491,12 +495,13 @@ struct Context
         }
         if (desc.Width != width || desc.Height != height || desc.Format != format)
         {
-            status = "Final-image NR: output size changed; waiting for swapchain reset";
+            status = "NR without upscaling: output size changed; waiting for swapchain reset";
             return false;
         }
         if (neural && !backend && !runtimeLoaded)
         {
-            backend = new AmdPreSr::Backend(device.Get(), queue.Get(), directory);
+            // Its own runtime files: the upscaler path may load dlssnr_amd_pass1-3.dll in the same session.
+            backend = new AmdPreSr::Backend(device.Get(), queue.Get(), directory, L"dlssnr_amd_present");
             runtimeLoaded = true;
         }
         const bool record = neural && backend && !failed && !busy;
@@ -566,6 +571,10 @@ struct Context
         // No RenoDX composition here, so Effect strength stays the runtime's own strength.
         settings.strength = std::clamp(Config::Instance()->AmdEffectStrength.value_or_default(), 0.f, 2.f);
         const auto before = record ? backend->RecordedFrames() : 0;
+        if (record && !neuralTimer)
+            neuralTimer = std::make_unique<GpuTime_Dx12>(device.Get());
+        if (record)
+            neuralTimer->Start(cmd.Get());
         auto result = record ? backend->Record(cmd.Get(), f, settings) : nullptr;
         const bool modified = result && backend->RecordedFrames() != before;
         if (modified)
@@ -598,6 +607,13 @@ struct Context
         Transition(cmd.Get(), depth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         if (modified)
             Compose(back, backState, result);
+        if (record)
+        {
+            neuralTimer->End(cmd.Get());
+            // A refused record puts nothing between the timestamps: that frame ran no model.
+            if (auto ms = neuralTimer->ReadGpuTime(queue.Get()); ms.has_value() && ms.value() > .1)
+                DlssNr::AmdBridge::ReportNeuralMs(static_cast<float>(ms.value()));
+        }
         Check(cmd->Close());
         ID3D12CommandList* lists[] = { cmd.Get() };
         if (backend)
@@ -612,7 +628,7 @@ struct Context
         if (!pipelined)
             ReleaseBackBuffer();
         if (!stopped)
-            status = std::string("Final-image NR (") +
+            status = std::string("NR without upscaling (") +
                      (flowValid    ? "FidelityFX Optical Flow"
                       : flowFailed ? "synthetic guides; Optical Flow unavailable"
                                    : "Optical Flow warming up") +
@@ -745,7 +761,7 @@ inline bool Follow(ID3D12Device* device, ID3D12CommandQueue* queue)
             if (c->device.Get() == device)
                 context = c;
         if (++moves <= 3 || moves % 300 == 0)
-            LOG_INFO("Final-image NR: the game presents from another D3D12 device ({})", moves);
+            LOG_INFO("NR without upscaling: the game presents from another D3D12 device ({})", moves);
     }
     if (!context)
         context = contexts.emplace_back(new Context(device, queue));
@@ -754,12 +770,12 @@ inline bool Follow(ID3D12Device* device, ID3D12CommandQueue* queue)
     if (!context->WaitForFrame())
     {
         context->stopped = true;
-        status = "Final-image NR: GPU timeout; stopped";
+        status = "NR without upscaling: GPU timeout; stopped";
         return false;
     }
     context->queue = queue;
     if (++moves <= 3 || moves % 300 == 0)
-        LOG_INFO("Final-image NR: the game presents from another D3D12 queue ({})", moves);
+        LOG_INFO("NR without upscaling: the game presents from another D3D12 queue ({})", moves);
     return true;
 }
 struct Guides
@@ -808,7 +824,7 @@ inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::fil
         // Without the runtime on this device only frame generation's guides are left to make.
         if (!guides && !context->backend && runtimeLoaded)
         {
-            status = "Final-image NR: NR runs on the game's other D3D12 device; restart the game for NR";
+            status = "NR without upscaling: NR runs on the game's other D3D12 device; restart the game for NR";
             return false;
         }
         ComPtr<ID3D12Resource> b;
@@ -848,7 +864,7 @@ inline bool RenderResource(ID3D12Resource* resource, ID3D12Device* device, ID3D1
             context = new Context(device, queue);
         if (context->device.Get() != device || context->queue.Get() != queue)
         {
-            status = "Final-image NR: Vulkan D3D12 device changed; restart required";
+            status = "NR without upscaling: Vulkan D3D12 device changed; restart required";
             return false;
         }
         context->pipelined = pipelined;
@@ -856,7 +872,7 @@ inline bool RenderResource(ID3D12Resource* resource, ID3D12Device* device, ID3D1
         if (!pipelined && !context->WaitForFrame())
         {
             context->stopped = true;
-            status = "Final-image NR: GPU timeout; stopped";
+            status = "NR without upscaling: GPU timeout; stopped";
         }
         if (guides && !context->stopped && context->lastFlowValid)
         {
@@ -971,7 +987,7 @@ struct Bridge11
             FAILED(fence11->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &shared)) ||
             FAILED(work->OpenSharedHandle(shared, IID_PPV_ARGS(&fence12))))
         {
-            LOG_WARN("Final-image NR: no shared D3D11 fence, waiting on the CPU");
+            LOG_WARN("NR without upscaling: no shared D3D11 fence, waiting on the CPU");
             fence11.Reset();
             fence12.Reset();
         }
@@ -1105,7 +1121,7 @@ struct Bridge11
             Start(device);
         if (game.Get() != device)
         {
-            status = "Final-image NR: D3D11 device changed; restart required";
+            status = "NR without upscaling: D3D11 device changed; restart required";
             stopped = true;
             return;
         }
@@ -1114,7 +1130,7 @@ struct Bridge11
         if (desc.SampleDesc.Count != 1 ||
             (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM && desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM))
         {
-            status = "Final-image NR: D3D11 backbuffer format or MSAA unsupported";
+            status = "NR without upscaling: D3D11 backbuffer format or MSAA unsupported";
             return;
         }
         EnsureShared(desc.Width, desc.Height, desc.Format);
@@ -1125,11 +1141,11 @@ struct Bridge11
         if (!fence11)
         {
             if (!Wait11())
-                throw std::runtime_error("Final-image NR: D3D11 input copy timed out");
+                throw std::runtime_error("NR without upscaling: D3D11 input copy timed out");
             const bool modified = engine->Frame(shared12.Get(), D3D12_RESOURCE_STATE_COMMON, directory, settings,
                                                 realDepth ? sharedDepth12.Get() : nullptr);
             if (!engine->WaitForFrame())
-                throw std::runtime_error("Final-image NR: GPU timeout; stopped");
+                throw std::runtime_error("NR without upscaling: GPU timeout; stopped");
             if (modified)
                 immediate->CopyResource(back, shared11.Get());
             immediate->Flush();

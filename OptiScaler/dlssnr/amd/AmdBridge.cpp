@@ -862,6 +862,7 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     if (cfg.ExposureResourceBarrier.has_value())
         f.exposureState = static_cast<D3D12_RESOURCE_STATES>(cfg.ExposureResourceBarrier.value());
     auto s = SettingsFromConfig(cfg, sessionScale);
+    s.fixedSeed = cfg.AmdFixedSeed.value_or_default();
     // The upscaler path alone takes async: the present routes (PresentWithoutUpscaler) have not been run with it.
     s.async = AsyncSession();
     // Async chains one pass: each would hand the next a frame-old answer.
@@ -1033,6 +1034,23 @@ void TraceContextRelease(unsigned int handle, bool after)
 }
 float NeuralMs() { return neuralMsNow.load(); }
 float NeuralMsLast() { return GetTickCount64() - neuralAt.load() < 1000 ? neuralMsLast.load() : 0.f; }
+void ReportNeuralMs(float ms)
+{
+    const float shown = neuralMsNow.load();
+    neuralMsNow = shown > 0 ? shown * .9f + ms * .1f : ms;
+    neuralMsLast = ms;
+    neuralAt = GetTickCount64();
+    static std::atomic<bool> logged { false };
+    if (!logged.exchange(true))
+        LOG_INFO("Final-image NR: first GPU time of the model, {:.2f} ms", ms);
+    // The final image runs danielblnc only; no upscaler backend named it.
+    std::lock_guard guard(runtimeLabelMutex);
+    if (runtimeLabel.empty())
+    {
+        const char* build = RuntimeName();
+        runtimeLabel = build ? std::string("danielblnc ") + build : std::string("danielblnc");
+    }
+}
 std::string NeuralRuntime()
 {
     std::lock_guard guard(runtimeLabelMutex);

@@ -13,6 +13,7 @@ rem in the frames shown with FG on, and NR as strong in them as without FG); art
 rem in all) reads every frame XeFG presents before the display takes it, in a window over the whole screen: no rows of
 rem black, and on a still scene no present that stands out from the one before. It runs twice, once like the 32-bit
 rem D3D9 host (BGRA back buffer, tearing) and once like an older D3D11 game (one back buffer, bit-block transfer).
+rem all also runs resize on an sRGB back buffer resized with its sRGB format, as Unity games do.
 setlocal
 cd /d "%~dp0.."
 if "%~2"=="" goto usage
@@ -40,6 +41,7 @@ if /i not "%MODE%"=="fg" call :Run nr %4
 if /i not "%MODE%"=="nr" call :Run fg %4
 if /i "%MODE%"=="all" call :Run fgoff %4
 if /i "%MODE%"=="all" call :Run resize 2
+if /i "%MODE%"=="all" call :RunSrgb
 if /i "%MODE%"=="all" call :Run recreate 2
 if /i "%MODE%"=="all" call :Run pace %4
 :artefacts
@@ -71,6 +73,15 @@ echo exit code %CODE%
 if not "%CODE%"=="0" set "RESULT=1"
 copy /y "%OUT%\OptiScaler.log" "%OUT%\%1-OptiScaler.log" >nul
 copy /y "%OUT%\amd_presr.log" "%OUT%\%1-amd_presr.log" >nul
+exit /b 0
+
+:RunSrgb
+echo === resize srgb
+"%OUT%\dx11_final_image_smoke.exe" resize 2 2 srgb=1 blt=1
+set "CODE=%errorlevel%"
+echo exit code %CODE%
+if not "%CODE%"=="0" set "RESULT=1"
+copy /y "%OUT%\OptiScaler.log" "%OUT%\resize-srgb-OptiScaler.log" >nul
 exit /b 0
 
 :usage

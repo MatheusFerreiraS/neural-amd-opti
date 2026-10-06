@@ -2074,16 +2074,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             Config::Instance()->FGInput.set_volatile_value(FGInput::Upscaler);
             LOG_INFO("Final-image NR: using optical-flow guides as XeFG input");
         }
+        // XeFG keeps the INI's motion vector and depth setup, the one a game's upscaler needs: the final image's
+        // optical flow is at output size, which is its render size (as under native AA), and its synthetic depth is a
+        // constant 0.5 either way round. Forcing high-res MVs here locked XeFG out once the game turned an upscaler on.
         if (Config::Instance()->DlssNrPresent.value_or_default() &&
             Config::Instance()->FGInput.value_or_default() == FGInput::Upscaler &&
-            Config::Instance()->FGOutput.value_or_default() == FGOutput::XeFG)
-        {
-            // Optical flow is generated at output resolution; synthetic depth is not inverted.
-            Config::Instance()->FGXeFGHighResMV.set_volatile_value(true);
-            Config::Instance()->FGXeFGDepthInverted.set_volatile_value(false);
-        }
-        else if (Config::Instance()->DlssNrPresent.value_or_default() &&
-                 Config::Instance()->FGInput.value_or_default() == FGInput::Upscaler)
+            Config::Instance()->FGOutput.value_or_default() != FGOutput::XeFG)
         {
             // Final-image NR has no upscaler evaluation to supply OptiFG's motion/depth inputs.
             Config::Instance()->FGInput.set_volatile_value(FGInput::NoFG);

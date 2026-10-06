@@ -3,7 +3,10 @@
 #include <nvsdk_ngx.h>
 #include <string>
 class Config;
-namespace AmdPreSr { struct Settings; }
+namespace AmdPreSr
+{
+struct Settings;
+}
 namespace DlssNr::AmdBridge
 {
 AmdPreSr::Settings SettingsFromConfig(const Config& cfg, float modelScale);
@@ -36,6 +39,8 @@ float NeuralMs();
 // The last frame's reading, unsmoothed; 0 when no model has run in the last second (off, refused,
 // or another path). What the FPS overlay draws.
 float NeuralMsLast();
+// A reading the final image took itself (PresentExperimental.h), into the same menu line, overlay line and graph.
+void ReportNeuralMs(float ms);
 // "danielblnc 0.5.1", "mochizuki" or "lmxxf": the runtime the backend was built for; empty before.
 std::string NeuralRuntime();
 // Dynamic NR resolution: the scale in use and the rendered frame rate, or empty while it is off.

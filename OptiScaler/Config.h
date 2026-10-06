@@ -357,6 +357,8 @@ class Config
     // "Disable temporal stabilization"; the key keeps its original name so
     // existing INIs still work. Off by default: history on, image steadied.
     CustomOptional<bool> AmdEveryFrame { false };
+    // danielblnc 0.4.1 to 0.6.0: the runtime's noise seed set back every frame (NR without upscaling always does).
+    CustomOptional<bool> AmdFixedSeed { true };
     // Legacy INI key. SpinDraw is driven only by AmdGraphicsWait.
     CustomOptional<int> AmdSpinDraw { 0 };
     // New wait (1) vs original wait (0). Default 1 since 1.8.4; still being tested.

@@ -114,7 +114,7 @@ Write-Host 'case stall'
 # At 2160p the first jobs run for tens of milliseconds, so a 1 ms limit is met in the first second.
 $d = Run-Case 'stall' "PresentWithoutUpscaler=true`r`nNrBackend=daniel`r`nAmdStallStandDownMs=1" $true $true '3840 2160'
 $log = Text (Join-Path $d 'OptiScaler.log')
-Expect ($log -cmatch 'Final-image NR: off until the game restarts') 'stall: a 1 ms limit stands the final image down'
+Expect ($log -cmatch 'NR without upscaling: off until the game restarts') 'stall: a 1 ms limit stands the final image down'
 
 if ($env:VULKAN_SDK) {
     $vk = Join-Path $OutDir 'vulkan_gate_smoke.exe'
@@ -128,7 +128,7 @@ if ($env:VULKAN_SDK) {
         Write-Host "case vk-off$suffix"
         $d = Run-Case "vk-off$suffix" "PresentWithoutUpscaler=false`r`nNrBackend=daniel" $true $false '' $false $vk 'OptiScaler.dll' $menu
         $log = Text (Join-Path $d 'OptiScaler.log')
-        Expect ($log -notmatch 'final-image bridge|final-image NR') "vk-off${suffix}: no final-image line in OptiScaler.log"
+        Expect ($log -notmatch 'final-image bridge|final-image NR|NR without upscaling') "vk-off${suffix}: no final-image line in OptiScaler.log"
         if ($menu) { Expect ($log -cnotmatch 'Hooking VkDevice') 'vk-off-nomenu: no device hook without the menu' }
         Write-Host "case vk-on$suffix"
         $d = Run-Case "vk-on$suffix" "PresentWithoutUpscaler=true`r`nNrBackend=daniel" $true $true '' $false $vk 'OptiScaler.dll' $menu

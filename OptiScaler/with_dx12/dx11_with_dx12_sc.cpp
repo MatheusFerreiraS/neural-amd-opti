@@ -26,6 +26,17 @@ static int scCount = 0;
 
 namespace
 {
+// A DX12 flip swapchain takes no sRGB format. The swapchain was created with the UNORM twin (DxgiFactory_Hooks), and a
+// resize that passes the game's sRGB format again (Unity does) fails with E_INVALIDARG and leaves the old size.
+DXGI_FORMAT FlipFormat(DXGI_FORMAT format)
+{
+    if (format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    if (format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)
+        return DXGI_FORMAT_B8G8R8A8_UNORM;
+    return format;
+}
+
 template <typename T> void SafeRelease(T*& value)
 {
     if (value != nullptr)
@@ -533,6 +544,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
 {
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers: count {}, size {}x{}, format {}, flags {:X}", BufferCount, Width, Height,
               (UINT) NewFormat, SwapChainFlags);
+    NewFormat = FlipFormat(NewFormat);
 
     if (!_WaitForCopyQueueIdle())
         LOG_WARN("continuing ResizeBuffers after copy fence wait failure");
@@ -756,6 +768,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
 {
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers1: count {}, size {}x{}, format {}, flags {:X}", BufferCount, Width, Height,
               (UINT) Format, SwapChainFlags);
+    Format = FlipFormat(Format);
 
     if (!_WaitForCopyQueueIdle())
         LOG_WARN("continuing ResizeBuffers1 after copy fence wait failure");

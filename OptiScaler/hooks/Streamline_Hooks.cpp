@@ -2032,7 +2032,10 @@ sl::Result StreamlineHooks::hkslSetConstants(const sl::Constants& values, const 
         State::Instance().slLastConstants = values;
         State::Instance().slLastConstantsFrame = static_cast<uint32_t>(frame);
         State::Instance().slLastConstantsViewport = static_cast<uint32_t>(viewport);
-        State::Instance().slFGInputs.setConstants(values, (uint32_t) frame);
+        // As with its tags and markers: another FG input (the upscaler's, the final image's) starts its own frames,
+        // and a second start every game frame left every other frame undispatched (Red Dead Redemption).
+        if (State::Instance().activeFgInput == FGInput::DLSSG)
+            State::Instance().slFGInputs.setConstants(values, (uint32_t) frame);
     }
 
     return o_slSetConstants(values, frame, viewport);

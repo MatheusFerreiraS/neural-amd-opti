@@ -369,7 +369,10 @@ struct FgPresenter
                                   ? std::chrono::duration<float, std::milli>(now - previous).count()
                                   : 16.7f;
         previous = now;
-        constants.frameRenderTime = std::clamp(elapsed, 1.0f, 100.0f);
+        // The present to present time holds XeFG's own spacing, so any period it was once pushed to (a hitch, a
+        // load) holds itself up: the burst is spread over it and the next one measures it again. Asking for 90%
+        // lets the period come back down to what the game needs; a game slower than that keeps it at its own pace.
+        constants.frameRenderTime = std::clamp(elapsed * 0.9f, 1.0f, 100.0f);
         XeFGPacing::NoteFedFrameTime(constants.frameRenderTime);
         constants.resetHistory = resetOnResume || guides.reset || elapsed > 250.0f;
         if (XeFGProxy::TagFrameConstants()(context, id, &constants) != XEFG_SWAPCHAIN_RESULT_SUCCESS ||

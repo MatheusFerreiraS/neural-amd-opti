@@ -1618,7 +1618,7 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
         // An XeFG swapchain is kept across a recreation (PreserveSwapChain) with its first queue, unless the
         // game's quirk says otherwise, so only a plain first swapchain makes NR move.
         if (plainFirst || !fg)
-            expect(Count(log, "Final-image NR: the game presents from another D3D12 queue") >= 1,
+            expect(Count(log, "NR without upscaling: the game presents from another D3D12 queue") >= 1,
                    "NR follows the game to its new queue");
         expect(Count(result, "fg-page switched=") == 1 &&
                    std::atof(result.c_str() + result.find("fg-page switched=") + 17) > 0.1,
@@ -1628,7 +1628,7 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
             // WARP has no runtime: NR waits for the hardware device, which comes back as the same device.
             withoutNr.push_back("warp");
             withNr.push_back("hardware");
-            expect(Count(log, "Final-image NR: the game presents from another D3D12 device") >= 2,
+            expect(Count(log, "NR without upscaling: the game presents from another D3D12 device") >= 2,
                    "NR follows the game to WARP and back");
         }
     }
@@ -1707,7 +1707,7 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
     // Final-image NR takes 8-bit frames only, and XeFG's guides come from the same frame.
     if (options.r10)
     {
-        expect(Count(log, "Final-image NR: backbuffer format 24 is not RGBA8 or BGRA8") == 1,
+        expect(Count(log, "NR without upscaling: backbuffer format 24 is not RGBA8 or BGRA8") == 1,
                "OptiScaler.log names the R10G10B10A2 backbuffer once");
         for (auto name : withNr)
             if (std::string(name) != "menu-open" && std::string(name) != "menu-resized")
@@ -1722,7 +1722,7 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
     {
         expect(badRuntime.swapped && Count(runtimeLog, "Private AMD runtime hash mismatch") >= 1,
                "the runtime fails to load");
-        expect(Count(log, "Final-image NR: runtime failed") == 1, "OptiScaler.log names the failed runtime once");
+        expect(Count(log, "NR without upscaling: runtime failed") == 1, "OptiScaler.log names the failed runtime once");
         expect(Count(log, "runtime still busy") == 0, "a failed runtime is not reported as busy");
         for (auto name : withNr)
             if (std::string(name) != "menu-open" && std::string(name) != "menu-resized")

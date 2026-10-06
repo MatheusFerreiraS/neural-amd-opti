@@ -5,6 +5,7 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
+#include <dbghelp.h>
 
 #include <algorithm>
 #include <atomic>
@@ -1276,6 +1277,117 @@ void ScreenRun()
     gpuClears = 0;
 }
 
+// "screen soak <minutes> <menu 0|1> <seconds per Encoding change>": the game of the last ScreenRun steps (60 fps cap,
+// 8 ms of CPU and about 4 ms of GPU work a frame, model scale and MFG from the INI) left running with NR and XeFG for a
+// while, the menu open or not, and Encoding stepped through 1, 2, 3 by OptiScaler's PDB (OptiScaler.pdb beside the
+// DLL) as a player clicking the combo does. It prints the runtime's SPIKE lines as they come and stops early when the
+// stall stand-down turns NR off. Exit 0 when it ran to the end, 2 when NR stood down, 1 on a setup failure.
+int Soak(int minutes, bool menu, int cycleSeconds)
+{
+    if (!WaitLog("first frame processed using shared D3D12 image", 0, 60000) || !WaitPresented(0, 60000))
+    {
+        Print("FAIL soak: NR or XeFG did not start");
+        return 1;
+    }
+    int* encoding = nullptr;
+    if (cycleSeconds > 0)
+    {
+        const HANDLE process = GetCurrentProcess();
+        SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+        wchar_t path[MAX_PATH];
+        GetModuleFileNameW(GetModuleHandleW(L"OptiScaler.dll"), path, MAX_PATH);
+        const DWORD64 base = SymInitializeW(process, nullptr, FALSE)
+                                 ? SymLoadModuleExW(process, nullptr, path, nullptr,
+                                                    (DWORD64) GetModuleHandleW(L"OptiScaler.dll"), 0, nullptr, 0)
+                                 : 0;
+        std::vector<BYTE> storage(sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(wchar_t));
+        auto symbol = (SYMBOL_INFOW*) storage.data();
+        symbol->SizeOfStruct = sizeof(SYMBOL_INFOW);
+        symbol->MaxNameLen = MAX_SYM_NAME;
+        SYMBOL_INFOW type {};
+        type.SizeOfStruct = sizeof(type);
+        if (base && SymFromNameW(process, L"Config::_config", symbol) &&
+            SymGetTypeFromNameW(process, base, L"Config", &type))
+        {
+            BYTE* config = *(BYTE**) symbol->Address;
+            DWORD count = 0;
+            SymGetTypeInfo(process, base, type.TypeIndex, TI_GET_CHILDRENCOUNT, &count);
+            std::vector<BYTE> list(sizeof(TI_FINDCHILDREN_PARAMS) + count * sizeof(ULONG));
+            auto children = (TI_FINDCHILDREN_PARAMS*) list.data();
+            children->Count = count;
+            SymGetTypeInfo(process, base, type.TypeIndex, TI_FINDCHILDREN, children);
+            for (DWORD i = 0; i < count && config && !encoding; ++i)
+            {
+                WCHAR* name = nullptr;
+                DWORD offset = 0;
+                if (SymGetTypeInfo(process, base, children->ChildId[i], TI_GET_SYMNAME, &name))
+                {
+                    if (!wcscmp(name, L"AmdEncoding") &&
+                        SymGetTypeInfo(process, base, children->ChildId[i], TI_GET_OFFSET, &offset))
+                        encoding = (int*) (config + offset);
+                    LocalFree(name);
+                }
+            }
+        }
+        if (!encoding)
+        {
+            Print("FAIL soak: AmdEncoding not found through OptiScaler.pdb");
+            return 1;
+        }
+    }
+    capFps = 60;
+    workMs = 8;
+    gpuClears = 130;
+    if (menu)
+    {
+        const auto mark = Mark();
+        Key(VK_INSERT);
+        if (!WaitLog("menu visibility changed 0 -> 1", mark, 3000))
+            Print("soak: the menu did not open");
+    }
+    const auto start = std::chrono::steady_clock::now();
+    auto lastChange = start;
+    int step = 0;
+    size_t spikesSeen = 0;
+    int result = 0;
+    while (std::chrono::steady_clock::now() - start < std::chrono::minutes(minutes))
+    {
+        Sleep(250);
+        const auto now = std::chrono::steady_clock::now();
+        if (encoding && now - lastChange >= std::chrono::seconds(cycleSeconds))
+        {
+            lastChange = now;
+            const int value = 1 + (++step % 3);
+            std::memcpy(encoding, &value, sizeof(value));
+            ((BYTE*) encoding)[sizeof(int)] = 1;
+        }
+        std::ifstream runtime("dlssnr_on_amd.log", std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(runtime)), {});
+        std::vector<std::string> spikes;
+        for (size_t at = text.find("SPIKE at"); at != std::string::npos; at = text.find("SPIKE at", at + 1))
+            spikes.push_back(text.substr(at, text.find('\n', at) - at));
+        for (; spikesSeen < spikes.size(); ++spikesSeen)
+            Print("soak %.1f min: %s", Micros(start) / 6e7, spikes[spikesSeen].c_str());
+        if (Count("off until the game restarts", 0) > 0)
+        {
+            Print("soak %.1f min: NR stood down", Micros(start) / 6e7);
+            result = 2;
+            break;
+        }
+        if (renderFailed || !GuiAlive())
+        {
+            Print("FAIL soak: the game stopped presenting");
+            result = 1;
+            break;
+        }
+    }
+    Print("SOAK done after %.1f min, %zu spikes, %d Encoding changes, menu %d, result %d", Micros(start) / 6e7,
+          spikesSeen, step, menu ? 1 : 0, result);
+    workMs = 0;
+    gpuClears = 0;
+    return result;
+}
+
 // PresentWithoutUpscaler off: the game presents, the menu works and nothing of the final-image route
 // runs, whatever key is pressed.
 void FinalImageOff()
@@ -1343,6 +1455,15 @@ int wmain(int argc, wchar_t** argv)
         return 101;
     }
     std::thread render(Render);
+    if (screenMode && argc >= 6 && !wcscmp(argv[2], L"soak"))
+    {
+        const int result = Soak(_wtoi(argv[3]), _wtoi(argv[4]) != 0, _wtoi(argv[5]));
+        stopRender = true;
+        render.join();
+        PostMessageW(game, WM_APP, 0, 0);
+        gui.join();
+        return result;
+    }
     if (argc >= 2 && !wcscmp(argv[1], L"off"))
         FinalImageOff();
     else if (screenMode)

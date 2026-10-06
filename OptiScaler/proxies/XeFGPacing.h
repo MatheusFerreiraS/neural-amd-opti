@@ -252,6 +252,9 @@ inline const uint8_t PresentThunkExpected[PresentThunkSize] = {
 // 0x2202C3..0x2202D5; only arg5/arg6/arg7 are looked at (see TryPace).
 using PresentFn = int64_t (*)(void*, uint32_t, uint32_t, uint64_t, void*, void*, uint64_t);
 
+// Percent of the measured real frame the generated frames are spread over. See TsDetour.
+constexpr int64_t Headroom = 90;
+
 // How many real frame periods to keep for the median.
 constexpr int32_t SampleCount = 15;
 
@@ -528,7 +531,7 @@ inline void NoteFrame(uint64_t index, uint64_t count, int64_t nowQpc)
     g_pacedBursts++;
 
     if (g_periodNs > 0 && g_freq.QuadPart > 0)
-        g_intervalQpc = QpcFromNs(g_periodNs / (static_cast<int64_t>(count) + 1));
+        g_intervalQpc = QpcFromNs(g_periodNs * Headroom / 100 / (static_cast<int64_t>(count) + 1));
 }
 
 // Milliseconds of frame the game actually got to render, i.e. the measured
@@ -834,7 +837,10 @@ inline void* TsDetour(void* a1, int64_t* out, void* lookup, void* timing, uint32
         return result;
 
     const int64_t median = *reinterpret_cast<const int64_t*>(reinterpret_cast<const uint8_t*>(timing) + 8);
-    const int64_t unit = median / static_cast<int64_t>(countPlus1);
+    // The median is measured present to present, so it holds this spacing too: spread over all of it, any period
+    // the burst was once pushed to (a hitch, a load) holds itself up. Spreading over 90% of it lets the period
+    // come back down to what the game needs; a game slower than that keeps its own pace.
+    const int64_t unit = median * Headroom / 100 / static_cast<int64_t>(countPlus1);
 
     if (unit <= 0)
         return result;

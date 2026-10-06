@@ -1419,7 +1419,7 @@ bool Process(VkQueue queue, VkPresentInfoKHR& present)
     // XeFG window in case the upscaler appeared mid-session.
     const bool upscaler = State::Instance().currentFeature != nullptr;
     if (!upscaler && bridge.swapchain == VK_NULL_HANDLE)
-        AmdPresentExperimental::Report("Vulkan NR: the game made its swapchain before the final image was on; "
+        AmdPresentExperimental::Report("Vulkan NR: the game made its swapchain before NR without upscaling was on; "
                                        "restart the game");
     if (upscaler || bridge.swapchain != present.pSwapchains[0] || bridge.stopped)
     {

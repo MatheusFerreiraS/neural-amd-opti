@@ -242,9 +242,9 @@ void RenderMenu(Config* config, float menuResScale)
                 ImGui::PopStyleColor();
             }
         bool present = config->DlssNrPresent.value_or_default();
-        if (ImGui::Checkbox("Final image (D3D9/D3D11/D3D12/Vulkan/OpenGL, no upscaler)", &present))
+        if (ImGui::Checkbox("NR without upscaling (D3D9/D3D11/D3D12/Vulkan/OpenGL)", &present))
             config->DlssNrPresent = present;
-        HelpMarker("Processes the D3D9, D3D11, D3D12, Vulkan or OpenGL final image when no upscaler is active."
+        HelpMarker("Runs NR on the D3D9, D3D11, D3D12, Vulkan or OpenGL frame when the game has no upscaler."
                    "\nRequires the danielblnc AMD runtime. The HUD is included."
                    "\nFidelityFX estimates motion. D3D11 uses a bound shader-readable depth buffer when available."
                    "\nVulkan shares the image with D3D12 when the driver permits; otherwise host readback adds latency."
@@ -254,14 +254,15 @@ void RenderMenu(Config* config, float menuResScale)
         if (const auto kind = DlssNr::Backend::ActiveKindFromConfig(); present && kind != DlssNr::Backend::Kind::Daniel)
             ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "%s",
                                kind == DlssNr::Backend::Kind::Off
-                                   ? "The final image runs on the danielblnc runtime only. NrBackend is off,"
+                                   ? "NR without upscaling runs on the danielblnc runtime only. NrBackend is off,"
                                      "\nso this session runs no NR."
-                                   : "The final image runs on the danielblnc runtime only. This session's runtime"
+                                   : "NR without upscaling runs on the danielblnc runtime only. This session's runtime"
                                      "\nruns inside an upscaler call, so a game without one gets no NR.");
         if (present && State::Instance().currentFeature != nullptr)
-            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "%s",
-                               "This game has an upscaler, and NR runs inside it. Final image still sets XeFG's"
-                               "\nmotion vector options for frame generation; turn it off for this game.");
+            ImGui::TextColored(
+                ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "%s",
+                "This game has an upscaler, and NR runs inside it. NR without upscaling still sets XeFG's"
+                "\nmotion vector options for frame generation; turn it off for this game.");
 
         // With more than one runtime installed, choose the one the next launch uses. This session keeps the
         // one it started with: each installs its own D3D12 hooks as the device is created.
@@ -715,6 +716,16 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nmore flicker and shimmer. With the INI-only single slot (AmdSlots=1) the"
                        "\nrender thread also waits for the model every frame."
                        "\n\nChanging it restarts the model's history.");
+            // NR without upscaling always pins it.
+            if (!finalImage)
+            {
+                bool fixedSeed = config->AmdFixedSeed.value_or_default();
+                if (ImGui::Checkbox("Fixed noise seed", &fixedSeed))
+                    config->AmdFixedSeed = fixedSeed;
+                HelpMarker("On (default): danielblnc's runtime uses the same noise every frame. With a new"
+                           "\nnoise each frame, the model's temporal history shows it as flicker and"
+                           "\nshimmer under an upscaler. danielblnc 0.4.1 to 0.6.0.");
+            }
             float stabilizer = finalImage && !config->AmdStabilizerStrength.has_value()
                                    ? .8f
                                    : config->AmdStabilizerStrength.value_or_default();
@@ -723,7 +734,7 @@ void RenderMenu(Config* config, float menuResScale)
             HelpMarker("Smooths small frame-to-frame changes of the neural effect along motion"
                        "\nvectors when available, after the runtime. Changes larger than the threshold"
                        "\npass through, and the game's own image is untouched. 0 turns it off; higher values can"
-                       "\nsoften fine detail in motion. Final-image mode defaults to 0.8 with optical flow.");
+                       "\nsoften fine detail in motion. NR without upscaling defaults to 0.8 with optical flow.");
             float stabilizerThreshold = finalImage && !config->AmdStabilizerThreshold.has_value()
                                             ? 4.f
                                             : config->AmdStabilizerThreshold.value_or_default();
@@ -809,9 +820,6 @@ void RenderMenu(Config* config, float menuResScale)
         {
             if (DlssNr::AmdBridge::HasFiles())
                 scheduling();
-            ImGui::TextWrapped("Final-image neural: optical flow, scene resets, fixed noise seed and depth when "
-                               "available. Includes game HUD.");
-            ImGui::TextUnformatted("D3D9, D3D11, D3D12, Vulkan and OpenGL. RenoDX composition does not apply here.");
             static float scale = 1.f;
             static bool editingScale = false;
             if (!editingScale)
@@ -821,7 +829,10 @@ void RenderMenu(Config* config, float menuResScale)
             // Commit once on release: every change rebuilds the model.
             if (ImGui::IsItemDeactivatedAfterEdit())
                 config->AmdNrScale = scale;
-            ImGui::TextWrapped("%s", AmdPresentExperimental::Status().c_str());
+            NeuralPassLine(config, "GPU time the model takes on each frame, all passes together:"
+                                   "\ncopying its inputs, waiting for its result and applying it."
+                                   "\n\nThe fps is 1000 divided by that time: how many frames per second the"
+                                   "\nmodel alone could keep up with.");
         }
 
         if (DlssNr::AmdBridge::HasFiles())
@@ -1192,7 +1203,14 @@ void RenderMenu(Config* config, float menuResScale)
 
             if (ImGui::TreeNode("Info"))
             {
-                if (!finalImage)
+                if (finalImage)
+                {
+                    ImGui::TextWrapped("%s", AmdPresentExperimental::Status().c_str());
+                    ImGui::TextWrapped("NR without upscaling: optical flow, scene resets, fixed noise seed and depth "
+                                       "when available. Includes the game's HUD. D3D9, D3D11, D3D12, Vulkan and "
+                                       "OpenGL. RenoDX composition does not apply here.");
+                }
+                else
                     ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
                 ImGui::TextWrapped("AMD HIP backend. Each pass owns independent temporal history. More passes increase "
                                    "GPU time and memory. Restart the game after a backend failure.");
