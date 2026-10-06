@@ -790,6 +790,32 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         gateHeight = allocation.Height;
         gateFormat = allocation.Format;
     }
+    // danielblnc and lmxxf under a game's dynamic resolution (The Witcher 3 reallocates its frame at every step): the
+    // model keeps the largest frame seen at this format and aspect, so a step neither settles nor warms up. danielblnc
+    // resamples a smaller frame up to it; lmxxf's runtime fits it into the network that size chose and rebuilds only
+    // its codec. A larger frame, another format or another aspect settles as before and becomes the new extent.
+    static UINT drsWidth = 0, drsHeight = 0;
+    static DXGI_FORMAT drsFormat = DXGI_FORMAT_UNKNOWN;
+    if ((active == DlssNr::Backend::Kind::Daniel || active == DlssNr::Backend::Kind::Lmxxf) && f.colour &&
+        !afterUpscale)
+    {
+        const auto format = f.colour->GetDesc().Format;
+        const bool sameAspect =
+            drsHeight && gateHeight && std::abs(double(gateWidth) / gateHeight - double(drsWidth) / drsHeight) < .02;
+        if (format == drsFormat && sameAspect && gateWidth <= drsWidth && gateHeight <= drsHeight)
+        {
+            gateWidth = drsWidth;
+            gateHeight = drsHeight;
+            f.fixedWidth = drsWidth;
+            f.fixedHeight = drsHeight;
+        }
+        else
+        {
+            drsWidth = gateWidth;
+            drsHeight = gateHeight;
+            drsFormat = format;
+        }
+    }
     const auto now = GetTickCount64();
     if (settlingWidth != gateWidth || settlingHeight != gateHeight || settlingFormat != gateFormat ||
         settlingScale != requestedScale)

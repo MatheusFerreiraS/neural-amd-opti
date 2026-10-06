@@ -591,8 +591,23 @@ struct Session
     ULONGLONG lastFrameTick = 0;
     Job job {};
     DXGI_FORMAT colorFormat = DXGI_FORMAT_UNKNOWN;
+    // The largest colour seen at one format and aspect, which sizes the network (see PrepareFrame).
+    UINT drsWidth = 0, drsHeight = 0;
+    DXGI_FORMAT drsFormat = DXGI_FORMAT_UNKNOWN;
+    // A colour smaller than drsWidth x drsHeight came: free resolution is off for this geometry.
+    bool drsStepped = false;
 
     void TeardownCodecChain()
+    {
+        TeardownCodec();
+        delete bridge;
+        bridge = nullptr;
+        hipPrepared = false;
+    }
+
+    // The codec, its history and the bridge's in-flight work, keeping the network: what a new colour size needs when
+    // the network's geometry stays (a game's dynamic resolution).
+    void TeardownCodec()
     {
         if (bridge)
         {
@@ -612,9 +627,6 @@ struct Session
                 throw std::runtime_error("TeardownCodecChain: bridge work did not complete");
             }
         }
-        delete bridge;
-        bridge = nullptr;
-        hipPrepared = false;
         delete temporal;
         temporal = nullptr;
         if (decodeDisplay)
@@ -1219,16 +1231,38 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             // Read by the network on every run. Its reuse decision compares a run with the one before, so a second
             // pass (whose input is the first one's output) would reuse the wrong answer: one pass only.
             _putenv_s("DLSS5_VIT_ADAPTIVE", (info->flags & LMXXF_NR_FRAME_FLAG_VIT_REUSE) && passes == 1 ? "1" : "0");
+            // A game's dynamic resolution: the network keeps the geometry of the largest colour seen at this format and
+            // aspect, and the codec fits a smaller one into it, so a step rebuilds only the codec. A larger colour, or
+            // another aspect, sizes it again.
+            {
+                const auto format = static_cast<ID3D12Resource*>(info->color)
+                                        ? static_cast<ID3D12Resource*>(info->color)->GetDesc().Format
+                                        : DXGI_FORMAT_UNKNOWN;
+                const UINT w = info->color_width, h = info->color_height;
+                const bool sameAspect = session->drsHeight && h &&
+                                        std::abs(double(w) / h - double(session->drsWidth) / session->drsHeight) < .02;
+                if (!(format == session->drsFormat && sameAspect && w <= session->drsWidth && h <= session->drsHeight))
+                {
+                    session->drsWidth = w;
+                    session->drsHeight = h;
+                    session->drsFormat = format;
+                    session->drsStepped = false;
+                }
+                else if (w < session->drsWidth || h < session->drsHeight)
+                    session->drsStepped = true;
+            }
             // An input up to 1080p runs on its own size with NVIDIA's padding (upstream 0.40's free resolution). The
             // 720 tier (1280x768) has no padding row in the ViT grid, which shifts the colour and leaves Style without
             // effect. 1600x900 and 1920x1080 are the tiers themselves, and above 1080p the tiers stay as they were.
+            // Free resolution places the colour 1:1 and mirrors the rest, so once the colour comes smaller than the
+            // network (dynamic resolution) the tiers take over and fit it.
             {
-                const unsigned cw = info->color_width, ch = info->color_height;
-                const bool freeRes = cw <= 1920 && ch <= 1080 && !(cw == 1920 && ch == 1080) &&
+                const unsigned cw = session->drsWidth, ch = session->drsHeight;
+                const bool freeRes = !session->drsStepped && cw <= 1920 && ch <= 1080 && !(cw == 1920 && ch == 1080) &&
                                      !(cw == 1600 && ch == 900) && NativeNetworkGeometry::FreeFits(cw, ch);
                 _putenv_s("DLSS5_NETWORK_FREE_RES", freeRes ? "1" : "0");
             }
-            NativeResolveNetworkGeometry(info->color_width, info->color_height);
+            NativeResolveNetworkGeometry(session->drsWidth, session->drsHeight);
             const auto tier = NativeCurrentNetworkGeometry();
             if (session->hipPrepared &&
                 (session->builtStyle != style || session->builtProcW != tier.processing_width ||
@@ -1280,7 +1314,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 if (FAILED(session->DrainGpu()))
                     return Fail(LMXXF_NR_UNAVAILABLE,
                                 "PrepareFrame: color geometry change; GPU drain failed (retry or rebuild session)");
-                session->TeardownCodecChain();
+                // The network's geometry was settled above; a new size inside it needs a new codec only.
+                session->TeardownCodec();
                 session->job = {};
             }
 

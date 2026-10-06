@@ -26,6 +26,9 @@ struct Frame
     // Active extent of motion and depth, when it is not the colour's. Zero keeps the pre-SR
     // meaning: the guides share the colour's active extent.
     UINT guideWidth = 0, guideHeight = 0;
+    // The model's extent under a game's dynamic resolution: the largest frame seen, which a smaller one is resampled
+    // up to. Zero sizes the model from the frame.
+    UINT fixedWidth = 0, fixedHeight = 0;
     D3D12_RESOURCE_STATES colourState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     D3D12_RESOURCE_STATES motionState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     D3D12_RESOURCE_STATES depthState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;

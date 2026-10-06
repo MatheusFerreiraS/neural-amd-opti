@@ -466,12 +466,11 @@ bool ShouldUseExternalMouseHookLocked()
     if (_state.ExternalTargetProcess)
         return _state.InputHwnd == nullptr && !_state.ExternalRawInputSinkRegistered;
 
-    // In the game's own process, only for the menu's clicks when nothing else sees them: another WndProc took the
-    // window (Assetto Corsa's CSP) and the game holds its DirectInput mouse exclusively, which keeps the buttons out
-    // of the async key state the polling reads. The hook runs on the thread that installs it, so it stays off the
-    // rest of the time.
-    return _state.MenuVisible && _state.InputHwnd != nullptr && !_state.WndProcSubclassed &&
-           _state.DirectInputMouseExclusive;
+    // In the game's own process, only for the menu's clicks while another WndProc holds the window (Assetto Corsa's
+    // CSP), so nothing delivers them to the menu. An exclusive DirectInput mouse is not required: CSP's devices come
+    // in as "other" and the clicks were still lost (GhostNappa). The hook passes every event on and runs only while
+    // the menu is open.
+    return _state.MenuVisible && _state.InputHwnd != nullptr && !_state.WndProcSubclassed;
 }
 
 bool GetTargetCenterScreenLocked(POINT* centerScreen)

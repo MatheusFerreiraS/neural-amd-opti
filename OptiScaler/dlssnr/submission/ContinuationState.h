@@ -26,6 +26,15 @@ struct ContinuationState
     bool hasPso = false;
     ID3D12PipelineState* pso = nullptr;
 
+    // SetPipelineState1's ray tracing state object. It and the PSO replace each other: the last one set holds.
+    bool hasStateObject = false;
+    ID3D12StateObject* stateObject = nullptr;
+
+    bool hasPredication = false;
+    ID3D12Resource* predicate = nullptr;
+    UINT64 predicateOffset = 0;
+    D3D12_PREDICATION_OP predicationOp = D3D12_PREDICATION_OP_EQUAL_ZERO;
+
     bool hasGfxRoot = false;
     ID3D12RootSignature* gfxRoot = nullptr;
 
@@ -100,6 +109,18 @@ struct ContinuationState
             pso->Release();
             pso = nullptr;
         }
+        if (stateObject)
+        {
+            stateObject->Release();
+            stateObject = nullptr;
+        }
+        hasStateObject = false;
+        if (predicate)
+        {
+            predicate->Release();
+            predicate = nullptr;
+        }
+        hasPredication = false;
         if (gfxRoot)
         {
             gfxRoot->Release();
@@ -200,6 +221,36 @@ struct ContinuationState
         if (pso)
             pso->AddRef();
         hasPso = pso != nullptr;
+        if (stateObject)
+            stateObject->Release();
+        stateObject = nullptr;
+        hasStateObject = false;
+    }
+
+    void OnStateObject(ID3D12StateObject* s)
+    {
+        if (stateObject)
+            stateObject->Release();
+        stateObject = s;
+        if (stateObject)
+            stateObject->AddRef();
+        hasStateObject = stateObject != nullptr;
+        if (pso)
+            pso->Release();
+        pso = nullptr;
+        hasPso = false;
+    }
+
+    void OnPredication(ID3D12Resource* b, UINT64 offset, D3D12_PREDICATION_OP op)
+    {
+        if (predicate)
+            predicate->Release();
+        predicate = b;
+        if (predicate)
+            predicate->AddRef();
+        predicateOffset = offset;
+        predicationOp = op;
+        hasPredication = predicate != nullptr;
     }
 
     void OnGfxRoot(ID3D12RootSignature* s)
@@ -446,6 +497,17 @@ struct ContinuationState
             return;
         if (hasPso)
             list->SetPipelineState(pso);
+        if (hasStateObject)
+        {
+            ID3D12GraphicsCommandList4* list4 = nullptr;
+            if (SUCCEEDED(list->QueryInterface(IID_PPV_ARGS(&list4))))
+            {
+                list4->SetPipelineState1(stateObject);
+                list4->Release();
+            }
+        }
+        if (hasPredication)
+            list->SetPredication(predicate, predicateOffset, predicationOp);
         if (hasGfxRoot)
             list->SetGraphicsRootSignature(gfxRoot);
         if (hasComputeRoot)
