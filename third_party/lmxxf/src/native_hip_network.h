@@ -3,6 +3,7 @@
 #include "native_network_geometry.h"
 #include "native_lab_paths.h"
 #include "native_hip_env_options.h"
+#include "native_hot_flags.h"
 // Experimental compile-time backend. Ordinary D3D12 codec and temporal passes stay in NativeGameFrame.
 class NativeHipNetwork {
  hip_reference::D3D12Bridge bridge;ID3D12Resource*color{};ID3D12Resource*history{};
@@ -19,15 +20,35 @@ public:
   NativeApplyHipEnvironment(o,fast);
   const wchar_t*modules=_wgetenv(L"DLSS5_HIP_MODULES");o.modules=modules&&*modules?Utf8(modules):Utf8(directory+L"\\HIP");if(direct_input)bridge.RequestDirectInput();try{bridge.Create(q,o,noise);}catch(...){LogDevice();throw;}LogDevice();
   if(FILE*f=_wfopen(NativeLabPath(L"logs\\native-hip.txt").c_str(),L"ab")){fprintf(f,"pid=%lu runtime=7 fast=%u packed_weights=%u packed_c32=%u fp8_normalized=%u fp8_ffn=%u fp8_av=%u fp8_deep=%u fp8_middle=%u half_c32=%u crop_c32=%u fused_qkv_norm=%u fused_mh_ffn=%u tiled_mh_ffn=%u tiled_ffn_min_c=%u mapped_c32=%u vit_blocked=%u vit_contract_blocked=%u vit_split_k=%u vit_weight_mask=%u vit_pack_input=%u elide_identity_shift=%u vit_qkv_fused=%u ffn_qkv=%u ffn_qkv_max_c=%u grouped_mh_contract=%u direct_prefix_input=%u prefix_fused=%u mh_input_mapped=%u mh_project_crop=%u vit_qkv_blocked=%u split_project_blocked=%u split_mix_blocked=%u split_ffn_fused=%u fused_ffn_project=%u post_merge_fold=%u pre_main8=%u raw_chain=%u graph=%u sparse_weights=%u processing=%ux%u modules=%s\n",GetCurrentProcessId(),unsigned(fast),unsigned(o.packed_weights),unsigned(o.packed_c32),unsigned(o.fp8_normalized),unsigned(o.fp8_ffn),unsigned(o.fp8_av),unsigned(o.fp8_deep),unsigned(o.fp8_middle),unsigned(o.half_c32),unsigned(o.crop_c32),unsigned(o.fused_qkv_norm),unsigned(o.fused_mh_ffn),unsigned(o.tiled_mh_ffn),o.tiled_ffn_min_c,unsigned(o.mapped_c32),unsigned(o.vit_blocked),unsigned(o.vit_contract_blocked),unsigned(o.vit_split_k),o.vit_weight_mask,unsigned(o.vit_pack_input),unsigned(o.elide_identity_shift),unsigned(o.vit_qkv_fused),unsigned(o.ffn_qkv),o.ffn_qkv_max_c,unsigned(o.grouped_mh_contract),unsigned(o.direct_prefix_input),unsigned(o.prefix_fused),unsigned(o.mh_input_mapped),unsigned(o.mh_project_crop),unsigned(o.vit_qkv_blocked),unsigned(o.split_project_blocked),unsigned(o.split_mix_blocked),unsigned(o.split_ffn_fused),unsigned(o.fused_ffn_project),unsigned(o.post_merge_fold),unsigned(o.pre_main8),unsigned(o.raw_chain),unsigned(o.graph),unsigned(o.sparse_weights),o.width,o.height,o.modules.c_str());fprintf(f,"pid=%lu swin_run_requested=%u swin_run_active=%u\n",GetCurrentProcessId(),unsigned(o.swin_run),unsigned(bridge.SwinRunActive()));fprintf(f,"pid=%lu vit_stream_requested=%u vit_stream_active=%u\n",GetCurrentProcessId(),o.vit_stream,hip_reference::VitStreamCompatible(o)?o.vit_stream:0);fprintf(f,"pid=%lu wave_owned_requested=%u wave_owned_active=%u\n",GetCurrentProcessId(),unsigned(o.wave_owned),unsigned(hip_reference::WaveOwnedCompatible(o)));if(FILE*f=_wfopen(NativeLabPath(L"logs\\native-hip.txt").c_str(),L"ab")){fprintf(f,"pid=%lu c512_m32_requested=%u c512_m32_active=%u\n",GetCurrentProcessId(),unsigned(o.c512_m32),unsigned(hip_reference::C512M32Compatible(o)));fprintf(f,"pid=%lu vit_proj_n64_requested=%u vit_proj_n64_active=%u\n",GetCurrentProcessId(),unsigned(o.vit_proj_n64),unsigned(hip_reference::VitProjN64Compatible(o)));fclose(f);}fprintf(f,"pid=%lu hip_device=%d\n",GetCurrentProcessId(),bridge.hip_device);fclose(f);}
+  if(FILE*f=_wfopen(NativeLabPath(L"logs\\native-hip.txt").c_str(),L"ab")){fprintf(f,"pid=%lu multi_pass=%u multi_pass_predict=%u predict_active=%u\n",GetCurrentProcessId(),bridge.MultiPass(),unsigned(bridge.MultiPassPredict()),unsigned(bridge.MultiPassPredict()&&bridge.MultiPass()==3));fclose(f);}
+  if(FILE*f=_wfopen(NativeLabPath(L"logs\\native-hip.txt").c_str(),L"ab")){fprintf(f,"pid=%lu multi_pass=%u multi_pass_skin_protect=%u skin_active=%u\n",GetCurrentProcessId(),bridge.MultiPass(),unsigned(bridge.MultiPassSkinProtect()),unsigned(bridge.MultiPassSkinProtect()&&bridge.MultiPass()>1));fclose(f);}
 color=direct_input?bridge.DirectInput():rgb;color->AddRef();history=temporal;if(history)history->AddRef();
  }
  // The host submits both sides on the same queue. See D3D12Bridge's stage contract.
  void RecordInputCopy(ID3D12GraphicsCommandList*c,bool use_history=false){if(use_history&&!history)throw std::runtime_error("HIP history not bound");bridge.RecordInputCopy(c,color,use_history?history:nullptr);}
- void EnqueueAfterProducer(ID3D12CommandQueue*q,UINT seed,bool use_history=false){if(use_history&&!history)throw std::runtime_error("HIP history not bound");bridge.EnqueueAfterProducer(q,seed,use_history);}
+ void EnqueueAfterProducer(ID3D12CommandQueue*q,UINT seed,bool use_history=false){if(use_history&&!history)throw std::runtime_error("HIP history not bound");ApplyHotMultiPass();bridge.EnqueueAfterProducer(q,seed,use_history);}
  void RecordOutputReadable(ID3D12GraphicsCommandList*c){bridge.RecordOutputReadable(c);}
+ // Network GPU timing (hip_d3d12_bridge.h): off unless enabled here or DLSS5_NET_TIMING=1; the add-on does not enable it.
+ bool EnableNetworkTiming(){return bridge.EnableNetworkTiming();}
+ hip_reference::D3D12Bridge::NetworkTiming PollNetworkTiming(){return bridge.PollNetworkTiming();}
  void NotifyOutputSubmitted(ID3D12CommandQueue*q){bridge.NotifyOutputSubmitted(q);FrameSubmitted();}
- template<class Submission>void Run(Submission&submit,UINT seed,bool use_history=false){if(use_history&&!history)throw std::runtime_error("HIP history not bound");bridge.Run(submit,color,use_history?history:nullptr,seed);FrameSubmitted();}
+ template<class Submission>void Run(Submission&submit,UINT seed,bool use_history=false){if(use_history&&!history)throw std::runtime_error("HIP history not bound");ApplyHotMultiPass();bridge.Run(submit,color,use_history?history:nullptr,seed);FrameSubmitted();}
 private:
+ /* 2026-10-03: DLSS5_MULTI_PASS hotkey (writes the config file) and hot reload (applies it) before each network frame.
+    Unchanged value = no call into the network (bit-exact). */
+ int hot_generation=-1;
+ void ApplyHotMultiPass(){
+  auto&hot=NativeHotFlags::Instance();if(!NativeHotFlags::Enabled()&&!NativeHotFlags::HotkeyCode())return;
+  hot.PollMultiPassHotkey(bridge.MultiPass());
+  const auto v=hot.Get();if(int(v.generation)==hot_generation)return;hot_generation=int(v.generation);
+  if(v.multi_pass_predict>=0&&bool(v.multi_pass_predict)!=bridge.MultiPassPredict()){bridge.MultiPassPredict(v.multi_pass_predict!=0);
+   if(FILE*f=_wfopen(NativeLabPath(L"logs\\native-game-oneshot.txt").c_str(),L"ab")){fprintf(f,"pid=%lu tick=%llu event=multi_pass_predict option=%u multi_pass=%u (hot reload; active only at 3 passes)\n",GetCurrentProcessId(),GetTickCount64(),unsigned(bridge.MultiPassPredict()),v.multi_pass>0?unsigned(v.multi_pass):bridge.MultiPass());fclose(f);}}
+  // Prepare the skin kernel/resources before bridge enters the producer wait.
+  if(v.multi_pass_skin_protect>=0&&bool(v.multi_pass_skin_protect)!=bridge.MultiPassSkinProtect()){bridge.MultiPassSkinProtect(v.multi_pass_skin_protect!=0);
+   if(FILE*f=_wfopen(NativeLabPath(L"logs\\native-game-oneshot.txt").c_str(),L"ab")){const unsigned n=v.multi_pass>0?unsigned(v.multi_pass):bridge.MultiPass();fprintf(f,"pid=%lu tick=%llu event=multi_pass_skin_protect multi_pass=%u option=%u skin_active=%u (hot reload)\n",GetCurrentProcessId(),GetTickCount64(),n,unsigned(bridge.MultiPassSkinProtect()),unsigned(bridge.MultiPassSkinProtect()&&n>1));fclose(f);}}
+  if(v.multi_pass>0&&unsigned(v.multi_pass)!=bridge.MultiPass()){const unsigned was=bridge.MultiPass();bridge.MultiPass(unsigned(v.multi_pass));
+   if(FILE*f=_wfopen(NativeLabPath(L"logs\\native-game-oneshot.txt").c_str(),L"ab")){fprintf(f,"pid=%lu tick=%llu event=multi_pass detail=%u->%u multi_pass_predict=%u predict_active=%u multi_pass_skin_protect=%u skin_active=%u (hot reload)\n",GetCurrentProcessId(),GetTickCount64(),was,bridge.MultiPass(),unsigned(bridge.MultiPassPredict()),unsigned(bridge.MultiPassPredict()&&bridge.MultiPass()==3),unsigned(bridge.MultiPassSkinProtect()),unsigned(bridge.MultiPassSkinProtect()&&bridge.MultiPass()>1));fclose(f);}}
+ }
  void FrameSubmitted(){
   if(++frames==3){if(const char*v=std::getenv("DLSS5_HIP_MEMORY");v&&!strcmp(v,"1"))if(FILE*f=_wfopen(NativeLabPath(L"logs\\native-hip.txt").c_str(),L"ab")){bridge.MemoryReport(f);fclose(f);}}
  }

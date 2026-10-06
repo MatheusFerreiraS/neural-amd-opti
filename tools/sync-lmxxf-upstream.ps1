@@ -383,6 +383,7 @@ $archivePaths = @(
     'Development/HIP/packed_weights.h',
     'Development/HIP/swin_persistent_network.h',
     'Development/HIP/swin_persistent_types.h',
+    'src/native_config_layers.h',
     'src/native_device_identity.h',
     'src/native_format_fallback.h',
     'src/native_frame_stats.h',

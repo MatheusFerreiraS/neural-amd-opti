@@ -943,14 +943,17 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
         return nullptr;
     }
     {
-        // Logged again whenever temporal history is switched, so its state (or why it failed) reaches the log.
-        static int loggedTemporal = -1;
-        if (loggedTemporal != int(temporal) && api->table.GetStatus)
+        // Logged again whenever temporal history or the Style is switched, so its state (or why it failed) reaches
+        // the log. A new Style rebuilds the network.
+        static int loggedTemporal = -1, loggedStyle = -1;
+        const int style = (fi.flags & LMXXF_NR_FRAME_FLAG_STYLE) ? int(fi.style) : -1;
+        if ((loggedTemporal != int(temporal) || loggedStyle != style) && api->table.GetStatus)
         {
             char st[256] {};
             api->table.GetStatus(session, st, sizeof st);
-            LOG_INFO("lmxxf: after PrepareFrame HIP/net geometry status={}", st);
+            LOG_INFO("lmxxf: after PrepareFrame HIP/net geometry status={} style={}", st, style);
             loggedTemporal = int(temporal);
+            loggedStyle = style;
         }
     }
 

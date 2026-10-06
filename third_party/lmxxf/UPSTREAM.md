@@ -1,7 +1,7 @@
 # lmxxf runtime source pin
 
 - Upstream: https://github.com/lmxxf/dlss5-on-amd-9070xt-porting
-- Commit: `8af862408ae477f4d207304419483919f1a0d3f2` (synced 2026-10-01)
+- Commit: `523723fdb3fa5b322beb1cc9dcfd3f8183eaf334` (tag 0.41, synced 2026-10-05)
 - License: MIT, Copyright (c) 2026 Kien (`LICENSE`)
 - `hip_api.h` also carries the AMD HIP runtime API MIT notice from ROCm 7.1.1
 
@@ -101,6 +101,20 @@ Upstream includes `native_split.h` (the D3D12 network body) without using it. Th
 
 ### Patch G: residual smoothing in `shaders/native_output_smooth.hlsl`
 `LmxxfSmoothResidual` runs upstream's output smoothing on the network's change alone. The block appended behind `#if SMOOTH_RESIDUAL` adds `residual_main`, which takes the RGB output minus the network's input (`base`, t1), blends it toward the previous frame's change (`warped`, t0; `pad` = 1 when it is valid) with the same threshold and strength rule, writes the input plus the result back to `rgb` and keeps the change in `residual` (u1) for the next frame. Upstream's `main` is untouched and compiles as before. The sync script re-appends the block after every copy when `residual_main` is missing, and fails when upstream's `main` entry is gone.
+
+### Sync to 0.41 (2026-10-05)
+- Bridge: three-way merge again (base 8af8624, theirs 0.41). Upstream's network timing (`EnableNetworkTiming`,
+  `PollNetworkTiming`), `hipSetDevice` before each enqueue (XMoon's PR #15) and the post-signal `hipStreamQuery` came in;
+  our extra passes stay, and the timing span covers all of them. Upstream's own `DLSS5_MULTI_PASS` lives in the network
+  and stays at its default of 1 here.
+- `src/native_config_layers.h` joined the sync list (`native_lab_paths.h` includes it).
+- `hip_reference_network.h` uses `__attribute__((noinline))`; the MSVC build force-includes
+  `lmxxf_runtime/LmxxfMsvcCompat.h`, which defines it away. The vendor file is untouched.
+- Runtime choices (`LmxxfNrRuntime.cpp`, `LmxxfProductionOptions.h`): all 71 blocks, `DLSS5_FAST_NUMERIC=1` unless the
+  environment says otherwise (upstream's package default), and `DLSS5_NETWORK_FREE_RES` per frame: on for inputs up to
+  1920x1080 other than 1600x900 and 1920x1080 themselves (those equal their tiers, and Compact 1080 keeps working), off
+  above 1080p. The 720 tier's 1280x768 has no padding token in the ViT grid; Style had almost no effect there (42 dB
+  between Styles, against 22-25 dB at 900/1080) and now matches the other sizes (22 dB at 1344x768).
 
 ## Shipping modules (`.hsaco`)
 

@@ -10,7 +10,7 @@ rem Check if MSVC cl.exe is available in PATH
 where cl.exe >nul 2>&1
 if %errorlevel%==0 (
   echo Building LmxxfNrRuntime.dll with MSVC...
-  cl /nologo /std:c++17 /O2 /LD /EHsc /DNOMINMAX /D_WIN32_WINNT=0x0A00 /DLMXXF_NR_RUNTIME_EXPORTS ^
+  cl /nologo /std:c++17 /O2 /LD /EHsc /DNOMINMAX /D_WIN32_WINNT=0x0A00 /DLMXXF_NR_RUNTIME_EXPORTS /FI"LmxxfMsvcCompat.h" ^
     /I "OptiScaler\dlssnr\backend\lmxxf_runtime" ^
     /I "third_party\lmxxf\src" ^
     /I "third_party\lmxxf\Development\HIP" ^
@@ -18,7 +18,7 @@ if %errorlevel%==0 (
     /Fe:"%OUT%\LmxxfNrRuntime.dll" ^
     /Fo:"%OUT%\LmxxfNrRuntime.obj" ^
     d3d12.lib dxgi.lib d3dcompiler.lib dxguid.lib user32.lib
-  if not %errorlevel%==0 (
+  if errorlevel 1 (
     echo FAIL: MSVC compilation of LmxxfNrRuntime.dll failed
     exit /b 1
   )

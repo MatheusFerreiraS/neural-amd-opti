@@ -8,6 +8,7 @@
 // normalized UV when explicitly selected) -> reconstructed
 // HWC RGB. Coordinate generation/history lifetime remain caller responsibilities.
 class NativeTemporalSample {
+ bool wide=false;
  ID3D12Resource *history{},*coordinates{},*output{},*reciprocals{};
  ID3D12RootSignature*root{};ID3D12PipelineState*pso{};
  UINT geometry[5]{};bool recorded{};
@@ -17,7 +18,7 @@ public:
  NativeTemporalSample()=default;NativeTemporalSample(const NativeTemporalSample&)=delete;
  ~NativeTemporalSample(){for(auto*r:{history,coordinates,output,reciprocals})if(r)r->Release();if(root)root->Release();if(pso)pso->Release();}
  void Create(ID3D12Device*d,ID3D12Resource*source,ID3D12Resource*xy,UINT width,UINT height,UINT count,const std::wstring&dir,bool normalized_coordinates=false,ID3D12Resource*reciprocal_source=nullptr){
-  if(history||!d||!source||!xy||!width||!height||!count||width>16384||height>16384||count>65535u*64)throw std::runtime_error("temporal sampler geometry");
+  if(history||!d||!source||!xy||!width||!height||!count||width>16384||height>16384||count>(1u<<26))throw std::runtime_error("temporal sampler geometry");
   for(auto item:{std::pair<ID3D12Resource*,UINT64>{source,UINT64(width)*height*16},{xy,UINT64(count)*8}}){
    if(item.first->GetDesc().Dimension!=D3D12_RESOURCE_DIMENSION_BUFFER||item.first->GetDesc().Width<item.second)throw std::runtime_error("temporal sampler capacity");
    ID3D12Device*owner=nullptr;ck(item.first->GetDevice(IID_PPV_ARGS(&owner)));bool same=NativeSameDevice(owner,d);owner->Release();if(!same)throw std::runtime_error("temporal sampler device mismatch");
@@ -33,11 +34,12 @@ public:
   D3D12_ROOT_PARAMETER p[5]{};p[0].ParameterType=p[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV;p[1].Descriptor.ShaderRegister=1;p[2].ParameterType=D3D12_ROOT_PARAMETER_TYPE_UAV;p[3].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;p[3].Constants={0,0,5};p[4].ParameterType=D3D12_ROOT_PARAMETER_TYPE_SRV;p[4].Descriptor.ShaderRegister=2;D3D12_ROOT_SIGNATURE_DESC desc{};desc.NumParameters=reciprocals?5:4;desc.pParameters=p;
   ID3DBlob*code=nullptr,*error=nullptr;auto hr=D3D12SerializeRootSignature(&desc,D3D_ROOT_SIGNATURE_VERSION_1,&code,&error);if(error)error->Release();ck(hr);ck(d->CreateRootSignature(0,code->GetBufferPointer(),code->GetBufferSize(),IID_PPV_ARGS(&root)));code->Release();code=nullptr;error=nullptr;
   const bool fast=NativeFastTemporal();
-  D3D_SHADER_MACRO macros[]={{"NORMALIZED_COORDINATES",normalized_coordinates?"1":"0"},{"TEMPORAL_RECIPROCAL_TABLE",reciprocals&&!fast?"1":"0"},{"NATIVE_FAST_TEMPORAL",fast?"1":"0"},{nullptr,nullptr}};hr=CompileNativeShader(dir+L"\\native_temporal_sample.hlsl",macros,"main",&code,&error);if(error)error->Release();ck(hr);D3D12_COMPUTE_PIPELINE_STATE_DESC pd{};pd.pRootSignature=root;pd.CS={code->GetBufferPointer(),code->GetBufferSize()};ck(NativeCreateComputePipelineState(d,&pd,IID_PPV_ARGS(&pso)));code->Release();
+  wide=count>65535u*64; /* DLSS5_NETWORK_FREE_RES beyond 4.19M processing pixels: 2D dispatch; smaller surfaces keep the 1D shader */
+  D3D_SHADER_MACRO macros[]={{"NORMALIZED_COORDINATES",normalized_coordinates?"1":"0"},{"TEMPORAL_RECIPROCAL_TABLE",reciprocals&&!fast?"1":"0"},{"NATIVE_FAST_TEMPORAL",fast?"1":"0"},{wide?"NATIVE_WIDE_ROW":nullptr,"2097152"},{nullptr,nullptr}};hr=CompileNativeShader(dir+L"\\native_temporal_sample.hlsl",macros,"main",&code,&error);if(error)error->Release();ck(hr);D3D12_COMPUTE_PIPELINE_STATE_DESC pd{};pd.pRootSignature=root;pd.CS={code->GetBufferPointer(),code->GetBufferSize()};ck(NativeCreateComputePipelineState(d,&pd,IID_PPV_ARGS(&pso)));code->Release();
  }
  void Record(ID3D12GraphicsCommandList*c){
   if(!pso||!c)throw std::runtime_error("temporal sampler not created");if(recorded)transition(c,true);
-  c->SetComputeRootSignature(root);c->SetPipelineState(pso);c->SetComputeRootShaderResourceView(0,history->GetGPUVirtualAddress());c->SetComputeRootShaderResourceView(1,coordinates->GetGPUVirtualAddress());c->SetComputeRootUnorderedAccessView(2,output->GetGPUVirtualAddress());c->SetComputeRoot32BitConstants(3,5,geometry,0);if(reciprocals)c->SetComputeRootShaderResourceView(4,reciprocals->GetGPUVirtualAddress());c->Dispatch((geometry[2]+63)/64,1,1);transition(c,false);recorded=true;
+  c->SetComputeRootSignature(root);c->SetPipelineState(pso);c->SetComputeRootShaderResourceView(0,history->GetGPUVirtualAddress());c->SetComputeRootShaderResourceView(1,coordinates->GetGPUVirtualAddress());c->SetComputeRootUnorderedAccessView(2,output->GetGPUVirtualAddress());c->SetComputeRoot32BitConstants(3,5,geometry,0);if(reciprocals)c->SetComputeRootShaderResourceView(4,reciprocals->GetGPUVirtualAddress());if(wide)c->Dispatch(32768,(geometry[2]+2097151)/2097152,1);else c->Dispatch((geometry[2]+63)/64,1,1);transition(c,false);recorded=true;
  }
  ID3D12Resource*Output()const{return output;}
 };

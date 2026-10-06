@@ -2,7 +2,8 @@
 #include "hip_reference_network.h"
 #include <string>
 
-/* First-version production HIP flags (HIP_FAST=1, graph off, skip 42,43,46). Instance, not getenv. */
+/* Production HIP flags (HIP_FAST=1, graph off, all 71 blocks as upstream 0.40; 42,43,46 were skipped before). Instance,
+   not getenv. */
 inline hip_reference::Options LmxxfProductionOptions(unsigned processing_w, unsigned processing_h,
                                                      const std::string& modules, const std::string& assets)
 {
@@ -13,7 +14,6 @@ inline hip_reference::Options LmxxfProductionOptions(unsigned processing_w, unsi
     o.fast_vit = true;
     o.wmma = o.wave = o.tiled = o.pooled = true;
     o.graph = false;
-    o.skip_blocks = hip_reference::ParseSkipBlocks("42,43,46");
     o.modules = modules;
     o.assets = assets;
     o.fast_c32 = o.fused_c32 = o.fused_ffn = o.fast_mh = o.fused_mh = o.mh_wave = o.fast_deep = o.fast_prefix =

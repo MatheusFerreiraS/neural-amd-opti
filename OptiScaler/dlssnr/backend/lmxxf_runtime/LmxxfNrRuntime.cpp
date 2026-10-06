@@ -361,6 +361,10 @@ hip_reference::Options RuntimeOptions(unsigned w, unsigned h, const std::wstring
     // The network reads DLSS5_STYLE as it is built and writes it into the kernels it loads (Style/128 in the
     // preprocess; 1 keeps their built-in value).
     _putenv_s("DLSS5_STYLE", style == 0 ? "0" : style == 2 ? "2" : "1");
+    // Upstream 0.41's default: the lossy fast-numeric twins of the window, ViT and deep kernels (about 53 dB from the exact
+    // ones, closer to NVIDIA with all blocks). A missing *-fast module falls back to the normal one.
+    if (!std::getenv("DLSS5_FAST_NUMERIC"))
+        _putenv("DLSS5_FAST_NUMERIC=1");
     auto opt = LmxxfProductionOptions(w, h, Utf8(modulesDir), Utf8(weightsDir));
     auto has = [&](const wchar_t* name) { return FileExists(JoinPath(modulesDir, name)); };
     if (!(has(L"c32-wave1.hsaco") && has(L"c64-wave2.hsaco")))
@@ -1215,6 +1219,15 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             // Read by the network on every run. Its reuse decision compares a run with the one before, so a second
             // pass (whose input is the first one's output) would reuse the wrong answer: one pass only.
             _putenv_s("DLSS5_VIT_ADAPTIVE", (info->flags & LMXXF_NR_FRAME_FLAG_VIT_REUSE) && passes == 1 ? "1" : "0");
+            // An input up to 1080p runs on its own size with NVIDIA's padding (upstream 0.40's free resolution). The
+            // 720 tier (1280x768) has no padding row in the ViT grid, which shifts the colour and leaves Style without
+            // effect. 1600x900 and 1920x1080 are the tiers themselves, and above 1080p the tiers stay as they were.
+            {
+                const unsigned cw = info->color_width, ch = info->color_height;
+                const bool freeRes = cw <= 1920 && ch <= 1080 && !(cw == 1920 && ch == 1080) &&
+                                     !(cw == 1600 && ch == 900) && NativeNetworkGeometry::FreeFits(cw, ch);
+                _putenv_s("DLSS5_NETWORK_FREE_RES", freeRes ? "1" : "0");
+            }
             NativeResolveNetworkGeometry(info->color_width, info->color_height);
             const auto tier = NativeCurrentNetworkGeometry();
             if (session->hipPrepared &&
