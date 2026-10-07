@@ -1476,11 +1476,10 @@ void MenuCommon::UpdateMenuInputMode(RenderMenuContext& ctx)
 }
 
 // XeFG on the Vulkan or OpenGL final image, in a D3D12 child window: the FG key and the menu section that switch it.
-// Vulkan keeps XeFG running on its guides with NR off; OpenGL needs NR on.
+// Both keep XeFG running on its guides with NR off.
 static bool ChildWindowFinalImageFG(State& state, Config* config)
 {
-    return (state.swapchainApi == API::Vulkan ||
-            (state.swapchainApi == API::OpenGL && config->DlssNrEnabled.value_or_default())) &&
+    return (state.swapchainApi == API::Vulkan || state.swapchainApi == API::OpenGL) &&
            config->DlssNrPresent.value_or_default() &&
            DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel &&
            state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::XeFG;
@@ -5264,10 +5263,10 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // OptiFG requirements
     auto constexpr optiFgIndex = (uint32_t) FGInput::Upscaler;
-    // Vulkan and OpenGL games get XeFG only through final-image NR, in a D3D12 child window.
+    // Vulkan and OpenGL games get XeFG only through final-image NR, in a D3D12 child window. With NR switched off
+    // XeFG keeps running on the optical-flow guides, so the choice stays.
     const bool childWindowFgApi = state.swapchainApi == API::Vulkan || state.swapchainApi == API::OpenGL;
     const bool childWindowFinalImageFg = childWindowFgApi && config->DlssNrPresent.value_or_default() &&
-                                         config->DlssNrEnabled.value_or_default() &&
                                          DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
     inputOptions[optiFgIndex].set_disabled(
         childWindowFgApi && !childWindowFinalImageFg,

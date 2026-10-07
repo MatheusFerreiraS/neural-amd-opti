@@ -6,6 +6,7 @@
 #include "D3D12_Hooks.h"
 
 #include <Config.h>
+#include <hooks/GL_Hooks.h>
 #include <spoofing/Dxgi_Spoofing.h>
 
 #include <misc/HiddenWindow.h>
@@ -83,7 +84,7 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChain(IDXGIFactory* realFactory, Wrap
     if (pDesc != nullptr)
         memcpy(&localDesc, pDesc, sizeof(DXGI_SWAP_CHAIN_DESC));
 
-    if (State::Instance().vulkanCreatingSC)
+    if (State::Instance().vulkanCreatingSC || GLHooks::CalledFromDriver())
     {
         LOG_WARN("Vulkan or OpenGL is creating swapchain!");
 
@@ -441,7 +442,7 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChainForHwnd(IDXGIFactory2* realFacto
         _skipFGSwapChainCreation = true;
     }
 
-    if (State::Instance().vulkanCreatingSC)
+    if (State::Instance().vulkanCreatingSC || GLHooks::CalledFromDriver())
     {
         LOG_WARN("Vulkan or OpenGL is creating swapchain!");
         HRESULT result;
@@ -831,7 +832,7 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChainForCoreWindow(IDXGIFactory2* rea
                                                               IDXGIOutput* pRestrictToOutput,
                                                               IDXGISwapChain1** ppSwapChain)
 {
-    if (State::Instance().vulkanCreatingSC)
+    if (State::Instance().vulkanCreatingSC || GLHooks::CalledFromDriver())
     {
         LOG_WARN("Vulkan or OpenGL is creating swapchain!");
 

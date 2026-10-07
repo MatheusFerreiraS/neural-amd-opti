@@ -12,6 +12,10 @@
 
 #include <detours/detours.h>
 
+#include <atomic>
+#include <mutex>
+#include <unordered_map>
+
 #include "Hook_Utils.h"
 
 typedef BOOL(WINAPI* PFN_wglSwapBuffers)(HDC);
@@ -230,6 +234,40 @@ PROC GLHooks::GetProc(const char* name)
         proc = _module != nullptr ? GetProcAddress(_module, name) : nullptr;
 
     return proc;
+}
+
+static std::atomic<bool> _driverPresents = false;
+
+bool GLHooks::DriverPresentsThroughDxgi() { return _driverPresents; }
+
+bool GLHooks::CalledFromDriver()
+{
+    // Nothing to look for in a process without OpenGL.
+    if (_module == nullptr)
+        return false;
+
+    static std::mutex mutex;
+    static std::unordered_map<HMODULE, bool> drivers;
+
+    void* frames[48];
+    const USHORT count = CaptureStackBackTrace(1, 48, frames, nullptr);
+    std::lock_guard lock(mutex);
+    for (USHORT i = 0; i < count; ++i)
+    {
+        HMODULE module = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                static_cast<LPCWSTR>(frames[i]), &module))
+            continue;
+        auto known = drivers.find(module);
+        if (known == drivers.end())
+            known = drivers.emplace(module, GetProcAddress(module, "DrvSwapBuffers") != nullptr).first;
+        if (known->second)
+        {
+            _driverPresents = true;
+            return true;
+        }
+    }
+    return false;
 }
 
 void GLHooks::Hook(HMODULE opengl32)

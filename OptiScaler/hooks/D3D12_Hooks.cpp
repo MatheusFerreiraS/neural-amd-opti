@@ -30,6 +30,7 @@
 
 #include <dxgi1_6.h>
 #include <misc/IdentifyGpu.h>
+#include <hooks/GL_Hooks.h>
 
 #include "Hook_Utils.h"
 
@@ -2058,6 +2059,12 @@ static HRESULT hkD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Minimum
 {
     LOG_DEBUG("Adapter: {:X}, Level: {:X}, Caller: {}", (size_t) pAdapter, (UINT) MinimumFeatureLevel,
               Util::WhoIsTheCaller(_ReturnAddress()));
+
+    if (GLHooks::CalledFromDriver())
+    {
+        LOG_INFO("The OpenGL driver creates a D3D12 device of its own to present; left unhooked");
+        return o_D3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
+    }
 
 #ifdef ENABLE_DEBUG_LAYER_DX12
     LOG_WARN("Debug layers active!");

@@ -91,7 +91,7 @@ if ($mode -ne "menu") {
 }
 if ($mode -eq "fg") {
     $expected += "OpenGL XeFG presenter created", "OpenGL XeFG: 2 generated frames per frame",
-        "OpenGL XeFG paused while frame generation is off", "OpenGL XeFG paused while final-image NR is off"
+        "OpenGL XeFG paused while frame generation is off", "OpenGL final-image route: NR off, XeFG runs on its guides"
 }
 $failed = $code -ne 0
 if ($threaded -and -not ((Get-Content "$out\stdout.txt" -Raw) -match "window moved [1-9]")) {
@@ -111,12 +111,13 @@ if ($mode -eq "fg") {
     function LastLineOf([string]$text) { for ($i = $lines.Count - 1; $i -ge 0; $i--) { if ($lines[$i].Contains($text)) { return $i } }; return -1 }
     $opened = LineOf "OpenGL menu: opened"
     $closed = LineOf "OpenGL menu: closed"
-    $resumed = LastLineOf "XeFG paused while final-image NR is off"
+    $resumed = LastLineOf "OpenGL final-image route: NR on"
     $checks = @(
         @{ Text = "XeFG presents 3 frames per rendered frame"; Ok = (Presented 0 $lines.Count) -ge 3 },
         @{ Text = "XeFG keeps generating with the menu open"; Ok = $opened -ge 0 -and $closed -gt $opened -and (Presented $opened $closed) -ge 2 },
         @{ Text = "XeFG generates again after the FG and NR keys"; Ok = $resumed -ge 0 -and (Presented $resumed $lines.Count) -ge 2 },
-        @{ Text = "XeFG does not pause for the menu"; Ok = -not ($log.Contains("paused while OptiScaler menu is open")) }
+        @{ Text = "XeFG does not pause for the menu"; Ok = -not ($log.Contains("paused while OptiScaler menu is open")) },
+        @{ Text = "XeFG keeps running with NR off"; Ok = -not ($log.Contains("paused while final-image NR is off")) }
     )
     foreach ($check in $checks) {
         if ($check.Ok) { Write-Host "ok: $($check.Text)" } else { Write-Host "MISSING: $($check.Text)"; $failed = $true }

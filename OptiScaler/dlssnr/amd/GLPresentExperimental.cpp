@@ -138,6 +138,13 @@ struct Route
     AmdPresentExperimental::FgPresenter fg { "OpenGL" };
     AmdPresentExperimental::Guides guides;
     bool fgFailed = false;
+    // The game's window while it is lifted one row above its monitor (see Lift), its rect before, since when
+    // the lift is seen on the window, and how many times in a row the game put it back right away.
+    HWND lifted = nullptr;
+    RECT liftedFrom {};
+    std::chrono::steady_clock::time_point liftedAt {};
+    bool liftSeen = false;
+    int quickPutBacks = 0;
     bool loggedFirst = false;
     uint64_t totalMicros = 0;
     uint32_t measured = 0;
@@ -343,20 +350,113 @@ struct Route
 };
 
 Route route;
+
+void MoveWindow(HWND window, const RECT& rect)
+{
+    UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+    // The window's own thread may be waiting for this one.
+    if (GetWindowThreadProcessId(window, nullptr) != GetCurrentThreadId())
+        flags |= SWP_ASYNCWINDOWPOS;
+    SetWindowPos(window, nullptr, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, flags);
+}
+
+// AMD's driver flips some games' OpenGL windows that cover the whole monitor straight to the display, past
+// DWM (Wolfenstein: The Old Blood, by its profile), and XeFG's child window never reaches the screen. A
+// window one row taller, starting one row above the monitor, no longer has the monitor's size: the driver
+// leaves it to DWM and the extra row stays off screen. It is lifted while XeFG shows, and put back when
+// frame generation stops. Not needed when the driver presents the window through DXGI itself. A game puts
+// its window back at the monitor's size now and then (back from alt-tab, a loading screen); it is lifted
+// again then, unless the game undoes every lift at once.
+void Lift(Route& r, HWND hwnd, bool shown, bool wanted)
+{
+    RECT now {};
+    if (r.lifted && (!IsWindow(r.lifted) || !GetWindowRect(r.lifted, &now)))
+        r.lifted = nullptr;
+
+    const auto time = std::chrono::steady_clock::now();
+    if (r.lifted && !r.liftSeen)
+    {
+        // A move from another thread lands later; one that never lands is tried again.
+        if (now.top == r.liftedFrom.top - 1 && now.bottom == r.liftedFrom.bottom)
+        {
+            r.liftSeen = true;
+            r.liftedAt = time;
+        }
+        else if (time - r.liftedAt > std::chrono::seconds(2))
+            r.lifted = nullptr;
+    }
+    else if (r.lifted && EqualRect(&now, &r.liftedFrom))
+    {
+        r.lifted = nullptr;
+        r.quickPutBacks = time - r.liftedAt < std::chrono::seconds(1) ? r.quickPutBacks + 1 : 0;
+        if (r.quickPutBacks == 5)
+            LOG_WARN("OpenGL XeFG: the game puts its window back at the monitor's size at once; it is left there");
+        else
+            LOG_INFO("OpenGL XeFG: the game put its window back at the monitor's size");
+    }
+
+    if (r.lifted && !wanted)
+    {
+        if (now.top == r.liftedFrom.top - 1 && now.bottom == r.liftedFrom.bottom)
+            MoveWindow(r.lifted, r.liftedFrom);
+        LOG_INFO("OpenGL XeFG: the game window is back at its monitor's size");
+        r.lifted = nullptr;
+        return;
+    }
+
+    if (r.lifted || !shown || r.quickPutBacks >= 5 || GLHooks::DriverPresentsThroughDxgi())
+        return;
+
+    const HWND root = GetAncestor(hwnd, GA_ROOT);
+    MONITORINFO monitor { sizeof(monitor) };
+    if (!root || !GetWindowRect(root, &now) ||
+        !GetMonitorInfoW(MonitorFromWindow(root, MONITOR_DEFAULTTONEAREST), &monitor) ||
+        !EqualRect(&now, &monitor.rcMonitor))
+        return;
+
+    RECT taller = now;
+    taller.top -= 1;
+    MoveWindow(root, taller);
+    r.lifted = root;
+    r.liftedFrom = now;
+    r.liftedAt = time;
+    r.liftSeen = false;
+    LOG_INFO("OpenGL XeFG: the game window covers its monitor and the driver may flip it past XeFG's window; "
+             "lifted one row above the monitor");
+}
 } // namespace
+
+// XeFG asked for on the OpenGL route. With NR off it keeps running on the optical-flow guides.
+bool FgWanted()
+{
+    return Config::Instance()->FGEnabled.value_or_default() && State::Instance().activeFgInput == FGInput::Upscaler &&
+           State::Instance().activeFgOutput == FGOutput::XeFG;
+}
 
 bool Wanted()
 {
     auto config = Config::Instance();
-    const bool wanted = config->DlssNrEnabled.value_or_default() && config->DlssNrPresent.value_or_default() &&
-                        !route.stopped && DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
+    const bool neural = config->DlssNrEnabled.value_or_default();
+    const bool wanted = (neural || FgWanted()) && config->DlssNrPresent.value_or_default() && !route.stopped &&
+                        DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
 
-    // Generated frames end with NR; the child window must not keep showing the last one.
+    static bool neuralBefore = true;
+    if (config->DlssNrPresent.value_or_default() && neural != neuralBefore)
+    {
+        neuralBefore = neural;
+        LOG_INFO("OpenGL final-image route: NR {}", neural       ? "on"
+                                                    : FgWanted() ? "off, XeFG runs on its guides"
+                                                                 : "off");
+    }
+
+    // Generated frames end with the route; the child window must not keep showing the last one.
     if (!wanted && route.fg.window && (route.fg.enabled || route.fg.visible))
     {
         route.fg.Pause();
         LOG_INFO("OpenGL XeFG paused while final-image NR is off");
     }
+    if (!wanted && route.lifted)
+        Lift(route, nullptr, false, false);
 
     return wanted;
 }
@@ -418,14 +518,16 @@ void Process(HWND hwnd, uint32_t width, uint32_t height, uint32_t generation)
     auto settings =
         DlssNr::AmdBridge::SettingsFromConfig(*Config::Instance(), Config::Instance()->AmdNrScale.value_or_default());
     settings.spinDraw = 0;
+    const bool neural = Config::Instance()->DlssNrEnabled.value_or_default();
     if (!AmdPresentExperimental::RenderResource(r.shared.Get(), r.device.Get(), r.queue.Get(),
-                                                Util::DllPath().parent_path(), settings, &r.guides))
+                                                Util::DllPath().parent_path(), settings, &r.guides, neural))
     {
         r.Stop(AmdPresentExperimental::Status());
         return;
     }
 
-    if (!r.BlitOut())
+    // With NR off the game's image is left as it was; only XeFG's guides were made.
+    if (neural && !r.BlitOut())
     {
         r.Stop("the blit back into the back buffer failed");
         return;
@@ -457,9 +559,7 @@ void PresentGenerated(HWND hwnd)
     r.fgPending = false;
 
     // The overlay crossing is made the first time XeFG wants a frame at this size.
-    const bool wantFg = Config::Instance()->FGEnabled.value_or_default() &&
-                        State::Instance().activeFgInput == FGInput::Upscaler &&
-                        State::Instance().activeFgOutput == FGOutput::XeFG;
+    const bool wantFg = FgWanted();
     if (wantFg && !r.fgFailed && !r.overlay &&
         r.Cross(r.width, r.height, r.overlay, r.overlayMemory, r.overlayTexture, r.overlayFbo) == 0)
     {
@@ -474,5 +574,6 @@ void PresentGenerated(HWND hwnd)
     }
     r.fg.Step(hwnd, r.device.Get(), r.queue.Get(), overlaid ? r.overlay.Get() : r.shared.Get(), r.shared.Get(),
               r.guides, r.fgFailed);
+    Lift(r, hwnd, r.fg.window && r.fg.visible, wantFg && !r.fgFailed);
 }
 } // namespace AmdGlPresent

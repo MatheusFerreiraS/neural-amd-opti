@@ -109,7 +109,7 @@ struct FgPresenter
         maximum = 0;
         settings.Reset();
         enabled = false;
-        visible = false;
+        visible = childFgShown = false;
         resetOnResume = true;
         previous = {};
     }
@@ -201,7 +201,8 @@ struct FgPresenter
             LOG_ERROR("{} XeFG: child window failed ({})", api, GetLastError());
             return false;
         }
-        visible = true;
+        // The child is created visible; the FPS overlay counts XeFG's frames from here.
+        visible = childFgShown = true;
         const auto created = XeFGProxy::D3D12CreateContext()(device, &context);
         if (created != XEFG_SWAPCHAIN_RESULT_SUCCESS)
         {
