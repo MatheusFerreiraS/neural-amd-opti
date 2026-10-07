@@ -31,6 +31,10 @@ cl /nologo /std:c++20 /EHsc /W4 /utf-8 tests\amd_graphics_tracker.cpp /Fe"%AMD_T
 if not %errorlevel%==0 exit /b 1
 "%AMD_TEST_OUT%\amd_graphics_tracker.exe"
 if not %errorlevel%==0 exit /b 1
+cl /nologo /std:c++20 /EHsc /W4 /utf-8 tests\amd_stall_watch.cpp /Fe"%AMD_TEST_OUT%\amd_stall_watch.exe" /Fo"%AMD_TEST_OUT%\amd_stall_watch.obj"
+if not %errorlevel%==0 exit /b 1
+"%AMD_TEST_OUT%\amd_stall_watch.exe"
+if not %errorlevel%==0 exit /b 1
 cl /nologo /std:c++20 /EHsc /W4 /utf-8 tests\amd_graphics_restore.cpp /Fe"%AMD_TEST_OUT%\amd_graphics_restore.exe" /Fo"%AMD_TEST_OUT%\amd_graphics_restore.obj"
 if not %errorlevel%==0 exit /b 1
 "%AMD_TEST_OUT%\amd_graphics_restore.exe"

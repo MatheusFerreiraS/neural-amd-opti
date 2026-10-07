@@ -65,6 +65,9 @@ struct Context
     ComPtr<ID3D12GraphicsCommandList> cmd;
     ComPtr<ID3D12Fence> fence;
     UINT64 serial = 0;
+    // Signalled just before each frame's list: the stall watch times NR's job from there (StallWatch.h, Start).
+    ComPtr<ID3D12Fence> started;
+    UINT64 startSerial = 0;
     ComPtr<ID3D12Resource> input, motion, depth, output, heldBack;
     // Guides frame generation may still hold from before a resize, kept until two frames after it.
     ComPtr<ID3D12Resource> retired[2];
@@ -167,6 +170,7 @@ struct Context
         Check(d->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&cmd)));
         Check(cmd->Close());
         Check(d->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
+        Check(d->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&started)));
         D3D12_DESCRIPTOR_HEAP_DESC hd {};
         hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         hd.NumDescriptors = 2;
@@ -613,6 +617,7 @@ struct Context
         }
         Check(cmd->Close());
         ID3D12CommandList* lists[] = { cmd.Get() };
+        Check(queue->Signal(started.Get(), ++startSerial));
         if (backend)
             backend->Submitting(queue.Get(), 1, lists);
         // Held only once GPU work reads it: a failure before this point leaves the game's buffer alone.
@@ -620,7 +625,10 @@ struct Context
             heldBack = back;
         queue->ExecuteCommandLists(1, lists);
         if (backend)
+        {
+            stallwatch::Gate gate(started.Get(), startSerial);
             backend->Submitted(queue.Get(), 1, lists);
+        }
         Check(queue->Signal(fence.Get(), ++serial));
         if (!pipelined)
             ReleaseBackBuffer();
