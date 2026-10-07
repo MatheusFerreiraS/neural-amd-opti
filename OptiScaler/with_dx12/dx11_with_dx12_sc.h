@@ -82,6 +82,7 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     void _ReleaseInteropBackBuffers();
     void _ReleaseInteropObjects();
     void _RefreshCachedSwapchainDesc();
+    bool _ResizeFgToReal();
     UINT _GetDx11BackBufferIndexForPresent() const;
     void _AdvanceFakeBackBufferIndex();
     bool _WaitForInteropCopyOnPresentQueue();
@@ -133,6 +134,9 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     UINT _currentFakeIndex = 0;
     DXGI_FORMAT _bufferFormat = DXGI_FORMAT_UNKNOWN;
     bool _interopInitialized = false;
+    // Frames in a row Present could not cross to the D3D12 swapchain, and whether the last one failed on its size.
+    UINT _presentFallbacks = 0;
+    bool _fgSizeDiffers = false;
 
     HWND _handle = nullptr;
 };
