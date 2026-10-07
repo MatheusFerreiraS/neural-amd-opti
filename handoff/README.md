@@ -1203,6 +1203,44 @@ part are in the sections at the end of this file (stall protection, lmxxf 0.39) 
 - **mochizuki.** Upstream 82560c4's Windows network and motion work (8.5 ms at 1080p from 9.3; about ten times
   steadier in motion below 1080p), `NR_EDGE_BODIES=0` for a 23 s cold build.
 
+### 0.5.1
+
+Not released; the version string is still 0.5.0. Nothing below was tested in a game or on a GPU: the build passes and
+so do the host contracts (`tools\test-amd-host-contracts.cmd`, now with `tests\amd_stall_watch.cpp` on WARP fences).
+
+- **danielblnc 0.6.0's green noise.** 0.6.0 reads a float pre-exposure at `0x60` of the record packet
+  (`movss xmm0,[rsi+0x60]`, its UsePreExposure path, on by default). `Packet` in `AmdPreSr.cpp` ended at `0x60` on the
+  stack, so the runtime divided the colour by whatever lay there (95385, 17703, ... in a GTA V Enhanced log). The packet
+  carries `preExposure = 1` now (the exposure handed over already has the game's pre-exposure divided out) and is
+  `0x68` long; 0.3.1 to 0.5.1 never read past `0x5c`. Every route (upscaler path, NR without upscaling on D3D9, D3D11,
+  D3D12, Vulkan and OpenGL) builds its packet there.
+- **NR without upscaling no longer stops for the session** (Mafia III with an AMD ReLive recording or screenshot,
+  screen transitions in missions):
+  - The stall watch turns Enable NR off as on the upscaler path, with the note under it; switching it on again retries.
+    Both paths ask `AmdBridge::StandDownIfTripped`. Frame generation keeps its guides meanwhile.
+  - The stall clock starts when the queue reaches NR's job (`stallwatch::Gate`, a fence signalled just before the
+    list), not at the submission: on the D3D11 bridge the job waits for the game's D3D11 queue, on the DX11-to-DX12
+    bridge for the copy, and a game queue held for 2 s by a capture or a mode change was blamed on NR.
+  - A frame past the 4 s GPU timeout stops NR until it finishes, then NR goes on and the game's backbuffer is handed
+    back (it was kept until process exit, and the game's next `ResizeBuffers` failed with `DXGI_ERROR_INVALID_CALL`). A
+    resize waits 10 s for a frame that holds a backbuffer. Every timeout is logged. Vulkan and OpenGL still stop their
+    own bridge on one.
+  - A failed runtime is retried 10 s later, three times a session at most, when the failure left nothing behind
+    (`Backend::Retry`: device alive, completion timeline trusted, no slot busy, no pending list in the runtime).
+  - A swapchain on another D3D11 device (an overlay's, a capture's) is left alone, logged once, instead of turning NR
+    off with "D3D11 device changed; restart required".
+- **DX11-to-DX12 bridge.** A step of the crossing that fails presents the game's D3D11 swapchain and returns its result
+  instead of `DXGI_ERROR_DEVICE_REMOVED`, which games quit on; the copy into a D3D12 swapchain of another size is
+  skipped. `ResizeBuffers` and `ResizeBuffers1` refresh the buffer count whenever the game's own resize succeeded and
+  return its result, logging a D3D12 resize that failed.
+- **Logs.** `amd_bridge.log` takes a line only when it differs from the last one written (the render batch split went
+  in every frame: 29 MB in a Cyberpunk report). The upscaler path logs once which runtime `NrBackend` got, and warns
+  when the name is none of them. The menu key's open and close and the AMD graphics tracker hooks (with why) are logged
+  at Info.
+- **Build.** The `tools\*.cmd` scripts take `VS_ROOT` when it is set instead of asking vswhere, which lists nothing when
+  the Visual Studio installer's registry is broken, and `gen_ffx_opticalflow.ps1` finds dxc in the SDK vcvars names
+  (`WindowsSdkDir`).
+
 ## 6. Diagnostics playbook
 
 When FSR-RR "runs but does nothing", the denoiser dispatching successfully proves
