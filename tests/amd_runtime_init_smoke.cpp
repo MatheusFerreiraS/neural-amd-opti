@@ -197,9 +197,9 @@ int wmain(int argc, wchar_t** argv)
         const bool ok = reinterpret_cast<InitFn>(reinterpret_cast<std::uintptr_t>(h) + L->init)(
             reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(h) + L->engine), &file);
         std::printf("init(engine, weights) = %d in %lld ms; nativeFailure=%u\n", ok ? 1 : 0,
-                    static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                               std::chrono::steady_clock::now() - start)
-                                               .count()),
+                    static_cast<long long>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
+                            .count()),
                     At<uint8_t>(h, L->nativeFailure));
         Expect(ok, "runtime init returned false");
         Expect(At<uint8_t>(h, L->nativeFailure) == 0, "runtime reports a native failure after init");
@@ -240,8 +240,7 @@ int wmain(int argc, wchar_t** argv)
             double gpuMs = 0;
             for (int frame = 0; frame < framesPerMode; ++frame)
             {
-                Expect(SUCCEEDED(allocator->Reset()) && SUCCEEDED(list->Reset(allocator.Get(), nullptr)),
-                       "list reset");
+                Expect(SUCCEEDED(allocator->Reset()) && SUCCEEDED(list->Reset(allocator.Get(), nullptr)), "list reset");
                 // Per-Record writes, as Backend::Record makes them.
                 if (L->spinDraw)
                     At<int>(h, L->spinDraw) = mode;

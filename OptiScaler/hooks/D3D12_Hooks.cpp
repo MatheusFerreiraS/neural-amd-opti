@@ -1767,7 +1767,8 @@ void D3D12Hooks::HookToCommandListLate(ID3D12GraphicsCommandList* commandList)
             {
                 s_amdGraphicsTrackerHooks = true;
                 AmdPreSr::GraphicsSnap::GraphicsTracker().SetEnabled(true);
-                LOG_INFO("Hooked RootSignature functions Late + AMD graphics tracker (AmdGraphicsWait=1, no submission split)");
+                LOG_INFO("Hooked RootSignature functions Late + AMD graphics tracker (AmdGraphicsWait=1, no submission "
+                         "split)");
             }
             else
             {

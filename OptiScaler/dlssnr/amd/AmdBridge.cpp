@@ -1112,8 +1112,7 @@ bool StandDownIfTripped()
     // NR switches off for this session without touching the INI, and the menu says why. Switched on
     // again (menu or the NR key), it starts with a fresh watch.
     auto& stall = stallwatch::Watch::Get();
-    stall.limitMs.store(
-        static_cast<UINT64>(std::max(0, Config::Instance()->AmdStallStandDownMs.value_or_default())));
+    stall.limitMs.store(static_cast<UINT64>(std::max(0, Config::Instance()->AmdStallStandDownMs.value_or_default())));
     std::lock_guard lock(standDownMutex);
     const UINT64 held = stall.Tripped();
     if (!held)

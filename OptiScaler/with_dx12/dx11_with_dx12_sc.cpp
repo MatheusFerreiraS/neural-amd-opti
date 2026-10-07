@@ -421,8 +421,8 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
          (Config::Instance()->FGEnabled.value_or_default() && State::Instance().activeFgInput == FGInput::Upscaler)) &&
         DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel)
     {
-        auto settings = DlssNr::AmdBridge::SettingsFromConfig(
-            *Config::Instance(), Config::Instance()->AmdNrScale.value_or_default());
+        auto settings = DlssNr::AmdBridge::SettingsFromConfig(*Config::Instance(),
+                                                              Config::Instance()->AmdNrScale.value_or_default());
         settings.spinDraw = 0;
         AmdPresentExperimental::Guides guides;
         // NR runs on the queue the frame generation swapchain was made with, after its wait for the copy above:
@@ -451,8 +451,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
                 _fg->EvaluateState(_dx12Device, constants);
             if (ready && _fg->IsActive() && !_fg->IsPaused())
             {
-                _fg->SetCameraValues(0.1f, 1000.0f, 1.5707963f,
-                                     float(guides.width) / float(guides.height));
+                _fg->SetCameraValues(0.1f, 1000.0f, 1.5707963f, float(guides.width) / float(guides.height));
                 _fg->SetMVScale(1.0f, 1.0f);
                 _fg->SetJitter(0.0f, 0.0f);
                 _fg->SetReset(guides.reset);

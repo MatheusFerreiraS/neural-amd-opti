@@ -36,10 +36,7 @@
 namespace AmdPresentExperimental
 {
 using Microsoft::WRL::ComPtr;
-inline bool IsTarget()
-{
-    return Config::Instance()->DlssNrPresent.value_or_default();
-}
+inline bool IsTarget() { return Config::Instance()->DlssNrPresent.value_or_default(); }
 inline std::string status = "NR without upscaling: waiting for a D3D9, D3D11, D3D12, Vulkan or OpenGL frame";
 inline std::mutex mutex;
 // The runtime loads once per process and stays on the device it was built on.
@@ -119,8 +116,8 @@ struct Context
         HANDLE done = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!done)
             return false;
-        const bool signaled = SUCCEEDED(fence->SetEventOnCompletion(serial, done)) &&
-                              WaitForSingleObject(done, ms) == WAIT_OBJECT_0;
+        const bool signaled =
+            SUCCEEDED(fence->SetEventOnCompletion(serial, done)) && WaitForSingleObject(done, ms) == WAIT_OBJECT_0;
         CloseHandle(done);
         return signaled;
     }
@@ -267,8 +264,10 @@ struct Context
             auto v = shared.opticalFlowVector.resourceDescription;
             auto s = shared.opticalFlowSCD.resourceDescription;
             flowInput = Texture(DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-            flowSparse = Texture(DXGI_FORMAT_R16G16_SINT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, v.width, v.height);
-            flowScd = Texture(DXGI_FORMAT_R32_UINT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, s.width, std::max(s.height, 1u));
+            flowSparse =
+                Texture(DXGI_FORMAT_R16G16_SINT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, v.width, v.height);
+            flowScd = Texture(DXGI_FORMAT_R32_UINT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, s.width,
+                              std::max(s.height, 1u));
             D3D12_HEAP_PROPERTIES hp {};
             hp.Type = D3D12_HEAP_TYPE_READBACK;
             D3D12_RESOURCE_DESC readback {};
@@ -278,8 +277,8 @@ struct Context
             readback.DepthOrArraySize = readback.MipLevels = 1;
             readback.SampleDesc.Count = 1;
             readback.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-            Check(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &readback,
-                D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&flowScdReadback)));
+            Check(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &readback, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                  nullptr, IID_PPV_ARGS(&flowScdReadback)));
             D3D12_DESCRIPTOR_HEAP_DESC hd {};
             hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
             hd.NumDescriptors = 5;
@@ -298,7 +297,8 @@ struct Context
             signature.pParameters = params;
             ComPtr<ID3DBlob> sig;
             Check(D3D12SerializeRootSignature(&signature, D3D_ROOT_SIGNATURE_VERSION_1, &sig, nullptr));
-            Check(device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&flowRoot)));
+            Check(
+                device->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&flowRoot)));
             const char* shader = R"(Texture2D<int2> src:register(t0); Texture2D<float> depth:register(t1);
                 RWTexture2D<float2> dst:register(u0); cbuffer C:register(b0){uint w,h,useDepth;}
                 [numthreads(8,8,1)] void main(uint3 p:SV_DispatchThreadID){
@@ -314,7 +314,8 @@ struct Context
                 v+=k*float2(src.Load(int3(b,0)));sum+=k;}
                 dst[p.xy]=v/max(sum,1e-9);})";
             ComPtr<ID3DBlob> b, e;
-            Check(D3DCompile(shader, strlen(shader), "Optical Flow densify", nullptr, nullptr, "main", "cs_5_0", 0, 0, &b, &e));
+            Check(D3DCompile(shader, strlen(shader), "Optical Flow densify", nullptr, nullptr, "main", "cs_5_0", 0, 0,
+                             &b, &e));
             D3D12_COMPUTE_PIPELINE_STATE_DESC pd {};
             pd.pRootSignature = flowRoot.Get();
             pd.CS = { b->GetBufferPointer(), b->GetBufferSize() };
@@ -368,7 +369,8 @@ struct Context
         cmd->SetPipelineState(pipeline.Get());
         Transition(cmd.Get(), flowInput.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         cmd->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
-        Transition(cmd.Get(), flowInput.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Transition(cmd.Get(), flowInput.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         FfxOpticalflowDispatchDescription dispatch {};
         dispatch.commandList = OptiFfxGetCommandListDX12(cmd.Get());
         dispatch.color = OptiFfxGetResourceDX12(flowInput.Get(), ffxGetResourceDescriptionDX12(flowInput.Get()),
@@ -400,13 +402,16 @@ struct Context
             cmd->SetComputeRoot32BitConstants(1, 3, constants, 0);
             table.ptr += UINT64(2) * inc;
             cmd->SetComputeRootDescriptorTable(0, table);
-            Transition(cmd.Get(), motion.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            Transition(cmd.Get(), motion.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             cmd->Dispatch((width + 7) / 8, (height + 7) / 8, 1);
-            Transition(cmd.Get(), motion.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Transition(cmd.Get(), motion.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
         Transition(cmd.Get(), flowSparse.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                    D3D12_RESOURCE_STATE_COMMON);
-        Transition(cmd.Get(), flowInput.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+        Transition(cmd.Get(), flowInput.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                   D3D12_RESOURCE_STATE_COMMON);
         return valid;
     }
     bool ReadSceneCut()
@@ -508,14 +513,14 @@ struct Context
             if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM && desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM)
             {
                 if (!formatReported)
-                    LOG_WARN("NR without upscaling: backbuffer format {} is not RGBA8 or BGRA8; no NR and no XeFG guides",
-                             (UINT) desc.Format);
+                    LOG_WARN(
+                        "NR without upscaling: backbuffer format {} is not RGBA8 or BGRA8; no NR and no XeFG guides",
+                        (UINT) desc.Format);
                 formatReported = true;
                 status = "NR without upscaling: unsupported backbuffer format";
                 return false;
             }
-            if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM &&
-                !(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET))
+            if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM && !(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET))
             {
                 status = "NR without upscaling: BGRA backbuffer cannot be a render target";
                 return false;
@@ -619,14 +624,14 @@ struct Context
         {
             const auto now = GetTickCount64();
             const auto& cfg = *Config::Instance();
-            const float strength = cfg.AmdStabilizerStrength.has_value()
-                                       ? cfg.AmdStabilizerStrength.value_or_default() : .8f;
-            const float threshold = cfg.AmdStabilizerThreshold.has_value()
-                                        ? cfg.AmdStabilizerThreshold.value_or_default() : 4.f;
+            const float strength =
+                cfg.AmdStabilizerStrength.has_value() ? cfg.AmdStabilizerStrength.value_or_default() : .8f;
+            const float threshold =
+                cfg.AmdStabilizerThreshold.has_value() ? cfg.AmdStabilizerThreshold.value_or_default() : 4.f;
             if (strength > 0)
-                result = stabilizer->Record(cmd.Get(), f, result,
-                                            stableLast && now - lastModifiedTick < 250 && !f.reset,
-                                            std::clamp(strength, 0.f, 1.f), std::clamp(threshold, .5f, 8.f));
+                result =
+                    stabilizer->Record(cmd.Get(), f, result, stableLast && now - lastModifiedTick < 250 && !f.reset,
+                                       std::clamp(strength, 0.f, 1.f), std::clamp(threshold, .5f, 8.f));
             else
             {
                 stabilizer->Invalidate();
@@ -703,10 +708,10 @@ struct Context
             const char* ps = "Texture2D<float4> src:register(t0);"
                              "float4 main(float4 p:SV_Position):SV_Target {return src.Load(int3(p.xy,0));}";
             ComPtr<ID3DBlob> vertex, pixel;
-            Check(D3DCompile(vs, strlen(vs), "Final-image VS", nullptr, nullptr, "main", "vs_5_0", 0, 0,
-                             &vertex, &errors));
-            Check(D3DCompile(ps, strlen(ps), "Final-image PS", nullptr, nullptr, "main", "ps_5_0", 0, 0,
-                             &pixel, &errors));
+            Check(D3DCompile(vs, strlen(vs), "Final-image VS", nullptr, nullptr, "main", "vs_5_0", 0, 0, &vertex,
+                             &errors));
+            Check(D3DCompile(ps, strlen(ps), "Final-image PS", nullptr, nullptr, "main", "ps_5_0", 0, 0, &pixel,
+                             &errors));
             D3D12_GRAPHICS_PIPELINE_STATE_DESC pso {};
             pso.pRootSignature = graphicsRoot.Get();
             pso.VS = { vertex->GetBufferPointer(), vertex->GetBufferSize() };
@@ -1050,14 +1055,13 @@ struct Bridge11
         desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
         desc.Format = f;
         desc.Usage = D3D11_USAGE_DEFAULT;
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE |
-                         (f == DXGI_FORMAT_B8G8R8A8_UNORM ? D3D11_BIND_RENDER_TARGET : 0u);
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | (f == DXGI_FORMAT_B8G8R8A8_UNORM ? D3D11_BIND_RENDER_TARGET : 0u);
         desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED;
         Check(game->CreateTexture2D(&desc, nullptr, &shared11));
         ComPtr<IDXGIResource1> resource;
         Check(shared11.As(&resource));
-        Check(resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-                                           nullptr, &handle));
+        Check(resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr,
+                                           &handle));
         Check(work->OpenSharedHandle(handle, IID_PPV_ARGS(&shared12)));
         width = w;
         height = h;
@@ -1112,16 +1116,17 @@ struct Bridge11
             if (!depthDeferred)
             {
                 Check(game->CreateDeferredContext(0, &depthDeferred));
-                static constexpr char vs[] = "float4 main(uint id:SV_VertexID):SV_Position {"
+                static constexpr char vs[] =
+                    "float4 main(uint id:SV_VertexID):SV_Position {"
                     "float2 p=float2((id<<1)&2,id&2);return float4(p*float2(2,-2)+float2(-1,1),0,1);}";
                 static constexpr char ps[] = "Texture2D<float> z:register(t0);"
-                    "float main(float4 p:SV_Position):SV_Target{return z.Load(int3(p.xy,0));}";
+                                             "float main(float4 p:SV_Position):SV_Target{return z.Load(int3(p.xy,0));}";
                 ComPtr<ID3DBlob> blob, errors;
-                Check(D3DCompile(vs, sizeof(vs), "Depth capture VS", nullptr, nullptr, "main", "vs_5_0", 0, 0,
-                                 &blob, &errors));
+                Check(D3DCompile(vs, sizeof(vs), "Depth capture VS", nullptr, nullptr, "main", "vs_5_0", 0, 0, &blob,
+                                 &errors));
                 Check(game->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, &depthVs));
-                Check(D3DCompile(ps, sizeof(ps), "Depth capture PS", nullptr, nullptr, "main", "ps_5_0", 0, 0,
-                                 &blob, &errors));
+                Check(D3DCompile(ps, sizeof(ps), "Depth capture PS", nullptr, nullptr, "main", "ps_5_0", 0, 0, &blob,
+                                 &errors));
                 Check(game->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, &depthPs));
             }
             D3D11_VIEWPORT viewport {};
@@ -1215,8 +1220,7 @@ struct Bridge11
                AmdPreSr::Settings settings)
     {
         ComPtr<IDXGISwapChain3> swap3;
-        const UINT index = SUCCEEDED(sc->QueryInterface(IID_PPV_ARGS(&swap3)))
-                               ? swap3->GetCurrentBackBufferIndex() : 0;
+        const UINT index = SUCCEEDED(sc->QueryInterface(IID_PPV_ARGS(&swap3))) ? swap3->GetCurrentBackBufferIndex() : 0;
         ComPtr<ID3D11Texture2D> back;
         Check(sc->GetBuffer(index, IID_PPV_ARGS(&back)));
         FrameTexture(back.Get(), device, directory, settings, true);
@@ -1240,8 +1244,8 @@ inline void Render11(IDXGISwapChain* sc, ID3D11Device* device, const std::filesy
             bridge11->stopped = true;
     }
 }
-inline bool RenderTexture11(ID3D11Texture2D* texture, ID3D11Device* device,
-                            const std::filesystem::path& directory, AmdPreSr::Settings settings)
+inline bool RenderTexture11(ID3D11Texture2D* texture, ID3D11Device* device, const std::filesystem::path& directory,
+                            AmdPreSr::Settings settings)
 {
     Lock g;
     try
