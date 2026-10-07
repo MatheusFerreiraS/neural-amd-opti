@@ -410,6 +410,7 @@ struct Backend::Impl
         return value;
     }
     bool deviceLostReported = false;
+    bool shutDown = false;
     UINT width = 0, height = 0, activePasses = 0, lastPasses = 0;
     // The runtime's timing, set before the first pass loads. In async its job counter (L->jobDone) never moves:
     // a slot is done once its list ran, since the runtime copied the inputs into its own staging there.
@@ -2248,6 +2249,25 @@ bool Backend::Ready()
     return !p->failed && !p->AnySlotBusy() && completed != UINT64_MAX && completed >= p->LatestCompletion();
 }
 bool Backend::Failed() const { return p->failed; }
+bool Backend::Retry()
+{
+    std::lock_guard guard(p->lock);
+    const AmdLayout* L = p->L;
+    if (!p->failed || !p->fence || !L || p->shutDown || p->deviceLostReported || !p->completionOrderValid ||
+        FAILED(p->device->GetDeviceRemovedReason()))
+        return false;
+    p->RetireSubmission(false, "Retry");
+    const auto completed = p->fence->GetCompletedValue();
+    if (p->AnySlotBusy() || completed == UINT64_MAX || completed < p->LatestCompletion())
+        return false;
+    for (auto h : p->runtime)
+        if (h && At<ID3D12CommandList*>(h, L->pendingList) != nullptr)
+            return false;
+    p->failed = false;
+    p->resetRequested = true;
+    p->Log("AMD backend: retrying after a failure, with fresh history");
+    return true;
+}
 bool Backend::Shutdown()
 {
     std::lock_guard guard(p->lock);
@@ -2269,6 +2289,7 @@ bool Backend::Shutdown()
             reinterpret_cast<void (*)()>(reinterpret_cast<uintptr_t>(h) + L->shutdown)();
         }
     p->failed = true;
+    p->shutDown = true;
     p->Log("Workers stopped outside loader lock");
     return true;
 }

@@ -153,6 +153,9 @@ class Backend
     void Submitted(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
     bool Ready();
     bool Failed() const;      // stopped for the process: load, device or runtime failure, or shutdown
+    // After a failure that left nothing behind: the device lives, the completion timeline holds, no slot still owns a
+    // job and the runtime has no pending list. Clears the failure and restarts the history; false when it may not.
+    bool Retry();
     bool Shutdown();          // call before loader-lock teardown, after all submissions
     void InvalidateHistory(); // applied at the next safe recording boundary
     std::string Status() const;

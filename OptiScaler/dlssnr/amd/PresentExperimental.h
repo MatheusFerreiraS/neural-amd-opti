@@ -74,6 +74,9 @@ struct Context
     UINT64 retiredUntil = 0;
     UINT busyFrames = 0;
     bool failedReported = false, formatReported = false;
+    // A failed runtime is retried 10 s after it failed, three times a session at most (Backend::Retry).
+    ULONGLONG failedAt = 0;
+    UINT retries = 0;
     // The D3D11 routes let the GPU run a frame's NR while the game prepares the next one; the runtime then skips a
     // frame it has no free slot for. Otherwise every frame waits for its NR before Present.
     bool pipelined = false;
@@ -468,15 +471,28 @@ struct Context
             retired[0].Reset();
             retired[1].Reset();
         }
-        // A failed runtime stays failed and a busy one skips this frame: the frame goes without NR and only
-        // frame generation's guides are left to make. A pipelined frame leaves busy slots to the runtime, as with
-        // an upscaler.
+        // A failed runtime and a busy one skip this frame: the frame goes without NR and only frame generation's
+        // guides are left to make. A pipelined frame leaves busy slots to the runtime, as with an upscaler.
+        if (neural && backend && backend->Failed() && failedReported && retries < 3 &&
+            GetTickCount64() - failedAt >= 10000)
+        {
+            failedAt = GetTickCount64();
+            if (backend->Retry())
+            {
+                failedReported = false;
+                LOG_WARN("NR without upscaling: retrying the runtime after its failure ({} of 3)", ++retries);
+                if (stabilizer)
+                    stabilizer->Invalidate();
+            }
+        }
         const bool failed = neural && backend && backend->Failed();
         const bool busy = neural && backend && !failed && !pipelined && !backend->Ready();
         if (failed && !failedReported)
         {
             failedReported = true;
-            LOG_WARN("NR without upscaling: runtime failed, NR off until the game restarts: {}", backend->Status());
+            failedAt = GetTickCount64();
+            LOG_WARN("NR without upscaling: runtime failed, NR off{}: {}",
+                     retries < 3 ? "; retried in 10 s" : " until the game restarts", backend->Status());
         }
         if (busy && (++busyFrames <= 3 || busyFrames % 300 == 0))
             LOG_INFO("NR without upscaling: runtime still busy, frame left without NR ({})", busyFrames);
