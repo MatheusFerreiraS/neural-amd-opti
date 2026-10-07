@@ -47,14 +47,18 @@ ExitFn exitOriginal = nullptr;
 bool submissionHookReady = false; // guarded by initMutex
 std::string message = "AMD pre-SR: waiting for a DirectX 12 SR frame";
 std::mutex messageMutex;
+// The last line written to amd_bridge.log. Run clears the message every frame, so comparing with it let a note
+// set every frame (the render batch split) append a line each frame: 29 MB in one Cyberpunk report.
+std::string logged;
 std::mutex initMutex;
 std::mutex observedMutex;
 std::unordered_set<ID3D12CommandList*> observedLists;
 void Message(const char* s)
 {
     std::lock_guard l(messageMutex);
-    if (*s && message != s)
+    if (*s && logged != s)
     {
+        logged = s;
         std::ofstream log(Util::DllPath().parent_path() / L"amd_bridge.log", std::ios::app);
         log << GetTickCount64() << " thread=" << GetCurrentThreadId() << " " << s << '\n';
     }
