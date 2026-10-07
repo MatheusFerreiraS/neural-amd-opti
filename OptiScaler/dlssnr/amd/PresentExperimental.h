@@ -161,7 +161,8 @@ struct Context
     {
         // The game's ResizeBuffers fails while NR holds one of its buffers.
         if (heldBack && fence->GetCompletedValue() < serial)
-            LOG_WARN("NR without upscaling: a resize waits up to 4 s for NR's frame, which holds the game's backbuffer");
+            LOG_WARN(
+                "NR without upscaling: a resize waits up to 4 s for NR's frame, which holds the game's backbuffer");
         ReleaseBackBuffer();
         if (stopped && !Resume())
             return;

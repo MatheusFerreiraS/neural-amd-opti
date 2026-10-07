@@ -1439,8 +1439,8 @@ bool Dx11wDx12SC::_ResizeFgToReal()
     MenuOverlayDx::CleanupRenderTarget(!finalImage, _handle);
     _ReleaseInteropBackBuffers();
     WaitForFgBackBuffers(_fgSwapChain);
-    const HRESULT result = _fgSwapChain->ResizeBuffers(0, real.BufferDesc.Width, real.BufferDesc.Height,
-                                                       DXGI_FORMAT_UNKNOWN, fg.Flags);
+    const HRESULT result =
+        _fgSwapChain->ResizeBuffers(0, real.BufferDesc.Width, real.BufferDesc.Height, DXGI_FORMAT_UNKNOWN, fg.Flags);
     if (finalImage)
     {
         MenuOverlayDx::CleanupRenderTarget(true, _handle);
