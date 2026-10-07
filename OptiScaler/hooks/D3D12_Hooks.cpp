@@ -1767,7 +1767,7 @@ void D3D12Hooks::HookToCommandListLate(ID3D12GraphicsCommandList* commandList)
             {
                 s_amdGraphicsTrackerHooks = true;
                 AmdPreSr::GraphicsSnap::GraphicsTracker().SetEnabled(true);
-                LOG_DEBUG("Hooked RootSignature functions Late + AMD graphics tracker");
+                LOG_INFO("Hooked RootSignature functions Late + AMD graphics tracker (AmdGraphicsWait=1, no submission split)");
             }
             else
             {
@@ -1985,7 +1985,7 @@ static void HookToCommandList(ID3D12Device* InDevice)
                         s_amdGraphicsTrackerHooks = true;
                         AmdPreSr::GraphicsSnap::GraphicsTracker().SetEnabled(true);
                         LOG_INFO("AMD graphics tracker hooks attached (RS/IA/OM/pred/Reset/Create/query/indirect/draw, "
-                                 "renderPass={})",
+                                 "renderPass={}): AmdGraphicsWait=1 and no submission split",
                                  o_BeginRenderPass != nullptr && o_EndRenderPass != nullptr);
                         LOG_DEBUG("Hooked RootSignature functions + AMD graphics tracker");
                     }

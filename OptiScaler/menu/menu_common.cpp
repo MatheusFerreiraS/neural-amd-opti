@@ -1550,7 +1550,7 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
             inputMenu = false;
             _isVisible = !_isVisible;
 
-            LOG_DEBUG("Menu key pressed, {0}", _isVisible ? "opening ImGui" : "closing ImGui");
+            LOG_INFO("Menu key pressed, {0}", _isVisible ? "opening ImGui" : "closing ImGui");
 
             if (_isVisible)
             {
