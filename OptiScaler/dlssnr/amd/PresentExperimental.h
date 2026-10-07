@@ -967,6 +967,8 @@ struct Bridge11
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     bool stopped = false;
     bool formatReported = false;
+    // Frames another D3D11 device presented since this one last did.
+    UINT foreignFrames = 0;
 
     bool Wait11()
     {
@@ -1022,10 +1024,14 @@ struct Bridge11
         ComPtr<IDXGIAdapter> adapter;
         Check(game.As(&dxgi));
         Check(dxgi->GetAdapter(&adapter));
-        Check(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&work)));
-        D3D12_COMMAND_QUEUE_DESC queueDesc {};
-        queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        Check(work->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue)));
+        // A rebind (Rebind) keeps the D3D12 side: the runtime stays on the device it was built on.
+        if (!work)
+        {
+            Check(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&work)));
+            D3D12_COMMAND_QUEUE_DESC queueDesc {};
+            queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+            Check(work->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue)));
+        }
         // Without D3D11.4 fences (an overlay's device wrapper, an old runtime) the CPU waits for each side instead.
         ComPtr<ID3D11Device5> device5;
         HANDLE shared = nullptr;
@@ -1040,8 +1046,48 @@ struct Bridge11
         }
         if (shared)
             CloseHandle(shared);
-        engine = new Context(work.Get(), queue.Get());
-        engine->pipelined = true;
+        if (!engine)
+        {
+            engine = new Context(work.Get(), queue.Get());
+            engine->pipelined = true;
+        }
+    }
+    // The game made a new D3D11 device (some games do on a mode change) and the old one stopped presenting: the
+    // D3D11 side moves to it once NR's last frame finished; the D3D12 device, queue and runtime stay. Only on the
+    // same adapter, which the D3D12 device was made on.
+    bool Rebind(ID3D11Device* device)
+    {
+        ComPtr<IDXGIDevice> dxgi;
+        ComPtr<IDXGIAdapter> adapter;
+        DXGI_ADAPTER_DESC desc {};
+        if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgi))) || FAILED(dxgi->GetAdapter(&adapter)) ||
+            FAILED(adapter->GetDesc(&desc)))
+            return false;
+        const LUID luid = work->GetAdapterLuid();
+        if (desc.AdapterLuid.LowPart != luid.LowPart || desc.AdapterLuid.HighPart != luid.HighPart)
+            return false;
+        if (engine)
+        {
+            engine->BeforeResize();
+            if (engine->stopped)
+                return false;
+        }
+        ReleaseShared();
+        // D3D11 may still wait on the old shared fence; the CPU releases it before the fence goes.
+        if (fence12 && fence12->GetCompletedValue() < fenceValue)
+            fence12->Signal(fenceValue);
+        fenceValue = 0;
+        fence11.Reset();
+        fence12.Reset();
+        depthDeferred.Reset();
+        depthVs.Reset();
+        depthPs.Reset();
+        depthDisabled = false;
+        immediate4.Reset();
+        immediate.Reset();
+        game.Reset();
+        Start(device);
+        return true;
     }
     void EnsureShared(UINT w, UINT h, DXGI_FORMAT f)
     {
@@ -1167,16 +1213,30 @@ struct Bridge11
         if (!game)
             Start(device);
         // Another D3D11 device presenting through OptiScaler (an overlay's or a capture's swapchain, as with AMD ReLive
-        // recording) is left alone: NR stays on the device it started on.
+        // recording) is left alone while the game's own device keeps presenting. One that presents alone for 120
+        // frames is the game's new device, and NR moves to it.
         if (game.Get() != device)
         {
-            static bool logged = false;
-            if (!logged)
-                LOG_WARN("NR without upscaling: a swapchain on another D3D11 device ({:p}) presented; NR stays on {:p}",
-                         static_cast<void*>(device), static_cast<void*>(game.Get()));
-            logged = true;
-            return;
+            if (++foreignFrames < 120)
+            {
+                if (foreignFrames == 1)
+                    LOG_INFO("NR without upscaling: a swapchain on another D3D11 device ({:p}) presented; NR stays on "
+                             "{:p}",
+                             static_cast<void*>(device), static_cast<void*>(game.Get()));
+                return;
+            }
+            foreignFrames = 0;
+            if (!Rebind(device))
+            {
+                status = "NR without upscaling: the game presents from another D3D11 device; restart the game for NR";
+                LOG_WARN("{}", status);
+                stopped = true;
+                return;
+            }
+            LOG_WARN("NR without upscaling: the game presents from another D3D11 device ({:p}) alone; NR moved to it",
+                     static_cast<void*>(device));
         }
+        foreignFrames = 0;
         D3D11_TEXTURE2D_DESC desc {};
         back->GetDesc(&desc);
         // An sRGB backbuffer (Unity in linear colour space, Virt-A-Mate) holds the same encoded bytes as its UNORM
