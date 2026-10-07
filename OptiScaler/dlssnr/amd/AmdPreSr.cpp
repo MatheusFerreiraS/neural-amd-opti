@@ -215,6 +215,8 @@ struct Backend::Impl
     UINT lastInputWidth = 0, lastInputHeight = 0;
     bool hadExposure = false;
     std::array<HMODULE, 3> runtime {};
+    // Set once InitPass finished a pass. Its module stays loaded when it did not (Backend::Retry refuses that).
+    std::array<bool, 3> initialized {};
     std::array<UINT, 3> observedTimeouts {};
     std::filesystem::path directory;
     std::wstring modules = L"dlssnr_amd_pass";
@@ -771,8 +773,14 @@ struct Backend::Impl
     }
     void InitPass(UINT i)
     {
+        // A module that loaded but whose initialization failed stays loaded (see below) and refuses every Record:
+        // that is a failure each time, not a pass that is ready.
         if (runtime[i])
+        {
+            if (!initialized[i])
+                throw std::runtime_error("AMD pass " + std::to_string(i + 1) + " failed to initialize earlier");
             return;
+        }
         InitHip();
         auto path = directory / (modules + std::to_wstring(i + 1) + L".dll");
         // One module per pass, so one file per pass: passes 2 and 3 are copies of pass 1, made here when missing or
@@ -884,6 +892,7 @@ struct Backend::Impl
                      : std::string("AMD runtime: SpinDraw=0 (original wait)"));
         }
         At<uint8_t>(h, L->initDone) = 1;
+        initialized[i] = true;
         Log("Initialized independent AMD pass " + std::to_string(i + 1));
     }
     void InitShader()
@@ -2262,6 +2271,10 @@ bool Backend::Retry()
         return false;
     for (auto h : p->runtime)
         if (h && At<ID3D12CommandList*>(h, L->pendingList) != nullptr)
+            return false;
+    // A pass that never initialized cannot be retried: its module stays loaded half set up.
+    for (UINT i = 0; i < p->runtime.size(); ++i)
+        if (p->runtime[i] && !p->initialized[i])
             return false;
     p->failed = false;
     p->resetRequested = true;
