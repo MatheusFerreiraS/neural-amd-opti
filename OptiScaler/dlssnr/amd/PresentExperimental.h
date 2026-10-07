@@ -1208,7 +1208,9 @@ struct Bridge11
     void FrameTexture(ID3D11Texture2D* back, ID3D11Device* device, const std::filesystem::path& directory,
                       AmdPreSr::Settings settings, bool captureDepth)
     {
-        if (stopped || (engine && !engine->Resume()))
+        // After a timeout NR goes on once both its frame and the D3D11 side's wait on it are done.
+        if (stopped || (engine && engine->stopped && fence12 && fence12->GetCompletedValue() < fenceValue) ||
+            (engine && !engine->Resume()))
         {
             // D3D11 may still wait on the shared fence for NR work that stopped; the CPU releases it.
             if (fence12 && fence12->GetCompletedValue() < fenceValue)
