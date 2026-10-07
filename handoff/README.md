@@ -1205,7 +1205,7 @@ part are in the sections at the end of this file (stall protection, lmxxf 0.39) 
 
 ### 0.5.1
 
-Not released; the version string is still 0.5.0. Nothing below was tested in a game or on a GPU: the build passes and
+Not released yet; the build names itself `0.5.1-amd-nr`. Nothing below was tested in a game or on a GPU: the build passes and
 so do the host contracts (`tools\test-amd-host-contracts.cmd`, now with `tests\amd_stall_watch.cpp` on WARP fences).
 
 - **danielblnc 0.6.0's green noise.** 0.6.0 reads a float pre-exposure at `0x60` of the record packet
@@ -1223,18 +1223,26 @@ so do the host contracts (`tools\test-amd-host-contracts.cmd`, now with `tests\a
     bridge for the copy, and a game queue held for 2 s by a capture or a mode change was blamed on NR.
   - A frame past the 4 s GPU timeout stops NR until it finishes, then NR goes on and the game's backbuffer is handed
     back (it was kept until process exit, and the game's next `ResizeBuffers` failed with `DXGI_ERROR_INVALID_CALL`). A
-    resize waits 10 s for a frame that holds a backbuffer. Every timeout is logged. Vulkan and OpenGL still stop their
-    own bridge on one.
+    resize waits 4 s for such a frame, as a present does, and logs that it waits. A context a failure stopped stays
+    stopped; the D3D11 bridge resumes only once its D3D11 side's wait is done too. Every timeout is logged. Vulkan and
+    OpenGL still stop their own bridge on one.
   - A failed runtime is retried 10 s later, three times a session at most, when the failure left nothing behind
-    (`Backend::Retry`: device alive, completion timeline trusted, no slot busy, no pending list in the runtime).
+    (`Backend::Retry`: device alive, completion timeline trusted, no slot busy, no pending list in the runtime, every
+    loaded pass initialized). A pass whose initialization failed is never retried, and a Record on it counts as a
+    failure (it refused every frame while NR looked healthy).
   - A swapchain on another D3D11 device (an overlay's, a capture's) is left alone, logged once, instead of turning NR
-    off with "D3D11 device changed; restart required".
-- **DX11-to-DX12 bridge.** A step of the crossing that fails presents the game's D3D11 swapchain and returns its result
-  instead of `DXGI_ERROR_DEVICE_REMOVED`, which games quit on; the copy into a D3D12 swapchain of another size is
-  skipped. `ResizeBuffers` and `ResizeBuffers1` refresh the buffer count whenever the game's own resize succeeded and
-  return its result, logging a D3D12 resize that failed.
-- **Logs.** `amd_bridge.log` takes a line only when it differs from the last one written (the render batch split went
-  in every frame: 29 MB in a Cyberpunk report). The upscaler path logs once which runtime `NrBackend` got, and warns
+    off with "D3D11 device changed; restart required". When it alone presents for 120 frames it is the game's new
+    device: the D3D11 side of the bridge moves to it (same adapter; the D3D12 device and runtime stay), or the status
+    says to restart the game.
+  - A D3D11 sRGB backbuffer (Unity in linear colour, Virt-A-Mate) goes through its UNORM twin; an unsupported format
+    and a bridge failure are logged, not only shown in the menu.
+- **DX11-to-DX12 bridge.** A step of the crossing that fails presents the hidden D3D11 swapchain and returns its result
+  instead of `DXGI_ERROR_DEVICE_REMOVED`, which games quit on; the screen keeps the last frame, and after 30 such frames
+  in a row the error goes back as in 0.5.0. The copy into a D3D12 swapchain of another size is skipped, and that
+  swapchain is resized to the game's size again every tenth such frame. `ResizeBuffers` and `ResizeBuffers1` refresh
+  the buffer count (and keep the fake index inside it) whenever the game's own resize succeeded; a D3D12 resize that
+  failed is tried once more with that swapchain's own flags, and its error goes to the game if that fails too.
+- **Logs.** `amd_bridge.log` takes the render batch split once (it went in every frame: 29 MB in a Cyberpunk report). The upscaler path logs once which runtime `NrBackend` got, and warns
   when the name is none of them. The menu key's open and close and the AMD graphics tracker hooks (with why) are logged
   at Info.
 - **Build.** The `tools\*.cmd` scripts take `VS_ROOT` when it is set instead of asking vswhere, which lists nothing when
