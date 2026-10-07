@@ -73,9 +73,10 @@ if (!(Test-Path -LiteralPath $GameDir -PathType Container)) {
 $game = (Resolve-Path -LiteralPath $GameDir).Path
 
 # File names this project installs. Proxy names are deleted only when the file is OptiScaler.
-$proxyNames = @('dxgi.dll','winmm.dll','d3d12.dll','version.dll','winhttp.dll','wininet.dll','dbghelp.dll')
+$proxyNames = @('dxgi.dll','winmm.dll','d3d12.dll','version.dll','winhttp.dll','wininet.dll','dbghelp.dll','d3d9.dll','opengl32.dll')
 $projectLeafNames = @(
     'dlssnr_amd_pass1.dll','dlssnr_amd_pass2.dll','dlssnr_amd_pass3.dll',
+    'dlssnr_amd_present1.dll','dlssnr_amd_present2.dll','dlssnr_amd_present3.dll',
     'OptiScaler.ini','amd-presr-install.txt',
     'LmxxfNrRuntime.dll',
     'Uninstall_OptiScaler_NR.bat','Uninstall_OptiScaler_NR.ps1',
