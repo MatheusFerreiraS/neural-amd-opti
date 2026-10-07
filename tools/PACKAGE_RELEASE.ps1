@@ -475,7 +475,20 @@ $hashes = Get-ChildItem -LiteralPath $stage -Recurse -File |
 
 New-Item -ItemType Directory -Force -Path (Join-Path $root $OutDir) | Out-Null
 if (Test-Path $zip) { Remove-Item $zip -Force }
-Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal -Force
+# Not Compress-Archive: under Windows PowerShell 5.1 it writes entries as OptiScaler\libxess.dll, and the
+# installer's pins and every unzip tool expect the forward slashes the zip format specifies.
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+$out = [IO.Compression.ZipFile]::Open($zip, [IO.Compression.ZipArchiveMode]::Create)
+try {
+    $stageFull = (Resolve-Path -LiteralPath $stage).Path.TrimEnd('\') + '\'
+    foreach ($file in Get-ChildItem -LiteralPath $stage -Recurse -File | Sort-Object FullName) {
+        $entry = $file.FullName.Substring($stageFull.Length).Replace('\', '/')
+        [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($out, $file.FullName, $entry,
+            [IO.Compression.CompressionLevel]::Optimal)
+    }
+} finally {
+    $out.Dispose()
+}
 
 # Validate the actual artifact, not only the staging tree. This catches a changed
 # archive command, a stale/wrapped staging directory, or anything injected between
