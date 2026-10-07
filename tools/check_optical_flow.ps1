@@ -2,7 +2,9 @@ $ErrorActionPreference = 'Stop'
 $source = Get-Content -Raw (Join-Path $PSScriptRoot '..\OptiScaler\dlssnr\amd\PresentExperimental.h')
 $shader = [regex]::Match($source, 'const char\* shader = R"\((Texture2D<int2>[\s\S]*?)\)";').Groups[1].Value
 if (-not $shader) { throw 'Optical Flow densify shader not found' }
-$fxc = Get-ChildItem -LiteralPath (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin') -Filter fxc.exe -Recurse -File |
+# vcvars names the SDK it found, which is not always under Program Files (x86).
+$kitRoot = if ($env:WindowsSdkDir) { $env:WindowsSdkDir } else { Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10' }
+$fxc = Get-ChildItem -LiteralPath (Join-Path $kitRoot 'bin') -Filter fxc.exe -Recurse -File |
     Where-Object FullName -Match '\\x64\\fxc.exe$' | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
 if (-not $fxc) { throw 'fxc.exe not found' }
 $hlsl = Join-Path $env:TEMP 'opti-flow-densify.hlsl'
