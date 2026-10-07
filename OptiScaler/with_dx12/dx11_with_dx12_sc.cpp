@@ -1260,10 +1260,12 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)
         return false;
     }
 
-    // After a D3D12 resize that failed the two swapchains differ, and CopyResource between them is invalid.
+    // After a D3D12 resize that failed the two swapchains differ, and CopyResource between them is invalid: in size,
+    // or in format when the game's resize changed it (HDR on) and the D3D12 one did not follow.
     const auto fgDesc = fgBackBuffer->GetDesc();
     const auto sharedDesc = _openedDx11BackBuffers[copySlot]->GetDesc();
-    _fgSizeDiffers = fgDesc.Width != sharedDesc.Width || fgDesc.Height != sharedDesc.Height;
+    _fgSizeDiffers = fgDesc.Width != sharedDesc.Width || fgDesc.Height != sharedDesc.Height ||
+                     fgDesc.Format != FlipFormat(sharedDesc.Format);
     if (_fgSizeDiffers)
     {
         fgBackBuffer->Release();
@@ -1439,8 +1441,8 @@ bool Dx11wDx12SC::_ResizeFgToReal()
     MenuOverlayDx::CleanupRenderTarget(!finalImage, _handle);
     _ReleaseInteropBackBuffers();
     WaitForFgBackBuffers(_fgSwapChain);
-    const HRESULT result =
-        _fgSwapChain->ResizeBuffers(0, real.BufferDesc.Width, real.BufferDesc.Height, DXGI_FORMAT_UNKNOWN, fg.Flags);
+    const HRESULT result = _fgSwapChain->ResizeBuffers(0, real.BufferDesc.Width, real.BufferDesc.Height,
+                                                       FlipFormat(real.BufferDesc.Format), fg.Flags);
     if (finalImage)
     {
         MenuOverlayDx::CleanupRenderTarget(true, _handle);

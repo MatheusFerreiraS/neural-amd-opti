@@ -143,6 +143,10 @@ struct Context
             return false;
         heldBack.Reset();
         stopped = timedOut = false;
+        // A resize that came while the frame was out still has to drop the old size, or every frame after it waits
+        // for a swapchain reset that already happened.
+        if (resizeMissed)
+            ResetSize();
         status = "NR without upscaling: the frame that timed out finished; NR goes on";
         LOG_WARN("{}", status);
         return true;
@@ -165,7 +169,16 @@ struct Context
                 "NR without upscaling: a resize waits up to 4 s for NR's frame, which holds the game's backbuffer");
         ReleaseBackBuffer();
         if (stopped && !Resume())
+        {
+            resizeMissed = true;
             return;
+        }
+        ResetSize();
+    }
+    bool resizeMissed = false;
+    void ResetSize()
+    {
+        resizeMissed = false;
         if (flowCreated)
             OptiFfxOpticalflowContextDestroy(&flowContext);
         flowCreated = false;
@@ -975,6 +988,7 @@ struct Bridge11
     bool formatReported = false;
     // Frames another D3D11 device presented since this one last did.
     UINT foreignFrames = 0;
+    ULONGLONG gameFrameTick = 0;
 
     bool Wait11()
     {
@@ -1222,10 +1236,12 @@ struct Bridge11
             Start(device);
         // Another D3D11 device presenting through OptiScaler (an overlay's or a capture's swapchain, as with AMD ReLive
         // recording) is left alone while the game's own device keeps presenting. One that presents alone for 120
-        // frames is the game's new device, and NR moves to it.
+        // frames, with nothing from the game's device for 2 s, is the game's new device, and NR moves to it. A
+        // hitch on the game's side (a load, a mode change) is not taken for the game leaving its device.
         if (game.Get() != device)
         {
-            if (++foreignFrames < 120)
+            ++foreignFrames;
+            if (foreignFrames < 120 || GetTickCount64() - gameFrameTick < 2000)
             {
                 if (foreignFrames == 1)
                     LOG_INFO("NR without upscaling: a swapchain on another D3D11 device ({:p}) presented; NR stays on "
@@ -1245,6 +1261,7 @@ struct Bridge11
                      static_cast<void*>(device));
         }
         foreignFrames = 0;
+        gameFrameTick = GetTickCount64();
         D3D11_TEXTURE2D_DESC desc {};
         back->GetDesc(&desc);
         // An sRGB backbuffer (Unity in linear colour space, Virt-A-Mate) holds the same encoded bytes as its UNORM
