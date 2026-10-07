@@ -5,8 +5,8 @@ rem which tools\build-optiscaler-fast.cmd builds; copy it into OptiScaler64 with
 rem or by hand.
 setlocal
 cd /d "%~dp0.."
-set "VS_ROOT="
-for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do set "VS_ROOT=%%I"
+rem A VS_ROOT set beforehand skips vswhere, which lists nothing when the installer's registry is broken.
+if not defined VS_ROOT for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do set "VS_ROOT=%%I"
 if not defined VS_ROOT if exist "%ProgramFiles%\Microsoft Visual Studio\18\Community\VC" set "VS_ROOT=%ProgramFiles%\Microsoft Visual Studio\18\Community"
 if not defined VS_ROOT (
   echo FAIL: no Visual Studio with the C++ tools found
@@ -16,6 +16,8 @@ set "OUT=%CD%\exports\dx9-x86"
 if not exist "%OUT%\obj32" mkdir "%OUT%\obj32"
 if not exist "%OUT%\obj64" mkdir "%OUT%\obj64"
 if not exist "%OUT%\OptiScaler64" mkdir "%OUT%\OptiScaler64"
+set "VSINSTALLDIR=%VS_ROOT%\"
+set "PATH=%PATH%;%ProgramFiles(x86)%\Microsoft Visual Studio\Installer"
 set "FLAGS=/nologo /std:c++20 /EHsc /O2 /MT /W4 /utf-8 /DWIN32_LEAN_AND_MEAN /DNOMINMAX /DUNICODE /D_UNICODE"
 
 setlocal

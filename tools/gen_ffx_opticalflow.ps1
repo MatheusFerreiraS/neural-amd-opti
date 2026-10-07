@@ -17,7 +17,9 @@ Set-StrictMode -Version Latest
 $sdk = [System.IO.Path]::GetFullPath($SdkDirectory)
 $output = [System.IO.Path]::GetFullPath($OutputDirectory)
 if (-not $DxcPath) {
-    $kitBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+    # vcvars names the SDK it found, which is not always under Program Files (x86).
+    $kitRoot = if ($env:WindowsSdkDir) { $env:WindowsSdkDir } else { Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10' }
+    $kitBin = Join-Path $kitRoot 'bin'
     $DxcPath = Get-ChildItem -LiteralPath $kitBin -Filter dxc.exe -Recurse -File |
         Where-Object { $_.FullName -match '\\x64\\dxc\.exe$' } |
         Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName

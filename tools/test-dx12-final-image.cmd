@@ -20,7 +20,10 @@ cd /d "%~dp0.."
 if "%~3"=="" goto usage
 set "SMOKE=exports\dx12-smoke"
 if not exist "%SMOKE%\OptiScaler" mkdir "%SMOKE%\OptiScaler"
-for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_ROOT=%%I"
+rem A VS_ROOT set beforehand skips vswhere, which lists nothing when the installer's registry is broken.
+if not defined VS_ROOT for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_ROOT=%%I"
+set "VSINSTALLDIR=%VS_ROOT%\"
+set "PATH=%PATH%;%ProgramFiles(x86)%\Microsoft Visual Studio\Installer"
 call "%VS_ROOT%\VC\Auxiliary\Build\vcvarsall.bat" x64 -vcvars_ver=14.44 >nul
 if errorlevel 1 exit /b 1
 cl /nologo /std:c++20 /EHsc /O2 /W3 /utf-8 tests\dx12_final_image_smoke.cpp /Fe"%SMOKE%\dx12_final_image_smoke.exe" /Fo"%SMOKE%\dx12_final_image_smoke.obj" /link d3dcompiler.lib user32.lib gdi32.lib dbghelp.lib dinput8.lib dxguid.lib

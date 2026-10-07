@@ -9,7 +9,10 @@ setlocal EnableExtensions
 cd /d "%~dp0.."
 where cl >nul 2>nul
 if not errorlevel 1 goto run
-for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_ROOT=%%I"
+rem A VS_ROOT set beforehand skips vswhere, which lists nothing when the installer's registry is broken.
+if not defined VS_ROOT for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_ROOT=%%I"
+set "VSINSTALLDIR=%VS_ROOT%\"
+set "PATH=%PATH%;%ProgramFiles(x86)%\Microsoft Visual Studio\Installer"
 call "%VS_ROOT%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul
 :run
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0test-dx9-present.ps1" %*

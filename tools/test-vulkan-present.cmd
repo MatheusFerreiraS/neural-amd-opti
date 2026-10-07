@@ -19,7 +19,10 @@ set "DLL=%~3"
 if not defined DLL set "DLL=exports\release-local\OptiScaler.dll"
 if not exist "%OUT%" mkdir "%OUT%"
 where cl >nul 2>nul && goto compile
-for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_ROOT=%%I"
+rem A VS_ROOT set beforehand skips vswhere, which lists nothing when the installer's registry is broken.
+if not defined VS_ROOT for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_ROOT=%%I"
+set "VSINSTALLDIR=%VS_ROOT%\"
+set "PATH=%PATH%;%ProgramFiles(x86)%\Microsoft Visual Studio\Installer"
 call "%VS_ROOT%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul 2>nul || exit /b 1
 :compile
 cl /nologo /std:c++20 /EHsc /W4 /utf-8 /Iexternal\vulkan\include tests\vulkan_present_smoke.cpp /Fe"%OUT%\vulkan_present_smoke.exe" /Fo"%OUT%\vulkan_present_smoke.obj" /link OptiScaler\library\vulkan\vulkan-1.lib user32.lib gdi32.lib d3d11.lib dxgi.lib dbghelp.lib
