@@ -24,6 +24,10 @@ bool HasReplacement(NVSDK_NGX_Parameter*);
 void InvalidateHistory();
 void TraceContextRelease(unsigned int handle, bool after);
 std::string Status();
+// When the stall watch (StallWatch.h) tripped: NR goes off for this session (the INI keeps it), the note below says
+// why and the watch is cleared, so NR switched on again retries. Otherwise the note is cleared. True when it stood
+// NR down. The upscaler path and NR without upscaling both ask before each frame.
+bool StandDownIfTripped();
 // Set when the stall watch switched NR off, cleared once NR runs again; what the menu shows next to Enabled.
 std::string StandDownNote();
 // AmdAsync as the INI had it when the session first asked: the runtime latches its timing when it starts.

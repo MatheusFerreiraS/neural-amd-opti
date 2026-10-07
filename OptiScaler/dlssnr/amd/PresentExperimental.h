@@ -421,17 +421,14 @@ struct Context
         if (stopped)
             return false;
         lastFlowValid = false;
-        // One job the GPU held for seconds stands NR down until the game restarts, as on the upscaler path.
-        auto& stall = stallwatch::Watch::Get();
-        stall.limitMs.store(
-            static_cast<UINT64>(std::max(0, Config::Instance()->AmdStallStandDownMs.value_or_default())));
-        if (const UINT64 held = stall.Tripped())
+        // One job the GPU held for seconds switches NR off, as on the upscaler path: Enable NR turns it on again.
+        // Frame generation's guides are still made from this frame.
+        if (neural && DlssNr::AmdBridge::StandDownIfTripped())
         {
-            stopped = true;
-            status = "NR without upscaling: off until the game restarts. The GPU held one NR job for " +
-                     std::to_string(held) + " ms; AmdStallStandDownMs=0 turns this off.";
-            LOG_WARN("{}", status);
-            return false;
+            status = "NR without upscaling: " + DlssNr::AmdBridge::StandDownNote();
+            if (!guides)
+                return false;
+            neural = false;
         }
         // The previous frame ran on the GPU while the game prepared this one; its list and descriptors are reused now.
         if (!WaitForFrame())

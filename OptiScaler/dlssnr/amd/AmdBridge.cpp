@@ -901,31 +901,9 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     // Evaluate cut: Split proxy + SetBetween(EnqueueHip). Live only when SubmissionHooksWanted() (NrBackend=lmxxf
     // or mochizuki).
     DlssNr::Backend::LmxxfCut::OnEvaluateBeforeRecord(cmd);
-    // One job the GPU held for seconds is the warning before the one that locks the PC (StallWatch.h):
-    // NR switches off for this session without touching the INI, the original colour goes to SR, and
-    // the menu says why. Switched on again (menu or the NR key), it starts with a fresh watch.
-    auto& stall = stallwatch::Watch::Get();
-    stall.limitMs.store(static_cast<UINT64>(std::max(0, cfg.AmdStallStandDownMs.value_or_default())));
-    if (const UINT64 held = stall.Tripped())
-    {
-        char seconds[16];
-        std::snprintf(seconds, sizeof(seconds), "%.1f", static_cast<double>(held) / 1000.0);
-        {
-            std::lock_guard lock(standDownMutex);
-            standDown = std::string("Turned off: the GPU held one NR job for ") + seconds +
-                        " s, the warning before a freeze that can lock the PC. Turn NR on again to retry, or "
-                        "try another runtime. AmdStallStandDownMs=0 turns this check off.";
-            LOG_WARN("AMD neural: {}", standDown);
-            Message(standDown.c_str());
-        }
-        stall.Clear();
-        Config::Instance()->DlssNrEnabled.set_volatile_value(false);
+    // The original colour goes to SR.
+    if (StandDownIfTripped())
         return true;
-    }
-    {
-        std::lock_guard lock(standDownMutex);
-        standDown.clear();
-    }
     if (neuralTimer)
         neuralTimer->Start(cmd);
     auto replacement = b->Record(cmd, f, s);
@@ -1114,6 +1092,33 @@ bool AsyncSession()
 {
     static const bool async = Config::Instance()->AmdAsync.value_or_default();
     return async;
+}
+
+bool StandDownIfTripped()
+{
+    // One job the GPU held for seconds is the warning before the one that locks the PC (StallWatch.h):
+    // NR switches off for this session without touching the INI, and the menu says why. Switched on
+    // again (menu or the NR key), it starts with a fresh watch.
+    auto& stall = stallwatch::Watch::Get();
+    stall.limitMs.store(
+        static_cast<UINT64>(std::max(0, Config::Instance()->AmdStallStandDownMs.value_or_default())));
+    std::lock_guard lock(standDownMutex);
+    const UINT64 held = stall.Tripped();
+    if (!held)
+    {
+        standDown.clear();
+        return false;
+    }
+    char seconds[16];
+    std::snprintf(seconds, sizeof(seconds), "%.1f", static_cast<double>(held) / 1000.0);
+    standDown = std::string("Turned off: the GPU held one NR job for ") + seconds +
+                " s, the warning before a freeze that can lock the PC. Turn NR on again to retry, or "
+                "try another runtime. AmdStallStandDownMs=0 turns this check off.";
+    LOG_WARN("AMD neural: {}", standDown);
+    Message(standDown.c_str());
+    stall.Clear();
+    Config::Instance()->DlssNrEnabled.set_volatile_value(false);
+    return true;
 }
 
 std::string StandDownNote()
