@@ -1160,10 +1160,15 @@ struct Bridge11
         }
         if (!game)
             Start(device);
+        // Another D3D11 device presenting through OptiScaler (an overlay's or a capture's swapchain, as with AMD ReLive
+        // recording) is left alone: NR stays on the device it started on.
         if (game.Get() != device)
         {
-            status = "NR without upscaling: D3D11 device changed; restart required";
-            stopped = true;
+            static bool logged = false;
+            if (!logged)
+                LOG_WARN("NR without upscaling: a swapchain on another D3D11 device ({:p}) presented; NR stays on {:p}",
+                         static_cast<void*>(device), static_cast<void*>(game.Get()));
+            logged = true;
             return;
         }
         D3D11_TEXTURE2D_DESC desc {};
