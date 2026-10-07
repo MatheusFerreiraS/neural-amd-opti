@@ -629,6 +629,18 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
             const char* build = RuntimeName();
             label = build ? std::string("danielblnc ") + build : std::string("danielblnc");
         }
+        // Which runtime the INI's NrBackend got, once: a name that is none of them runs danielblnc (Kind.h). lmxxf
+        // and mochizuki refuse a GPU before the RX 9000 series in their own logs.
+        {
+            const auto raw = Config::Instance()->NrBackend.value_or_default();
+            const bool named = DlssNr::Backend::ParseKind(raw) != DlssNr::Backend::Kind::Daniel || raw.empty() ||
+                               _stricmp(raw.c_str(), "auto") == 0 || _stricmp(raw.c_str(), "daniel") == 0;
+            if (!named)
+                LOG_WARN("AMD neural: NrBackend={} is not a runtime (daniel, lmxxf, mochizuki, auto or off); "
+                         "danielblnc runs instead",
+                         raw);
+            LOG_INFO("AMD neural: NrBackend={} runs {}", raw, label);
+        }
         {
             std::lock_guard guard(runtimeLabelMutex);
             runtimeLabel = std::move(label);
