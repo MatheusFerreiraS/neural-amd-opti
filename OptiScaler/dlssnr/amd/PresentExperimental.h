@@ -156,8 +156,10 @@ struct Context
     }
     void BeforeResize()
     {
-        // The game's ResizeBuffers fails while NR holds one of its buffers, so a resize waits longer for the frame.
-        ReleaseBackBuffer(heldBack ? 10000 : 4000);
+        // The game's ResizeBuffers fails while NR holds one of its buffers.
+        if (heldBack && fence->GetCompletedValue() < serial)
+            LOG_WARN("NR without upscaling: a resize waits up to 4 s for NR's frame, which holds the game's backbuffer");
+        ReleaseBackBuffer();
         if (stopped && !Resume())
             return;
         if (flowCreated)
