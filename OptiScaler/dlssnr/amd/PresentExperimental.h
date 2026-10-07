@@ -123,6 +123,9 @@ struct Context
     }
     void TimedOut(const char* what)
     {
+        // A context a failure stopped stays stopped: a timeout after it must not make it resumable.
+        if (stopped && !timedOut)
+            return;
         stopped = true;
         timedOut = fence->GetCompletedValue() != UINT64_MAX;
         status = timedOut ? std::string("NR without upscaling: GPU timeout ") + what +
