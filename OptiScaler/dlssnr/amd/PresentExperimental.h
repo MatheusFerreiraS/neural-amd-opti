@@ -966,6 +966,7 @@ struct Bridge11
     UINT width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     bool stopped = false;
+    bool formatReported = false;
 
     bool Wait11()
     {
@@ -1178,13 +1179,22 @@ struct Bridge11
         }
         D3D11_TEXTURE2D_DESC desc {};
         back->GetDesc(&desc);
+        // An sRGB backbuffer (Unity in linear colour space, Virt-A-Mate) holds the same encoded bytes as its UNORM
+        // twin, and CopyResource copies within a typeless group, so the shared texture takes the UNORM format and
+        // the runtime gets what it gets from a UNORM backbuffer.
+        const DXGI_FORMAT sharedFormat = desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB   ? DXGI_FORMAT_R8G8B8A8_UNORM
+                                         : desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ? DXGI_FORMAT_B8G8R8A8_UNORM
+                                                                                          : desc.Format;
         if (desc.SampleDesc.Count != 1 ||
-            (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM && desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM))
+            (sharedFormat != DXGI_FORMAT_R8G8B8A8_UNORM && sharedFormat != DXGI_FORMAT_B8G8R8A8_UNORM))
         {
             status = "NR without upscaling: D3D11 backbuffer format or MSAA unsupported";
+            if (!formatReported)
+                LOG_WARN("{} (format {}, samples {})", status, static_cast<UINT>(desc.Format), desc.SampleDesc.Count);
+            formatReported = true;
             return;
         }
-        EnsureShared(desc.Width, desc.Height, desc.Format);
+        EnsureShared(desc.Width, desc.Height, sharedFormat);
         if (stopped || engine->stopped)
             return;
         const bool realDepth = captureDepth && CaptureDepth(desc.Width, desc.Height);
@@ -1240,6 +1250,7 @@ inline void Render11(IDXGISwapChain* sc, ID3D11Device* device, const std::filesy
     catch (const std::exception& e)
     {
         status = e.what();
+        LOG_ERROR("{}", status);
         if (bridge11)
             bridge11->stopped = true;
     }
@@ -1258,6 +1269,7 @@ inline bool RenderTexture11(ID3D11Texture2D* texture, ID3D11Device* device, cons
     catch (const std::exception& e)
     {
         status = e.what();
+        LOG_ERROR("{}", status);
         if (bridge11)
             bridge11->stopped = true;
         return false;
