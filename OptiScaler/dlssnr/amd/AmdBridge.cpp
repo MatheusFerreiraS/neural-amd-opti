@@ -47,18 +47,14 @@ ExitFn exitOriginal = nullptr;
 bool submissionHookReady = false; // guarded by initMutex
 std::string message = "AMD pre-SR: waiting for a DirectX 12 SR frame";
 std::mutex messageMutex;
-// The last line written to amd_bridge.log. Run clears the message every frame, so comparing with it let a note
-// set every frame (the render batch split) append a line each frame: 29 MB in one Cyberpunk report.
-std::string logged;
 std::mutex initMutex;
 std::mutex observedMutex;
 std::unordered_set<ID3D12CommandList*> observedLists;
 void Message(const char* s)
 {
     std::lock_guard l(messageMutex);
-    if (*s && logged != s)
+    if (*s && message != s)
     {
-        logged = s;
         std::ofstream log(Util::DllPath().parent_path() / L"amd_bridge.log", std::ios::app);
         log << GetTickCount64() << " thread=" << GetCurrentThreadId() << " " << s << '\n';
     }
@@ -216,7 +212,11 @@ void STDMETHODCALLTYPE Execute(ID3D12CommandQueue* q, UINT n, ID3D12CommandList*
     {
         // Separate Execute calls establish an execution boundary around the
         // interop list. Preserve list order and execute each list exactly once.
-        Message("AMD isolated neural command list from a render batch");
+        // Once: Run clears the message every frame, so a note set every frame was a line each frame (29 MB of
+        // amd_bridge.log in one Cyberpunk report).
+        static std::atomic<bool> noted { false };
+        if (!noted.exchange(true))
+            Message("AMD isolated neural command list from a render batch");
         if (index)
             ExecuteBatch(q, static_cast<UINT>(index), c);
         ExecuteBatch(q, 1, c + index);
