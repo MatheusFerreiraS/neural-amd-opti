@@ -103,7 +103,10 @@ struct Context
     UINT width = 0, height = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     bool stopped = false;
-    bool WaitForFrame()
+    // Stopped by a frame the GPU had not finished in time rather than by a failure: Resume picks NR up again once it
+    // has. A screen transition or a capture can hold the game's queue, and NR's frame behind it, for seconds.
+    bool timedOut = false;
+    bool WaitForFrame(DWORD ms = 4000)
     {
         const auto completed = fence->GetCompletedValue();
         if (completed == UINT64_MAX)
@@ -114,29 +117,48 @@ struct Context
         if (!done)
             return false;
         const bool signaled = SUCCEEDED(fence->SetEventOnCompletion(serial, done)) &&
-                              WaitForSingleObject(done, 4000) == WAIT_OBJECT_0;
+                              WaitForSingleObject(done, ms) == WAIT_OBJECT_0;
         CloseHandle(done);
         return signaled;
     }
-    // A removed device runs nothing more, so the buffer goes back to the game. After a timeout on a live device the
-    // GPU may still read it, so it is kept.
-    void ReleaseBackBuffer()
+    void TimedOut(const char* what)
     {
-        const bool done = WaitForFrame();
-        const bool removed = !done && fence->GetCompletedValue() == UINT64_MAX;
-        if (done || removed)
-            heldBack.Reset();
+        stopped = true;
+        timedOut = fence->GetCompletedValue() != UINT64_MAX;
+        status = timedOut ? std::string("NR without upscaling: GPU timeout ") + what +
+                                "; NR goes on once that frame finishes"
+                          : std::string("NR without upscaling: the D3D12 device was removed; NR is off");
+        LOG_WARN("{}", status);
+    }
+    // After a timeout: true once the frame finished, with the backbuffer handed back.
+    bool Resume()
+    {
+        if (!stopped)
+            return true;
+        const auto completed = fence->GetCompletedValue();
+        if (!timedOut || completed == UINT64_MAX || completed < serial)
+            return false;
+        heldBack.Reset();
+        stopped = timedOut = false;
+        status = "NR without upscaling: the frame that timed out finished; NR goes on";
+        LOG_WARN("{}", status);
+        return true;
+    }
+    // A removed device runs nothing more, so the buffer goes back to the game. After a timeout on a live device the
+    // GPU may still read it, so it is kept until Resume sees the frame finish.
+    void ReleaseBackBuffer(DWORD ms = 4000)
+    {
+        const bool done = WaitForFrame(ms);
         if (!done)
-        {
-            stopped = true;
-            status = removed ? "NR without upscaling: the D3D12 device was removed; NR is off"
-                             : "NR without upscaling: GPU timeout; backbuffer retained until process exit";
-        }
+            TimedOut("on NR's frame; the backbuffer is kept until it finishes");
+        if (done || !timedOut)
+            heldBack.Reset();
     }
     void BeforeResize()
     {
-        ReleaseBackBuffer();
-        if (stopped)
+        // The game's ResizeBuffers fails while NR holds one of its buffers, so a resize waits longer for the frame.
+        ReleaseBackBuffer(heldBack ? 10000 : 4000);
+        if (stopped && !Resume())
             return;
         if (flowCreated)
             OptiFfxOpticalflowContextDestroy(&flowContext);
@@ -422,7 +444,7 @@ struct Context
                AmdPreSr::Settings settings, ID3D12Resource* realDepth = nullptr, bool neural = true,
                bool guides = false)
     {
-        if (stopped)
+        if (stopped && !Resume())
             return false;
         lastFlowValid = false;
         // One job the GPU held for seconds switches NR off, as on the upscaler path: Enable NR turns it on again.
@@ -437,8 +459,7 @@ struct Context
         // The previous frame ran on the GPU while the game prepared this one; its list and descriptors are reused now.
         if (!WaitForFrame())
         {
-            stopped = true;
-            status = "NR without upscaling: GPU timeout; stopped";
+            TimedOut("on the previous frame");
             return false;
         }
         heldBack.Reset();
@@ -772,10 +793,11 @@ inline bool Follow(ID3D12Device* device, ID3D12CommandQueue* queue)
         context = contexts.emplace_back(new Context(device, queue));
     if (context->queue.Get() == queue)
         return true;
+    if (!context->Resume())
+        return false;
     if (!context->WaitForFrame())
     {
-        context->stopped = true;
-        status = "NR without upscaling: GPU timeout; stopped";
+        context->TimedOut("before moving to the game's new queue");
         return false;
     }
     context->queue = queue;
@@ -874,11 +896,8 @@ inline bool RenderResource(ID3D12Resource* resource, ID3D12Device* device, ID3D1
         }
         context->pipelined = pipelined;
         context->Frame(resource, D3D12_RESOURCE_STATE_COMMON, directory, settings, nullptr, neural, guides != nullptr);
-        if (!pipelined && !context->WaitForFrame())
-        {
-            context->stopped = true;
-            status = "NR without upscaling: GPU timeout; stopped";
-        }
+        if (!pipelined && !context->stopped && !context->WaitForFrame())
+            context->TimedOut("on NR's frame");
         if (guides && !context->stopped && context->lastFlowValid)
         {
             guides->motion = context->motion;
@@ -969,7 +988,8 @@ struct Bridge11
             engine->BeforeResize();
         if (!stopped && (!engine || !engine->stopped))
             ReleaseShared();
-        else
+        // A timed-out frame may still read the shared textures; they go at the first resize after it finished.
+        else if (!engine || !engine->timedOut)
             stopped = true;
     }
     void Start(ID3D11Device* device)
@@ -1006,7 +1026,7 @@ struct Bridge11
         if (shared12 && width == w && height == h && format == f)
             return;
         BeforeResize();
-        if (stopped)
+        if (stopped || engine->stopped)
             return;
         D3D11_TEXTURE2D_DESC desc {};
         desc.Width = w;
@@ -1115,7 +1135,7 @@ struct Bridge11
     void FrameTexture(ID3D11Texture2D* back, ID3D11Device* device, const std::filesystem::path& directory,
                       AmdPreSr::Settings settings, bool captureDepth)
     {
-        if (stopped || (engine && engine->stopped))
+        if (stopped || (engine && !engine->Resume()))
         {
             // D3D11 may still wait on the shared fence for NR work that stopped; the CPU releases it.
             if (fence12 && fence12->GetCompletedValue() < fenceValue)
@@ -1150,7 +1170,11 @@ struct Bridge11
             const bool modified = engine->Frame(shared12.Get(), D3D12_RESOURCE_STATE_COMMON, directory, settings,
                                                 realDepth ? sharedDepth12.Get() : nullptr);
             if (!engine->WaitForFrame())
-                throw std::runtime_error("NR without upscaling: GPU timeout; stopped");
+            {
+                engine->TimedOut("on NR's frame");
+                immediate->Flush();
+                return;
+            }
             if (modified)
                 immediate->CopyResource(back, shared11.Get());
             immediate->Flush();
