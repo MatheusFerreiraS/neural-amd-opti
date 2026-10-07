@@ -377,25 +377,38 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
         Hudfix_Dx11::PresentStart();
     }
 
+    // A step of the crossing that fails drops this frame from the D3D12 swapchain, not the game: returning
+    // DXGI_ERROR_DEVICE_REMOVED made games quit on a transition. The game's own D3D11 swapchain presents it instead.
+    const auto presentReal = [&](const char* step)
+    {
+        static unsigned failures = 0;
+        if (++failures <= 3 || failures % 300 == 0)
+            LOG_WARN("Dx11wDx12SC: {} failed ({}); presenting the game's D3D11 swapchain", step, failures);
+        const auto realResult = _real->Present(SyncInterval, Flags);
+        if (dx11HudfixPresent)
+            Hudfix_Dx11::PresentEnd();
+        return realResult;
+    };
+
     if (!_InitInteropObjects())
-        return DXGI_ERROR_DEVICE_REMOVED;
+        return presentReal("interop setup");
 
     auto dx11Index = _GetDx11BackBufferIndexForPresent();
 
     if (!_RequestSharedBackBuffer(dx11Index))
-        return DXGI_ERROR_DEVICE_REMOVED;
+        return presentReal("shared backbuffer");
 
     if (!_CopyDx11BackBufferToShared(dx11Index))
-        return DXGI_ERROR_DEVICE_REMOVED;
+        return presentReal("D3D11 copy");
 
     if (!_WaitDx11ThenDx12())
-        return DXGI_ERROR_DEVICE_REMOVED;
+        return presentReal("D3D11 to D3D12 wait");
 
     if (!_CopyDx11SharedToDx12FGBackBuffer(dx11Index))
-        return DXGI_ERROR_DEVICE_REMOVED;
+        return presentReal("D3D12 copy");
 
     if (!_WaitForInteropCopyOnPresentQueue())
-        return DXGI_ERROR_DEVICE_REMOVED;
+        return presentReal("present queue wait");
 
     const bool fgHookedPresenter =
         State::Instance().currentFGSwapchain == _fgSwapChain && !FGHooks::IsDx12InteropPresentSC(_fgSwapChain);
@@ -575,9 +588,15 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
         MenuOverlayDx::HoldForResize(false);
     }
 
+    // The game's buffers have their new count whether the D3D12 swapchain followed or not, and the game gets the
+    // result of its own resize: a failed D3D12 resize leaves Present on the D3D11 swapchain until the next one.
+    if (SUCCEEDED(realResult))
+        _RefreshCachedSwapchainDesc();
+    if (SUCCEEDED(realResult) && FAILED(fgResult))
+        LOG_WARN("Dx11wDx12SC: the D3D12 swapchain's ResizeBuffers failed: {:X}", (UINT) fgResult);
+
     if (SUCCEEDED(realResult) && SUCCEEDED(fgResult))
     {
-        _RefreshCachedSwapchainDesc();
 
         if (Config::Instance()->FGEnabled.value_or_default())
         {
@@ -598,7 +617,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
         }
     }
 
-    return FAILED(realResult) ? realResult : fgResult;
+    return realResult;
 }
 
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeTarget(const DXGI_MODE_DESC* pNewTargetParameters)
@@ -808,9 +827,15 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
         MenuOverlayDx::HoldForResize(false);
     }
 
+    // The game's buffers have their new count whether the D3D12 swapchain followed or not, and the game gets the
+    // result of its own resize: a failed D3D12 resize leaves Present on the D3D11 swapchain until the next one.
+    if (SUCCEEDED(realResult))
+        _RefreshCachedSwapchainDesc();
+    if (SUCCEEDED(realResult) && FAILED(fgResult))
+        LOG_WARN("Dx11wDx12SC: the D3D12 swapchain's ResizeBuffers failed: {:X}", (UINT) fgResult);
+
     if (SUCCEEDED(realResult) && SUCCEEDED(fgResult))
     {
-        _RefreshCachedSwapchainDesc();
 
         if (Config::Instance()->FGEnabled.value_or_default())
         {
@@ -823,7 +848,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
         State::Instance().SCAllowTearing = (SwapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0;
     }
 
-    return FAILED(realResult) ? realResult : fgResult;
+    return realResult;
 }
 
 HRESULT STDMETHODCALLTYPE Dx11wDx12SC::SetHDRMetaData(DXGI_HDR_METADATA_TYPE Type, UINT Size, void* pMetaData)
@@ -1215,6 +1240,16 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)
     if (FAILED(result) || fgBackBuffer == nullptr)
     {
         LOG_ERROR("FG GetBuffer({}) failed: {:X}", fgIndex, (UINT) result);
+        _copyCommandLists[copySlot]->Close();
+        return false;
+    }
+
+    // After a D3D12 resize that failed the two swapchains differ, and CopyResource between them is invalid.
+    const auto fgDesc = fgBackBuffer->GetDesc();
+    const auto sharedDesc = _openedDx11BackBuffers[copySlot]->GetDesc();
+    if (fgDesc.Width != sharedDesc.Width || fgDesc.Height != sharedDesc.Height)
+    {
+        fgBackBuffer->Release();
         _copyCommandLists[copySlot]->Close();
         return false;
     }
