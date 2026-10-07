@@ -50,9 +50,13 @@ struct Packet
     uint8_t pad4d[3];
     UINT renderWidth, renderHeight;
     float jitterX, jitterY;
+    // Read by danielblnc 0.6.0 (OptiScaler/dlssnr/amd/AmdPreSr.cpp).
+    float preExposure = 1.0f;
+    UINT pad64;
 };
-static_assert(sizeof(Packet) == 0x60 && offsetof(Packet, scaleX) == 0x44 && offsetof(Packet, nativePre) == 0x4c);
+static_assert(sizeof(Packet) == 0x68 && offsetof(Packet, scaleX) == 0x44 && offsetof(Packet, nativePre) == 0x4c);
 static_assert(offsetof(Packet, renderWidth) == 0x50 && offsetof(Packet, jitterY) == 0x5c);
+static_assert(offsetof(Packet, preExposure) == 0x60);
 using InitFn = bool(__fastcall*)(void*, const std::string*);
 using RecordFn = void(__fastcall*)(Packet*);
 using NotifyFn = void(__fastcall*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
